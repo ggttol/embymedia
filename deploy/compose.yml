@@ -1,0 +1,103 @@
+name: embymedia
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?set digest-pinned POSTGRES_IMAGE}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: embymedia
+      POSTGRES_USER: embymedia
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - /srv/embymedia/data/postgres:/var/lib/postgresql/data
+    ports:
+      - 127.0.0.1:5432:5432
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U embymedia -d embymedia]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    security_opt: [no-new-privileges:true]
+
+  clouddrive2:
+    image: ${CLOUDDRIVE_IMAGE:?set NAS inventory digest-pinned CLOUDDRIVE_IMAGE}
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - apparmor:unconfined
+      - no-new-privileges:true
+    volumes:
+      - /srv/embymedia/data/clouddrive/config:/Config
+      - /srv/embymedia/data/clouddrive/update-disabled:/Config/updates:ro
+      - /srv/embymedia/data/clouddrive/CloudNAS:/CloudNAS:rshared
+    ports:
+      - 127.0.0.1:${CLOUDDRIVE_ADMIN_PORT:-19798}:19798
+    healthcheck:
+      test: [CMD-SHELL, "timeout 5 sh -c 'mountpoint -q /CloudNAS/CloudDrive && stat /CloudNAS/CloudDrive/.embymedia-health-canary >/dev/null'"]
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 60s
+
+  emby:
+    image: ${EMBY_IMAGE:?set NAS inventory digest-pinned EMBY_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      clouddrive2:
+        condition: service_healthy
+    environment:
+      UID: ${MEDIA_UID:?set inventory MEDIA_UID}
+      GID: ${MEDIA_GID:?set inventory MEDIA_GID}
+      GIDLIST: ${MEDIA_GID:?set inventory MEDIA_GID}
+      ALL_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
+      HTTP_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
+      HTTPS_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
+      NO_PROXY: 127.0.0.1,localhost,::1,172.16.0.0/12,192.168.0.0/16
+    volumes:
+      - /srv/embymedia/data/emby/config:/config
+      - /srv/embymedia/data/clouddrive/CloudNAS/CloudDrive:/media:ro
+      - /srv/embymedia/data/strm:/strm:ro
+    ports:
+      - 127.0.0.1:8096:8096
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8096/System/Info/Public >/dev/null || wget -qO- http://127.0.0.1:8096/System/Info/Public >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    security_opt: [no-new-privileges:true]
+
+  authelia:
+    image: ${AUTHELIA_IMAGE:?set digest-pinned AUTHELIA_IMAGE}
+    restart: unless-stopped
+    environment:
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
+      AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
+    secrets: [authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
+    volumes:
+      - /etc/embymedia/authelia:/config:ro
+      - /srv/embymedia/data/authelia:/var/lib/authelia
+    ports:
+      - 127.0.0.1:9091:9091
+    healthcheck:
+      test: [CMD-SHELL, wget -qO- http://127.0.0.1:9091/api/health >/dev/null]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    security_opt: [no-new-privileges:true]
+
+secrets:
+  postgres_password:
+    file: /etc/embymedia/secrets/postgres-password
+  authelia_jwt_secret:
+    file: /etc/embymedia/secrets/authelia-jwt-secret
+  authelia_session_secret:
+    file: /etc/embymedia/secrets/authelia-session-secret
+  authelia_storage_key:
+    file: /etc/embymedia/secrets/authelia-storage-key

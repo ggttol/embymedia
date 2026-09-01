@@ -56,10 +56,12 @@
   ],
   "dependencies": {
     "@deepseek-ai/dsh-scope": "workspace:^",
-    "@deepseek-ai/dsh-typert-protocol": "workspace:^"
+    "@deepseek-ai/dsh-typert-protocol": "workspace:^",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
+    "@embymedia/dsh-operations": "workspace:^",
     "@deepseek-ai/dsh-agent-presets": "workspace:^",
     "@deepseek-ai/dsh-api-gateway": "workspace:^",
     "@deepseek-ai/dsh-api-session-controller": "workspace:^",
@@ -83,6 +85,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
+    "@embymedia/dsh-operations": "workspace:^",
     "@deepseek-ai/dsh-agent-presets": "workspace:^",
     "@deepseek-ai/dsh-api-gateway": "workspace:^",
     "@deepseek-ai/dsh-api-session-controller": "workspace:^",

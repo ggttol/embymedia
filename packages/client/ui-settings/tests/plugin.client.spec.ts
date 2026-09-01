@@ -5,12 +5,12 @@ import { apply, inject } from '../src/client/index.ts'
 import { SettingsSchemaService } from '../src/client/schema.ts'
 import { SettingsScopeBinder } from '../src/client/settings-scope.ts'
 
-function bench() {
+function bench(isLoopback = true) {
   const describeCall = vi.fn().mockResolvedValue({
     ok: true, value: { writable: true, hasDocument: true, namespaces: [] },
   })
   const ctx = new Context()
-  ctx.provide('connection', { api: {}, isLoopback: true } as never)
+  ctx.provide('connection', { api: {}, isLoopback } as never)
   const remote = new TestRemote(ctx, { settings: { describe: describeCall } })
   return { ctx, describeCall, remote, fiber: ctx.plugin({ inject: [...inject], apply }) }
 }
@@ -22,6 +22,14 @@ describe('settings domain base plugin', () => {
     expect(ctx.get('settingsScope')).toBeInstanceOf(SettingsScopeBinder)
     expect(ctx.get('settingsSchema')).toBeInstanceOf(SettingsSchemaService)
     await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledTimes(1) })
+  })
+
+  it('loads a remote browser mirror as read-only instead of unavailable', async () => {
+    const { ctx, describeCall, fiber } = bench(false)
+    await fiber.await()
+    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledOnce() })
+    const scope = ctx.get('settingsScope') as SettingsScopeBinder
+    expect(scope.describe().getSnapshot()).toMatchObject({ status: 'ready', view: { writable: false } })
   })
 
   it('refreshes the mirror on document commits and connection resets, once each', async () => {

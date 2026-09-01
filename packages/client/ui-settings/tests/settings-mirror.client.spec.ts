@@ -97,6 +97,18 @@ describe('SettingsDescribeMirror', () => {
     expect(describeCall).not.toHaveBeenCalled()
   })
 
+  it('read-only persistence loads the redacted Host view and removes write authority', async () => {
+    const describeCall = vi.fn().mockResolvedValue(described([view('llm-deepseek', 2)]))
+    const mirror = new SettingsDescribeMirror({ settings: { describe: describeCall } } as never, 'read-only')
+    await mirror.ensure()
+    expect(mirror.getSnapshot()).toMatchObject({
+      status: 'ready',
+      view: { writable: false, hasDocument: true, namespaces: [expect.objectContaining({ ns: 'llm-deepseek' })] },
+      error: null,
+    })
+    expect(describeCall).toHaveBeenCalledOnce()
+  })
+
   it('acceptView folds one write answer into the held view without a wire read', async () => {
     const describeCall = vi.fn()
       .mockResolvedValueOnce(described([view('theme', 1), view('locale', 4)]))

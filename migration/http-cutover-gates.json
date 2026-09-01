@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-30T14:49:50Z",
+  "mode": "http-tunnel-self-use",
+  "resticSnapshot": "3198aed6",
+  "gates": {
+    "httpTunnelAccess": true,
+    "dshTokenAuth": true,
+    "embyHttp": true,
+    "websocket": true,
+    "webhookBridge": true,
+    "webhookRealEvent": true,
+    "databaseParity": true,
+    "playbackMovie": true,
+    "playbackEpisode": true,
+    "seek": true,
+    "softwareTranscode": true,
+    "planTaskUndo": true,
+    "backupRestore": true,
+    "legacyPortsClosed": true,
+    "nasServicesStopped": true,
+    "noNasDependency": true,
+    "rebootOrdering": true
+  },
+  "evidence": {
+    "databaseParity": "/opt/embymedia/current/migration/final-verify-report.json -> ok true",
+    "agentFlow": "session/create ok; emby-operator mounted; DeepSeek prompt completed; 13-tool operation roster active",
+    "clientCards": "@embymedia/dsh-client-ui-operations registered; exact bundle HTTP 200; all 13 card keys present",
+    "websocket": "/api/remote.mux authenticated upgrade -> HTTP 101",
+    "webhookBridge": "CloudDrive host.docker.internal query-to-header bridge; authenticated empty POST uses bounded recent-top scan",
+    "webhookRealEvent": "real 115 upload visible on CloudDrive mount; autostrm_seen recorded 电影/_embymedia_acceptance; STRM content verified; Emby refresh at 2026-08-30T14:20:11Z; fixture cleaned",
+    "playback": "user completed real movie and episode playback with seek; Emby transcode marker at 2026-08-30T13:54:48Z; container has no GPU devices, proving software transcode",
+    "planTaskUndo": "config.update plan 99845aba-b78f-410b-8f67-07ea9542360e and undo.execute plan 50bd63bb-b0d7-41af-9be8-d05a180bf9c3 both approved/executed/verified; tmdb_timeout_seconds restored to absent",
+    "backupRestore": "restic snapshot 3198aed6 restored 43970 files/directories / 2.500 GiB; isolated PostgreSQL restore and migration ledger check passed",
+    "rebootOrdering": "Debian rebooted to kernel 6.12.105; nftables, Docker, stack, mount/canary, Emby, helper, DSH, Caddy and backup timer active/healthy",
+    "nasShutdown": "five NAS containers restart=no/running=false; ports 8096, 8097, 8920 closed; volumes retained"
+  },
+  "blocking": [
+    "14-day NAS observation period"
+  ]
+}

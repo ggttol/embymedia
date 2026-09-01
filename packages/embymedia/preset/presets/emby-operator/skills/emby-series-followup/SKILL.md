@@ -1,0 +1,18 @@
+---
+name: emby-series-followup
+description: Use for airing-series status, workbench lanes, episode gaps, missing-resource plans, serial updates, completion, and archive decisions.
+---
+
+# Series follow-up
+
+Query status, workbench, gaps, and airing scans with `embymedia_series`. Preserve season and absolute episode numbering; exclude unaired episodes from missing counts.
+
+For missing episodes, query `gaps_summary` and then `resource_plan` for the canonical `libraryId` and `seriesId`. Report blockers and never interpret unknown or upstream failure as zero gaps. A resource plan selects at most 20 gaps. Use `embymedia_resource inspect_candidate` when one ambiguous candidate needs evidence review; never derive coverage from a “complete pack” title. When one candidate proves all requested leaves, use singular `candidate`; when separate per-episode candidates jointly prove the set, create one `series.update` with `candidates:[{candidateId}]`. Batch validation snapshots every candidate, rejects duplicate or uncovered episode keys, transfers all shares into the existing Series CID, waits for every leaf, scans once, and verifies all requested gaps disappear. Never run one write per episode or copy an access code into chat.
+
+When deterministic TMDB facts say the Series is ended and no 115 snapshot proves a per-gap candidate covers every requested episode, a single-root Series pack may replace the root through two separate operations. Before import, its snapshot must prove one transferable Series root and no conflicting TMDB marker; it does not need to enumerate or prove every episode because completeness is established only from post-scan Emby facts. First create a provisional new root with `resource.add_new` input `{candidate:{candidateId,targetCid},scan:{libraryId,libraryName,mediaFolder}}`; do not include `seriesId`, `numberingMode`, or `requestedEpisodes`, which belong to `series.update`. The add-new pipeline owns transfer, STRM generation, and its Emby scan, so do not create a separate `library.scan`. After that pipeline finishes, re-read all same-TMDB Series and require the new Series to have `missingCount=0`, the old Series to remain present, and the group to be unambiguous. Then create a critical `dedup.delete` plan with the complete new Series as keeper and every old incomplete same-TMDB Series as an explicit removal target. Never delete an old root before the replacement passes these checks. Keep the old root and stop when the new root is incomplete, has another TMDB identity, or leaves an ambiguous group. Full-pack replacement applies only when `tmdbStatus=Ended`; never use it for an airing Series.
+
+The Host derives the library name, existing Series folder and path, TMDB binding, library-root CID, and Series CID. Only 115 snapshot evidence can prove every requested season or absolute episode for an in-place update; transfer and STRM generation stay inside the existing 115 and STRM Series roots.
+
+The Host's final verification does not require a 115 access code. An in-place update succeeds only when the requested episodes leave the target Series gaps while the same Series ID, path, and TMDB binding remain canonical and no duplicate same-TMDB Series exists. A full-pack replacement succeeds only after the new complete Series remains as the sole same-TMDB keeper and `dedup.delete` verifies the old Emby, STRM, and 115 roots are absent. Never infer completion from transfer acceptance, path visibility, or TMDB status alone.
+
+Each write runs its pipeline strictly serially. Archive only when deterministic facts show the series ended and the required episode set is complete; use `series.archive`, which must disclose CloudDrive and STRM moves plus Emby notification.

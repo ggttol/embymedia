@@ -1,0 +1,51 @@
+{
+	admin 127.0.0.1:2019
+}
+
+# Self-use HTTP mode (no TLS, no ACME, no Authelia forward_auth gate).
+# The http:// scheme forces Caddy to serve plain HTTP (no automatic HTTPS).
+# The webhook bridge (query key -> X-Webhook-Secret header) is preserved so
+# CloudDrive events still reach the DSH host. /internal/* stays 404.
+# For the operator's own use over the loopback/tunnel; not public-facing.
+
+http://dsh.gaotao.cc {
+	@internal path /internal/*
+	respond @internal 404
+	@webhook path /hooks/clouddrive2
+	handle @webhook {
+		route {
+			request_header X-Webhook-Secret {query.key}
+			rewrite * {path}?
+			reverse_proxy 127.0.0.1:3080
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3080
+	}
+}
+
+# CloudDrive2 container-local sender. Only the webhook path is reachable on
+# this authority; all other requests fail closed.
+http://host.docker.internal {
+	@webhook path /hooks/clouddrive2
+	handle @webhook {
+		route {
+			request_header X-Webhook-Secret {query.key}
+			rewrite * {path}?
+			reverse_proxy 127.0.0.1:3080 {
+				header_up Host dsh.gaotao.cc
+			}
+		}
+	}
+	handle {
+		respond 404
+	}
+}
+
+http://emby.gaotao.cc {
+	reverse_proxy 127.0.0.1:8096
+}
+
+http://auth.gaotao.cc {
+	reverse_proxy 127.0.0.1:9091
+}

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "validatedAt": "2026-08-29T21:05:00Z",
+  "host": "debian-13 (192.168.167.13 reachable via ssh -p 8322 gaotao@gaotao.cc)",
+  "release": "/opt/embymedia/current -> /opt/embymedia/releases/20260829Tstage4",
+  "baseProvisioned": true,
+  "node": "22.19.0",
+  "pnpm": "11.7.0",
+  "docker": "26.1.5+dfsg1",
+  "compose": "2.26.1-4",
+  "artifacts": {
+    "directory": "/tmp/embymedia-pre-20260829T1210Z",
+    "manifestSha256": "b568d7b745507ef586e4e767ecf944d71739fa7651ee360edc3fbc688e873f47",
+    "artifactCount": 8,
+    "integrity": "ok"
+  },
+  "images": {
+    "clouddrive2": {"ref": "clouddrive2-local:1.0.13", "id": "sha256:b4ad3a6f59b877ccd486a3b76f0bc3952d578d1d0612b04c133823fdaa3f3f5d", "verified": true},
+    "emby": {"ref": "emby/embyserver:latest", "id": "sha256:88166708c7ab776e6c46ebe682662d519001383b6f52eee5f7ad4ad11c6d835c", "verified": true},
+    "postgres": {"ref": "postgres:16-alpine", "id": "sha256:e684c11a6c7c127c1b7602063cc6a13db0a12b62dfd770d83936c089751d498d", "verified": true},
+    "authelia": {"ref": "authelia/authelia:4", "id": "sha256:4a87c7d1276f351a9d2b2139a676bb9aba16692825c858523c9c002744d0aa59", "verified": true}
+  },
+  "services": {
+    "embymedia-stack": "active",
+    "embymedia-control-helper": "active",
+    "embymedia-dsh": "active"
+  },
+  "containers": {
+    "embymedia-postgres-1": "healthy",
+    "embymedia-clouddrive2-1": "healthy (FUSE mounted)",
+    "embymedia-emby-1": "healthy (ServerName '如果天有情', 4.9.5.0)",
+    "embymedia-authelia-1": "healthy (/api/health OK)"
+  },
+  "migration": {
+    "inventoryTables": {"app_settings": 21, "task_runs": 264, "schedule_jobs": 7, "undo_entries": 734},
+    "importReport": "/opt/embymedia/current/migration/import-report.json",
+    "verifyReport": "/opt/embymedia/current/migration/verify-report.json",
+    "verifyOk": true,
+    "activeSchedules": 0,
+    "runningTasks": 0,
+    "credentialsConfigured": ["emby-api-key", "c115-cookie", "tmdb-api-key", "clouddrive-webhook-secret"],
+    "optionalCredentialsAutoResolved": ["resource-api-token", "outbound-proxy-url"]
+  },
+  "runtimeChecks": "check-runtime.sh passes as embymedia (docker.sock unreadable by embymedia)",
+  "deepseek": {
+    "keyConfigured": true,
+    "source": "/etc/embymedia/secrets/deepseek-api-key (root:embymedia 0640)",
+    "credentialRef": "DEEPSEEK_API_KEY stored in /srv/embymedia/data/dsh/.credentials.yaml (0600 embymedia:embymedia)",
+    "envShadowRemoved": true,
+    "probe": "POST https://api.deepseek.com/chat/completions -> HTTP 200, content=pong, model=deepseek-v4-flash",
+    "provider": "deepseek-official",
+    "defaultModel": "deepseek-v4-flash",
+    "thinking": "enabled",
+    "reasoningEffort": "high"
+  },
+  "web": {
+    "dsh": "http://127.0.0.1:3080/ -> HTTP 401 (auth gate)",
+    "emby": "http://127.0.0.1:8096/System/Info/Public -> 200",
+    "authelia": "http://127.0.0.1:9091/api/health -> 200 OK"
+  },
+  "pendingCutoverGates": [
+    "browser visual confirmation of EmbyMedia cards",
+    "actual movie and episode playback plus software transcode",
+    "CloudDrive real event webhook",
+    "plan/task/undo interactive approval flow",
+    "14-day observation period"
+  ]
+}

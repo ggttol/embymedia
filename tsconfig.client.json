@@ -101,6 +101,7 @@
     { "path": "./packages/client/ui-session" },
     { "path": "./packages/client/web" },
     { "path": "./packages/context/file-reference" },
+    { "path": "./packages/embymedia/ui" },
     { "path": "./apps/web" }
   ]
 }

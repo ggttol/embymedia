@@ -326,6 +326,10 @@
     { "path": "./packages/lsp/lsp" },
     { "path": "./packages/lsp/lsp-stdio" },
     { "path": "./packages/lsp/tool-lsp" },
+    { "path": "./packages/embymedia/operations" },
+    { "path": "./packages/embymedia/preset" },
+    { "path": "./apps/embymedia-migrate" },
+    { "path": "./apps/embymedia-control-helper" },
     { "path": "./apps/cli" }
   ]
 }

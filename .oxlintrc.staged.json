@@ -18,5 +18,17 @@
     "**/*.mjs",
     "**/*.config.ts",
     "packages/client/tsdown.client.ts"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "packages/embymedia/**/*.{ts,tsx}",
+        "apps/embymedia-*/**/*.{ts,tsx}"
+      ],
+      "rules": {
+        "@stylistic/max-len": "off",
+        "typescript/no-non-null-assertion": "off"
+      }
+    }
   ]
 }

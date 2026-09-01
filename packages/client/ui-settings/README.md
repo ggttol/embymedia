@@ -94,7 +94,7 @@ None; this package neither assembles nor sends a provider request.
 
 These limits define where the settings transport cannot reach; they are current package constraints.
 
-- **Non-loopback pages get no durable settings** — this Client keeps Host persistence disabled there, so a scope starts `unavailable` and never crosses the wire; every row it backs is inert even though Connection authentication covers the API.
+- **Non-loopback pages get a redacted read-only projection** — authenticated remote browsers may load provider/settings catalogs, but every bound scope reports `writable: false` and all mutations are inert. Process-local `memory` mode remains available to embedders that must never cross the settings wire.
 
 <a id="dev-note"></a>
 ### Dev Note

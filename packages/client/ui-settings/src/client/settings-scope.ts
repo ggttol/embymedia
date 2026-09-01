@@ -29,7 +29,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/types'
 // cordis `Events` entry (and with it the branded `SettingsNamespace`).
 import type {} from '@deepseek-ai/dsh-settings/types'
 import type { SettingsSchemaService } from './schema.ts'
-import type { SettingsScope, SettingsScopeSnapshot, SettingsScopeSpec } from './settings-contract.ts'
+import type { SettingsPersistence, SettingsScope, SettingsScopeSnapshot, SettingsScopeSpec } from './settings-contract.ts'
 import { SettingsDescribeMirror, type SettingsDescribeFace, type SettingsWireFace } from './settings-mirror.ts'
 
 type SettingsFace = SettingsWireFace
@@ -57,18 +57,18 @@ export class SettingsScopeController<T> implements SettingsScope<T> {
    * @param api - settings wire face (writes only; reads ride the mirror).
    * @param spec - namespace identity and optional narrowing decoder.
    * @param mirror - the shared describe mirror this scope derives from.
-   * @param persistence - client-selected Host persistence; non-loopback pages may remain process-local.
+   * @param persistence - Host read/write, authenticated read-only Host projection, or process-local memory.
    * @param schema - settings-owned schema operations.
    */
   constructor(
     private readonly api: SettingsFace,
     private readonly spec: SettingsScopeSpec<T>,
     private readonly mirror: SettingsDescribeMirror,
-    private readonly persistence: 'host' | 'memory',
+    private readonly persistence: SettingsPersistence,
     private readonly schema: SettingsSchemaService,
   ) {
     this.store = createSnapshotStore<SettingsScopeSnapshot<T>>({
-      status: persistence === 'host' ? 'loading' : 'unavailable',
+      status: persistence === 'memory' ? 'unavailable' : 'loading',
       value: undefined,
       base: undefined,
       user: undefined,
@@ -76,7 +76,7 @@ export class SettingsScopeController<T> implements SettingsScope<T> {
       writable: false,
       mode: persistence,
     })
-    if (persistence === 'host') {
+    if (persistence !== 'memory') {
       this.unsubscribe = mirror.subscribe(() => { this.derive() })
       this.derive()
     }
@@ -169,7 +169,7 @@ export class SettingsScopeController<T> implements SettingsScope<T> {
   }
 
   private enqueue(operation: () => Promise<void>): Promise<void> {
-    if (this.persistence === 'memory' || this.disposed) return Promise.resolve()
+    if (this.persistence !== 'host' || this.disposed) return Promise.resolve()
     const task = this.tail.then(async () => {
       if (this.disposed) return
       await operation()
@@ -288,7 +288,7 @@ export class SettingsScopeBinder extends Service {
       this.wire,
       spec,
       this.mirror,
-      connection.isLoopback ? 'host' : 'memory',
+      connection.isLoopback ? 'host' : 'read-only',
       this.schema,
     )
     ctx.effect(() => {

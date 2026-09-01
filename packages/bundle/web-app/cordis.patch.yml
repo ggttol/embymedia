@@ -219,6 +219,10 @@
     - id: ui-tool
       name: '@deepseek-ai/dsh-client-ui-tool'
 
+    # Product EmbyMedia operations cards: replay-stable keyed Tool views.
+    - id: embymedia-client-ui
+      name: '@embymedia/dsh-client-ui-operations'
+
     - id: ui-cordis
       name: '@deepseek-ai/dsh-client-ui-cordis'
 

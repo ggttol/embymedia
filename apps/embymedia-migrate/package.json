@@ -1,0 +1,17 @@
+{
+  "name": "@embymedia/migrate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "embymedia-migrate": "lib/bin.js" },
+  "scripts": { "bundle": "tsdown", "start": "tsx src/bin.ts", "test": "vitest run --root ../.. apps/embymedia-migrate/tests --passWithNoTests" },
+  "dependencies": {
+    "@deepseek-ai/dsh-credentials": "workspace:^",
+    "@deepseek-ai/dsh-credentials-local": "workspace:^",
+    "@deepseek-ai/cordis": "workspace:^",
+    "@embymedia/dsh-operations": "workspace:*",
+    "commander": "^15.0.0",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": { "@types/pg": "^8.15.5" }
+}

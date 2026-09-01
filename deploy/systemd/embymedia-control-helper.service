@@ -1,0 +1,29 @@
+[Unit]
+Description=EmbyMedia restricted CloudDrive control helper
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+Before=embymedia-dsh.service
+
+[Service]
+Type=simple
+User=root
+Group=embymedia
+WorkingDirectory=/opt/embymedia/current
+EnvironmentFile=/etc/embymedia/stack.env
+RuntimeDirectory=embymedia-control
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/bin/node /opt/embymedia/current/apps/embymedia-control-helper/lib/bin.js --socket /run/embymedia-control/control.sock --compose /opt/embymedia/current/deploy/compose.yml --env-file /etc/embymedia/stack.env --webhook-toml /srv/embymedia/data/clouddrive/config/webhooks/webhook.toml
+Restart=on-failure
+RestartSec=3
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/embymedia-control /srv/embymedia/data/clouddrive/config/webhooks
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

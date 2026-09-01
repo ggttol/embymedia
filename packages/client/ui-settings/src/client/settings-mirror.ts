@@ -12,6 +12,7 @@
 import type { ClientRemote, SettingsNamespaceView } from '@deepseek-ai/dsh-api-remotes/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 
+import type { SettingsPersistence } from './settings-contract.ts'
 /**
  * The settings Remote methods browser configuration surfaces may reach: the
  * redacted read plus merge, replacement, and path-addressed writes.
@@ -93,14 +94,14 @@ export class SettingsDescribeMirror implements SettingsDescribeFace {
 
   /**
    * @param api - settings wire face.
-   * @param persistence - client-selected Host persistence; non-loopback pages may remain process-local.
+   * @param persistence - Host read/write, authenticated read-only Host projection, or process-local memory.
    */
   constructor(
     private readonly api: SettingsFace,
-    private readonly persistence: 'host' | 'memory' = 'host',
+    private readonly persistence: SettingsPersistence = 'host',
   ) {
     this.store = createSnapshotStore<SettingsMirrorSnapshot>({
-      status: persistence === 'host' ? 'idle' : 'unavailable',
+      status: persistence === 'memory' ? 'unavailable' : 'idle',
       view: undefined,
       error: null,
     })
@@ -204,7 +205,8 @@ export class SettingsDescribeMirror implements SettingsDescribeFace {
         // A write answer invalidates a document read before that write committed.
         if (generation !== this.generation) continue
         if ('view' in outcome) {
-          this.store.set({ status: 'ready', view: outcome.view, error: null })
+          const view = this.persistence === 'read-only' ? { ...outcome.view, writable: false } : outcome.view
+          this.store.set({ status: 'ready', view, error: null })
         } else {
           const held = this.store.getSnapshot()
           // No answer yet: fall back to idle so `ensure` retries; with one, the

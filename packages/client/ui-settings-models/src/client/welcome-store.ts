@@ -1,9 +1,9 @@
 /**
- * Welcome-notice state derived from the welcome settings scope. The scope is
- * the transport: a loopback browser follows the durable Host section, while a
- * remote browser's memory-mode scope never answers and the acknowledgement
- * stays process-local here.
+ * Welcome-notice state derived from the welcome settings scope. Loopback uses
+ * durable Host writes; remote read-only and memory scopes keep acknowledgement
+ * process-local while still honoring an already persisted Host value.
  */
+
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -51,8 +51,7 @@ export class WelcomeNoticeStore {
   private following: (() => void) | undefined
 
   /**
-   * @param scope - the welcome settings namespace scope; its memory mode is
-   * what keeps a remote browser process-local.
+   * @param scope - the welcome settings namespace scope; non-host modes keep acknowledgement process-local.
    */
   constructor(private readonly scope: SettingsScope<WelcomeSection>) {}
 
@@ -73,7 +72,7 @@ export class WelcomeNoticeStore {
    * @returns true when the selected persistence mode holds the acknowledgement.
    */
   async acknowledge(): Promise<boolean> {
-    if (this.scope.getSnapshot().mode === 'memory') {
+    if (this.scope.getSnapshot().mode !== 'host') {
       this.localAcknowledged = true
       this.derive()
       return true
@@ -109,6 +108,16 @@ export class WelcomeNoticeStore {
       this.store.update((state) => {
         state.status = 'ready'
         state.acknowledged = this.localAcknowledged
+        state.error = null
+      })
+      return
+    }
+    if (scope.mode === 'read-only') {
+      const durableAcknowledged = scope.status === 'ready'
+        && scope.value?.[WELCOME_NOTICE_ACK_FIELD] === WELCOME_NOTICE_VERSION
+      this.store.update((state) => {
+        state.status = scope.status === 'loading' ? 'loading' : 'ready'
+        state.acknowledged = durableAcknowledged || this.localAcknowledged
         state.error = null
       })
       return

@@ -73,6 +73,9 @@
       "path": "../workspace-controller/tsconfig.client.json"
     },
     {
+      "path": "../../embymedia/operations"
+    },
+    {
       "path": "../../typert/protocol"
     }
   ]

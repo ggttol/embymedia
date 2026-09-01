@@ -1,63 +1,114 @@
-# DeepSeek Harness
+# EmbyMedia Operations
 
 English | [中文](README.zh.md)
 
-DeepSeek Harness (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
+Private self-hosted media operations for Emby, CloudDrive2, 115, Hermes, and DeepSeek Harness.
 
-It is built on an **everything-is-a-plugin** architecture and powered by [Cordis](https://github.com/cordiverse/cordis), whose design is described in [_A Programming Paradigm for Spatiotemporal Composability_](https://arxiv.org/abs/2608.25512).
+This repository extends [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) with an EmbyMedia business package, migration utilities, hardened Debian deployment files, a browser operations console, and a full MCP adapter for Weixin-driven Hermes operations.
 
-Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://deepseek-harness.github.io/deepseek-harness/)
+<a id="run"></a>
 
-## Developer preview
+## Current deployment
 
-DeepSeek Harness is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
+The supported deployment runs on Debian 13. Emby, CloudDrive2, PostgreSQL, the DSH Web application, the HTTP login service, Caddy, and the Hermes messaging gateway run on one host. Public forwarding terminates at Caddy; DSH, Emby, CloudDrive2, PostgreSQL, and the EmbyMedia MCP application route listen only on loopback or container-private addresses.
 
-Review the [safety notice](SAFETY.md) before running the project.
+The repository does not contain production credentials. Runtime secrets live under `/etc/embymedia/secrets/` and service environment files under `/etc/embymedia/`.
 
-## Run
+## Capabilities
 
-### Run from `npm`
+- Inventory Emby libraries, items, STRM files, users, tasks, plans, and audit records.
+- Return exact item counts by Emby type, including `Movie`, `Series`, and `Episode`.
+- Inspect continuing-series status and aired missing episodes.
+- Search 115 resources, preserve protected-share credentials outside model-visible results, and inspect recursive leaf evidence.
+- Create canonical plans for scans, resource onboarding, series repair, metadata changes, user policy changes, cleanup, deletion, and undo.
+- Execute plans with write-mode enforcement, target revalidation, audit records, partial-state handling, and independent verification.
+- Operate from either the DSH browser or Hermes over Weixin with the same business dispatcher and structured results.
 
-Install `Node.js`, then run:
+## Hermes and MCP
 
-```sh
-npx @deepseek-ai/dsh web
+Hermes connects to the local `embymedia` MCP server over stdio. The adapter exposes the same thirteen wire tools as DSH:
+
+```text
+embymedia_health      embymedia_library     embymedia_resource
+embymedia_series      embymedia_analyze     embymedia_task
+embymedia_audit       embymedia_user        embymedia_schedule
+embymedia_config      embymedia_plan        embymedia_execute
+embymedia_verify
 ```
 
-The command starts the Web UI at `http://127.0.0.1:3080` by default and opens it in the default browser for a local launch. An SSH launch only prints the host URL because the SSH client or editor owns the local forwarded address. Pass `--no-open` to run the server without opening a browser. See [Web UI guide](docs/user/guide/index.md).
+The MCP process forwards calls to `POST /internal/embymedia/tool` on the DSH loopback listener. Caddy rejects `/internal/*`, and the Host rejects non-loopback peers. The stable `hermes-weixin` session keeps resource candidate IDs and operation-plan ownership valid across Weixin turns.
 
-### Run from source
+Example Weixin requests:
 
-To run from a repository checkout:
-
-```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
-pnpm install
-pnpm run build
-pnpm dsh web
+```text
+现在有多少部电影？必须调用 embymedia MCP 精确统计。
+检查电视剧追更库还有哪些缺集。
+搜索这部剧的 115 资源，检查叶文件证据并创建补集计划。
+执行刚才的计划并验证最终结果。
+列出最近失败或部分完成的任务。
 ```
 
-`pnpm run build` prepares the repository artifacts. `pnpm dsh web` uses those built artifacts without rebuilding.
+Every mutation follows `plan -> execute -> verify`. The private self-use deployment auto-allows the approval request, but write mode, canonical plan hashes, target revalidation, audit, and verification remain enforced. Destructive operations still require an explicit user request naming the intended outcome.
 
-## Community and support
+## Repository layout
 
-- Submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
-- Add the [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic to your plugin repository for discoverability.
-- Join <a href="https://discord.gg/Ycq5dCaS4">DeepSeek Harness Discord community</a>.
+```text
+packages/embymedia/operations/
+packages/embymedia/preset/
+packages/embymedia/ui/
+apps/embymedia-migrate/
+apps/embymedia-control-helper/
+deploy/
+migration/
+```
 
-## Contributing
+The EmbyMedia domain, database, client, planning, execution, and verification modules remain ordinary TypeScript classes. DSH-specific code is limited to the Host/tool adapters. Hermes uses the Host's loopback application route rather than a second SQL implementation, so both clients share one application path.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+<a id="run-from-source"></a>
 
 ## Development
 
-Start with the [development guide](docs/development.md) and [architecture documentation](docs/architecture.md).
+Prerequisites: Node.js 22.19 or newer, pnpm, and PostgreSQL for database-backed tests.
 
-For agents, follow [AGENTS.md](AGENTS.md).
+```sh
+pnpm install
+pnpm exec tsc -b packages/embymedia/operations/tsconfig.json
+pnpm exec vitest run --root . packages/embymedia/operations/tests --no-file-parallelism
+pnpm --filter @embymedia/dsh-operations bundle
+```
 
-## License
+The MCP deployment package is self-contained:
 
-[MIT](LICENSE)
+```sh
+cd deploy/hermes/embymedia-mcp
+npm ci --ignore-scripts
+node --check src/index.js
+```
 
-Third-party dependencies and their licenses are disclosed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## Deployment
+
+Deployment files assume `/opt/embymedia/current` points at the active release and `/srv/embymedia/data` owns persistent data. Review every file under `deploy/` before applying it to another host; network names, paths, UIDs, and storage layout are deployment-specific.
+
+After updating the operations Host:
+
+```sh
+pnpm exec tsc -b packages/embymedia/operations/tsconfig.json
+pnpm --filter @embymedia/dsh-operations bundle
+sudo systemctl restart embymedia-dsh.service
+```
+
+Hermes runs its messaging gateway as a user systemd service and discovers the local MCP server from `~/.hermes/config.yaml`. Only one Hermes gateway may poll a given Weixin iLink bot account.
+
+## Safety
+
+- Never commit `.env`, API keys, cookies, passwords, Weixin tokens, 115 access codes, or generated credential stores.
+- Keep the DSH tool route on loopback and block `/internal/*` at every reverse proxy.
+- Keep the scheduler disabled unless its write-policy path is explicitly reviewed and enabled.
+- Treat `previewed`, `queued`, `running`, and `verifying` as non-terminal states; only verified `done` is success.
+- Preserve local encrypted backups and complete an isolated restore before destructive infrastructure changes.
+
+## Upstream and license
+
+DeepSeek Harness remains the upstream framework. Preserve its license and third-party notices when rebasing or redistributing this private derivative.
+
+[MIT](LICENSE) — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

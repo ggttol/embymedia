@@ -44,12 +44,14 @@ afterEach(() => {
   vi.unstubAllEnvs()
   internals.resolveDistIndex = originalResolve
   internals.openBrowser = originalOpenBrowser
+  internals.writeLaunchUrl = originalWriteLaunchUrl
   if (dist !== undefined) rmSync(dist, { recursive: true, force: true })
   dist = undefined
 })
 
 const originalResolve = internals.resolveDistIndex
 const originalOpenBrowser = internals.openBrowser
+const originalWriteLaunchUrl = internals.writeLaunchUrl
 
 type BrowserLauncher = ChildProcess & { stderr: PassThrough }
 
@@ -179,6 +181,27 @@ describe('web-app runtime glue', () => {
     const assembly = await ctx.systemPrompt.assemble()
     expect(assembly.sections.find(entry => entry.name === 'app:web-surface')?.text)
       .toContain('rebuilding the affected Web artifacts')
+    await ctx.fiber.dispose()
+  })
+
+  it('writes the authenticated URL to a supervisor file without logging it', async () => {
+    stageDist()
+    const ctx = new Context()
+    ctx.provide('webServer', fakeHttpServer().server)
+    provideConnection(ctx)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const writeLaunchUrl = vi.fn()
+    internals.writeLaunchUrl = writeLaunchUrl
+    apply(ctx, new Config({
+      openBrowser: false,
+      printUrl: false,
+      launchUrlFile: '/run/embymedia/dsh-launch-url',
+      surfaceContext: false,
+      trustedHosts: [],
+    }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(writeLaunchUrl).toHaveBeenCalledWith('/run/embymedia/dsh-launch-url', 'http://127.0.0.1:4567/?token=test-token')
+    expect(log).not.toHaveBeenCalled()
     await ctx.fiber.dispose()
   })
 

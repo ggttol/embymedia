@@ -33,7 +33,7 @@ function acknowledgedNamespace(version: string, revision = 1) {
 /** The welcome store over a real mirror-derived scope and a fake wire. */
 function buildWelcome(
   api: { describe?: ReturnType<typeof vi.fn>; mutate?: ReturnType<typeof vi.fn> },
-  persistence: 'host' | 'memory' = 'host',
+  persistence: 'host' | 'read-only' | 'memory' = 'host',
 ) {
   const wire = { settings: api } as never
   const mirror = new SettingsDescribeMirror(wire, persistence)
@@ -60,6 +60,19 @@ describe('WelcomeNoticeStore', () => {
     await controller.load()
     expect(controller.store.getSnapshot()).toEqual({ status: 'ready', acknowledged: true, error: null })
     expect(describeCall).not.toHaveBeenCalled()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it('reads remote Host settings but keeps new acknowledgement process-local', async () => {
+    const describeCall = vi.fn().mockResolvedValue(ok({ writable: true, hasDocument: true, namespaces: [] }))
+    const mutate = vi.fn()
+    const { mirror, controller } = buildWelcome({ describe: describeCall, mutate }, 'read-only')
+    await mirror.load()
+    await controller.load()
+    expect(controller.store.getSnapshot()).toEqual({ status: 'ready', acknowledged: false, error: null })
+    await expect(controller.acknowledge()).resolves.toBe(true)
+    expect(controller.store.getSnapshot()).toEqual({ status: 'ready', acknowledged: true, error: null })
+    expect(describeCall).toHaveBeenCalledOnce()
     expect(mutate).not.toHaveBeenCalled()
   })
 

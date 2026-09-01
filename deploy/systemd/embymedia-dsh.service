@@ -1,0 +1,44 @@
+[Unit]
+Description=DeepSeek Harness for EmbyMedia
+Wants=network-online.target
+After=network-online.target embymedia-stack.service embymedia-control-helper.service
+Requires=embymedia-stack.service embymedia-control-helper.service
+
+[Service]
+Type=simple
+User=embymedia
+Group=embymedia
+WorkingDirectory=/opt/embymedia/current
+EnvironmentFile=/etc/embymedia/dsh.env
+Environment=DSH_HOME=/srv/embymedia/data/dsh
+Environment=DSH_TELEMETRY_MODE=DISABLED
+Environment=DSH_TELEMETRY_DISABLED=1
+Environment=EMBYMEDIA_PRESET_ROOT=/opt/embymedia/current/packages/embymedia/preset/presets
+ExecStartPre=/opt/embymedia/current/deploy/scripts/check-runtime.sh
+ExecStart=/usr/local/bin/pnpm dsh --profile web --patch /opt/embymedia/current/deploy/cordis/embymedia.patch.yml -- --host 127.0.0.1 --port 3080
+Restart=on-failure
+RestartSec=5
+UMask=0077
+RuntimeDirectory=embymedia
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/srv/embymedia/data/dsh /srv/embymedia/data/strm /srv/embymedia/backups
+ReadOnlyPaths=/srv/embymedia/data/clouddrive/CloudNAS/CloudDrive /opt/embymedia/current /etc/embymedia
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

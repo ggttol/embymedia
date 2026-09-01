@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApprovalPanel } from '../src/client/ApprovalPanel.tsx'
 import type { ApprovalComposerProps } from '../src/client/contract/slots.ts'
 import { PendingApproval } from '../src/client/contract/slots.ts'
+import { en, zh } from '../src/client/locales.ts'
 import { apply, inject } from '../src/client/index.ts'
 import { apply as nodeApply } from '../src/index.ts'
 import * as ApprovalInvariant from '../src/invariant.ts'
@@ -114,6 +115,15 @@ const id = (value: string): SessionId => value as SessionId
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+describe('approval bilingual locale', () => {
+  it('keeps Chinese visible in both locale modes', () => {
+    expect(zh.allowOnce).toBe('仅允许一次')
+    expect(en.allowOnce).toContain('仅允许一次')
+    expect(en.reject).toContain('拒绝')
+    expect(en.waiting).toContain('等待审批')
+  })
 })
 
 describe('PendingApproval', () => {

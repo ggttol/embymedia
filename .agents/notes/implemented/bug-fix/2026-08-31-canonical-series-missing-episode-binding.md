@@ -1,0 +1,45 @@
+# Agent Note: Canonical Series binding owns missing-episode completion
+
+Status: implemented
+
+English | [中文](2026-08-31-canonical-series-missing-episode-binding.zh.md)
+
+## Problem
+
+A missing-episode repair extends an existing Emby Series; it is not new-root onboarding. A transferred 115 entry, generated STRM path, or visible Emby path proves that storage and scanning progressed, but not that Emby attached every requested episode to the intended Series. A second library-root folder can be visible while the original Series retains its gaps, and Emby can expose a duplicate Series with the same TMDB identity.
+
+A 115 access code is transient secret material used to inspect and transfer a protected share. Completion must remain verifiable after that secret leaves the plan and Session. Durable Series, TMDB, episode, and placement facts therefore own the final result.
+
+## Decision
+
+Missing-episode work begins with `series.gaps_summary`, whose bounded inventory returns only incomplete Series without paths or per-episode payloads, followed by `series.resource_plan` for one canonical `libraryId` and `seriesId`. The resource plan returns the canonical Series, its numbering mode, search query, exact aired `requestedEpisodes`, and search results whose protected-share credentials are replaced by opaque, session-bound candidate IDs. Before planning, `resource.inspect_candidate` snapshots one same-session ID and returns bounded sanitized top-level roots and recursive evidence without the share URL or access code. Candidate discovery searches only 115 resources with the Series name plus episode keys and, when that returns no candidates, retries once with the Series name alone; the returned query identifies the result set shown to the model. The write input is exactly `{libraryId,seriesId,numberingMode?,candidate,requestedEpisodes:[{season,episode,absolute?}]}` and uses `series.update`. `resource.add_new` creates new library-root entries only and never repairs gaps in an existing Series.
+
+An ended Series with no candidate whose 115 snapshot proves every requested gap uses a two-plan root replacement rather than weakening in-place `series.update` evidence. The replacement candidate snapshot must prove one transferable Series root and no conflicting TMDB marker, but it does not need to enumerate every episode. `resource.add_new` creates a provisional independent library root; post-scan Emby facts own completeness. They must identify one new same-TMDB Series with `missingCount=0`, keep every old Series present, and show the complete same-TMDB group without ambiguity. A separately approved `dedup.delete` then names the complete new Series as keeper and every old incomplete Series as removal targets. The old roots remain untouched when onboarding, TMDB binding, episode completeness, or duplicate-group identity fails. Airing Series never use this replacement path.
+
+The Host resolves the library name, direct-child Series folder and path, Emby TMDB identity, 115 library-root CID, and the unique existing 115 Series CID. A bounded recursive 115 share snapshot keeps selected top-level IDs as the only transfer units and hashes descendant IDs, names, paths, types, and sizes as evidence. When descendants exist, only supported video leaf filenames prove requested season or absolute episodes; aggregate share titles, root ranges, and parent-directory ranges remain identity hints and cannot claim files absent from the tree. A flat share without descendants may use only a selected supported video root filename. Depth beyond 20 or more than 10,000 descendant entries fails before transfer. The model-supplied display title can reject a conflicting TMDB marker but cannot prove content. Missing, ambiguous, conflicting, incomplete, or oversized matches fail before transfer.
+
+Execution saves resources inside their canonical 115 destination and waits until every media leaf bound by the plan is visible through CloudDrive. New-Series batch onboarding and existing-Series batch repair both accept 1–100 opaque candidates, bind every snapshot and staged extraction code, transfer every share, and scan once. Existing-Series repair additionally unions leaf episode keys, rejects duplicate paths and uncovered requested gaps, and keeps the canonical Series ID, path, TMDB identity, numbering mode, and destination CID unchanged across preview, approval, execution, and verification.
+
+Final verification uses the plan's non-secret canonical facts and current Emby state. It requires the pipeline verification and scan to finish, the target Series to remain readable with the same ID, path, and TMDB identity, every requested season or absolute episode to disappear from that Series' aired gaps, and that Series to be the only library Series with the TMDB identity. Verification does not reopen the protected share and does not require its 115 access code.
+
+Approved cleanup binds exact Emby items, path/type/TMDB facts, bounded recursive STRM and 115 manifests, and exact 115 parent/ID/name/type facts. `media.delete` removes explicit items and complete media-root selections. Every Emby media item below a shared root must be selected; non-owning items become Emby-only targets and one final owner removes the STRM and 115 root once. Execution requests Emby deletion before storage removal. When Emby rejects item deletion, execution removes the exact approved storage, refreshes the library, and waits for records whose sources are absent to disappear. `dedup.delete` remains the distinct keep-one operation. Post-effect cancellation, audit failure, component failure, or failed fact verification becomes partial, and a Session-owner-bound retry resumes only the same targets.
+
+## Testing
+
+Focused Series-domain tests pin TMDB markers, canonical paths, season and absolute episode ranges, paged status, explicit numbering mode, typed blockers, recursive share evidence, misleading directory and pack-title rejection, and bounded `resource_plan` output. Host action tests invoke same-Session candidate inspection and paged 115 direct-child inspection, proving secret and URL omission, sanitized directory flags, evidence caps, and complete compact coverage counts. Operation-runtime and service tests pin snapshot hashes, occupied-root rejection, CID uniqueness, protected-share verification without a staged access code, post-approval revalidation, post-effect cancellation accounting, and Series/TMDB/episode completion. Cleanup, path, client, mutation, execution, and verification tests pin complete-set preflight before effects, exact Emby/STRM/115 bindings, bounded streamed manifests, explicit keepers, target-bound approval text, terminal ownership checks, resumable verification, and owner-bound partial retries.
+
+## Alternatives considered
+
+**Treat path visibility as completion.** Rejected because visibility establishes storage discovery, not episode ownership. It can pass for a second root or for files that Emby does not bind to the requested episodes of the target Series.
+
+**Use `resource.add_new` as direct missing-episode completion.** Rejected because add-new owns a new library-root entry and verifies root visibility, not the existing Series ID, gap set, or Series CID. The ended-Series replacement path uses add-new only for a provisional root and does not report completion until current same-TMDB facts prove the new root is complete and a separate `dedup.delete` verifies every old incomplete root is absent.
+
+**Resolve the destination from a title or folder string alone.** Rejected because names can drift or collide. Resolution combines the canonical Emby folder and TMDB identity with uniqueness checks, and ambiguity fails closed.
+
+**Reopen the 115 share during final verification.** Rejected because the access code is a transient secret and share availability is not the postcondition. Current Emby Series binding and requested episode coverage remain observable without retaining or replaying the credential.
+
+**Delete suspicious roots or duplicate Series by name alone.** Rejected because names do not prove a direct-root relationship or identify the complete duplicate set. Cleanup binds exact Emby, STRM, and 115 snapshots, while duplicate deletion requires the explicit keeper and complete same-TMDB group.
+
+## Consequences
+
+Missing-episode success means that the intended existing Series owns the requested episodes under its canonical TMDB and storage roots, or, for the explicit ended-Series replacement path, that a verified complete new Series is the sole same-TMDB keeper after old-root deletion. Repairs fail closed when canonical binding, resource evidence, destination uniqueness, replacement completeness, or duplicate-group identity is uncertain. A complete-pack replacement costs a second root, a second plan, and critical deletion approval, but never trades the last known old copy for an unverified pack. Final verification remains repeatable without secret recovery, while ordinary new-title onboarding keeps its separate `resource.add_new` contract.

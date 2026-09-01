@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "status": "active",
+  "startedAt": "2026-08-30T14:53:23.455082Z",
+  "endsAt": "2026-09-13T14:53:23.455082Z",
+  "cutoverCommit": "/opt/embymedia/current/migration/cutover-commit.json",
+  "resticSnapshot": "3198aed6",
+  "nasPolicy": {
+    "services": "stopped",
+    "restart": "disabled",
+    "volumes": "retained-read-only-for-observation",
+    "deleteBeforeEndsAt": false
+  },
+  "rollbackPolicy": "debian-restic-or-fix-forward",
+  "completionRequirements": [
+    "No unresolved Debian production incident",
+    "Daily local backup timer remains successful",
+    "Emby, CloudDrive mount, DSH and Caddy remain healthy",
+    "NAS services and legacy ports remain stopped"
+  ]
+}

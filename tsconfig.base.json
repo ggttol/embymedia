@@ -28,6 +28,11 @@
     // not declaration path aliases, keep each package/vendor source compiled
     // under its own tsconfig boundary.
     "paths": {
+      "@embymedia/dsh-operations": ["./packages/embymedia/operations/src/index.ts"],
+      "@embymedia/dsh-operations/*": ["./packages/embymedia/operations/src/*"],
+      "@embymedia/dsh-client-ui-operations": ["./packages/embymedia/ui/src/index.ts"],
+      "@embymedia/dsh-client-ui-operations/*": ["./packages/embymedia/ui/src/*"],
+      "@embymedia/dsh-preset": ["./packages/embymedia/preset/src/index.ts"],
       "@deepseek-ai/cordis": ["./vendor/cordis/src"],
       "@deepseek-ai/cosmokit": ["./vendor/cosmokit/src"],
       "@deepseek-ai/schemastery": ["./vendor/schemastery/src"],

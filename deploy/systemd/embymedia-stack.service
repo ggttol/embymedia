@@ -1,0 +1,20 @@
+[Unit]
+Description=EmbyMedia container stack
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+Before=embymedia-control-helper.service embymedia-dsh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/embymedia/current
+EnvironmentFile=/etc/embymedia/stack.env
+ExecStartPre=/opt/embymedia/current/deploy/scripts/validate-images.sh
+ExecStart=/usr/bin/docker compose --env-file /etc/embymedia/stack.env -f /opt/embymedia/current/deploy/compose.yml up -d --wait
+ExecStop=/usr/bin/docker compose --env-file /etc/embymedia/stack.env -f /opt/embymedia/current/deploy/compose.yml stop
+TimeoutStartSec=600
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

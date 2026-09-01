@@ -4,6 +4,9 @@
 
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 
+
+/** Browser settings persistence and authority mode. */
+export type SettingsPersistence = 'host' | 'read-only' | 'memory'
 /** Client-side sync state of one settings namespace. */
 export interface SettingsScopeSnapshot<T> {
   /**
@@ -27,10 +30,10 @@ export interface SettingsScopeSnapshot<T> {
   user: unknown
   /** Namespace revision fencing the next write; undefined before the first Host view. */
   revision: number | undefined
-  /** Whether the Host document accepts writes; memory mode never does. */
+  /** Whether this browser may persist changes; read-only and memory modes never do. */
   writable: boolean
-  /** `host` syncs with the Host document; `memory` keeps a remote browser process-local. */
-  mode: 'host' | 'memory'
+  /** Host sync with writes, authenticated read-only Host sync, or process-local memory. */
+  mode: SettingsPersistence
 }
 
 /** Domain-owned description of one settings namespace consumed by a browser plugin. */
