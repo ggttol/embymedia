@@ -67,6 +67,10 @@ interface CandidateHarness {
   resolveResourceCandidate(kind: 'series.update' | 'resource.add_new', value: unknown, sessionId: string): { readonly input: unknown; readonly candidateIds: readonly string[] }
 }
 
+interface ResourceToolHarness extends CandidateHarness {
+  invokeTool(tool: 'embymedia_resource', args: Readonly<Record<string, unknown>>, invocation: unknown): Promise<unknown>
+}
+
 describe('opaque resource candidates', () => {
   it('keeps 115 access codes out of model-visible search and persisted plans', () => {
     const service = new EmbymediaService(new Context(), {}) as unknown as CandidateHarness
@@ -136,6 +140,31 @@ describe('opaque resource candidates', () => {
     expect(JSON.stringify(resolved.input)).not.toContain('evil.test')
     expect(JSON.stringify(resolved.input)).not.toContain('password=leak')
   })
+})
+
+it('stages a user-provided protected share as a same-session opaque candidate', async () => {
+  const service = new EmbymediaService(new Context(), {}) as unknown as ResourceToolHarness
+  const invocation = { agent: { id: 'session-1' }, callId: 'call-1', signal: new AbortController().signal, approval: { request: async () => 'rejected' as const } }
+  const staged = await service.invokeTool('embymedia_resource', {
+    action: 'stage_share',
+    input: { title: 'Direct Show', url: 'https://115cdn.com/s/fixture?password=access-code' },
+  }, invocation) as { data: { candidateId: string; title: string; diskType: string; accessCodeStaged: boolean } }
+
+  expect(staged.data).toMatchObject({ title: 'Direct Show', diskType: '115', accessCodeStaged: true })
+  expect(JSON.stringify(staged)).not.toContain('access-code')
+  expect(JSON.stringify(staged)).not.toContain('115cdn.com')
+
+  const resolved = service.resolveResourceCandidate('resource.add_new', {
+    candidate: { candidateId: staged.data.candidateId },
+    scan: { libraryId: 'library', libraryName: 'Shows', mediaFolder: 'Shows' },
+  }, 'session-1')
+  const prepared = prepareOperationInput('resource.add_new', resolved.input)
+  expect(prepared.secret).toBe('access-code')
+  expect(JSON.stringify(prepared.persistedValue)).not.toContain('access-code')
+  expect(() => service.resolveResourceCandidate('resource.add_new', {
+    candidate: { candidateId: staged.data.candidateId },
+    scan: { libraryId: 'library', libraryName: 'Shows', mediaFolder: 'Shows' },
+  }, 'other-session')).toThrow(/another session/)
 })
 
 it('dispatches bounded secret-free candidate and directory inspection', async () => {

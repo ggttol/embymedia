@@ -42,7 +42,7 @@ describe('Embymedia wire tools', () => {
 
   it('advertises only actions with a Host dispatch path', () => {
     expect(QUERY_ACTIONS.embymedia_library).toEqual(['list_libraries', 'summary', 'count_items', 'list_items', 'list_strm', 'gaps_series', 'gaps_library'])
-    expect(QUERY_ACTIONS.embymedia_resource).toEqual(['test_115', 'parse_share', 'snapshot_share', 'inspect_candidate', 'list_entries', 'search', 'library_context', 'duplicates', 'transfer_preview'])
+    expect(QUERY_ACTIONS.embymedia_resource).toEqual(['test_115', 'parse_share', 'stage_share', 'snapshot_share', 'inspect_candidate', 'list_entries', 'search', 'library_context', 'duplicates', 'transfer_preview'])
     expect(QUERY_ACTIONS.embymedia_series).toEqual(['status', 'workbench', 'resource_plan', 'gaps_summary'])
     expect(QUERY_ACTIONS.embymedia_analyze).toEqual(['dashboard', 'smart_summary', 'smart_list', 'smart_get', 'smart_policies', 'smart_inspect', 'smart_workbench', 'smart_verify', 'from_task', 'poster_search'])
   })

@@ -428,10 +428,27 @@ export class EmbymediaService extends TypertRemoteService {
         return this.wireResult('library.items', { libraryId, itemTypes, ...(search === undefined ? {} : { search }), items: page.items, total: page.total, offset, limit: itemLimit, hasMore, nextOffset: hasMore ? offset + page.items.length : null } as unknown as JsonValue)
       }
     }
+    if (tool === 'embymedia_resource' && action === 'stage_share') {
+      const share = parseC115Share(inputString(input.url, 'resource URL'), typeof input.password === 'string' ? input.password : undefined)
+      const candidateId = this.stageResourceCandidate({
+        title: inputString(input.title, 'resource title'),
+        diskType: '115',
+        url: `https://115.com/s/${share.shareCode}`,
+        ...(share.receiveCode === undefined ? {} : { password: share.receiveCode }),
+        sourceChannels: [],
+      }, invocation.agent.id)
+      return this.wireResult('resource.stage_share', {
+        candidateId,
+        title: safeDisplay(inputString(input.title, 'resource title')),
+        diskType: '115',
+        accessCodeStaged: share.receiveCode !== undefined,
+      })
+    }
+
     if (tool === 'embymedia_resource') {
       if (action === 'parse_share') {
         const share = parseC115Share(inputString(input.url, 'resource URL'), typeof input.password === 'string' ? input.password : undefined)
-        if (share.receiveCode !== undefined) throw new EmbymediaError('POLICY_DENIED', 'protected shares must come from resource search candidateId')
+        if (share.receiveCode !== undefined) throw new EmbymediaError('POLICY_DENIED', 'protected shares require a candidateId from resource search or resource.stage_share')
         return this.wireResult('resource.parse_share', { shareCode: share.shareCode, accessCodeStaged: false })
       }
       if (action === 'library_context' || action === 'duplicates') {
@@ -519,7 +536,7 @@ export class EmbymediaService extends TypertRemoteService {
           limit,
           invocation.signal,
         )
-        if (snapshot.receiveCode !== undefined) throw new EmbymediaError('POLICY_DENIED', 'protected shares must come from resource search candidateId')
+        if (snapshot.receiveCode !== undefined) throw new EmbymediaError('POLICY_DENIED', 'protected shares require a candidateId from resource search or resource.stage_share')
         return this.wireResult('resource.snapshot_share', {
           shareCode: snapshot.shareCode,
           title: snapshot.title === undefined ? null : safeDisplay(snapshot.title),
@@ -645,16 +662,21 @@ export class EmbymediaService extends TypertRemoteService {
       operations: { supported },
     }
   }
+  private stageResourceCandidate(item: ResourceSearchItem, sessionId: string): string {
+    const candidateId = randomUUID()
+    const expiresAt = Date.now() + RESOURCE_CANDIDATE_TTL_MS
+    const timer = setTimeout(() => { this.dropResourceCandidate(candidateId) }, RESOURCE_CANDIDATE_TTL_MS)
+    timer.unref()
+    this.resourceCandidates.set(candidateId, { sessionId, item, expiresAt, timer })
+    return candidateId
+  }
+
   private publicResourceSearch(search: ResourceSearchResult, sessionId: string): JsonValue {
     const items = search.items.flatMap((item) => {
       let share: ReturnType<typeof parseC115Share> | undefined
       try { share = parseC115Share(item.url, item.password) } catch {}
       if (item.diskType === '115' && share === undefined) return []
-      const candidateId = randomUUID()
-      const expiresAt = Date.now() + RESOURCE_CANDIDATE_TTL_MS
-      const timer = setTimeout(() => { this.dropResourceCandidate(candidateId) }, RESOURCE_CANDIDATE_TTL_MS)
-      timer.unref()
-      this.resourceCandidates.set(candidateId, { sessionId, item, expiresAt, timer })
+      const candidateId = this.stageResourceCandidate(item, sessionId)
       return [{
         candidateId,
         title: safeDisplay(item.title),
@@ -689,7 +711,7 @@ export class EmbymediaService extends TypertRemoteService {
         const url = typeof candidate.url === 'string' ? candidate.url : ''
         let inlineCode = false
         try { inlineCode = parseC115Share(url, password || undefined).receiveCode !== undefined } catch {}
-        if (password.length > 0 || inlineCode) throw new EmbymediaError('POLICY_DENIED', '115 access-code resources require an opaque candidateId from resource search')
+        if (password.length > 0 || inlineCode) throw new EmbymediaError('POLICY_DENIED', '115 access-code resources require an opaque candidateId from resource search or resource.stage_share')
         return { candidate }
       }
       const staged = this.resourceCandidates.get(candidateId)

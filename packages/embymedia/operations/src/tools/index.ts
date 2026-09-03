@@ -69,7 +69,7 @@ const OPERATION_OUTPUT_SCHEMA = {
 
 export const QUERY_ACTIONS: Readonly<Record<Exclude<WireTool, 'embymedia_plan' | 'embymedia_execute' | 'embymedia_verify' | 'embymedia_health'>, readonly string[]>> = {
   embymedia_library: ['list_libraries', 'summary', 'count_items', 'list_items', 'list_strm', 'gaps_series', 'gaps_library'],
-  embymedia_resource: ['test_115', 'parse_share', 'snapshot_share', 'inspect_candidate', 'list_entries', 'search', 'library_context', 'duplicates', 'transfer_preview'],
+  embymedia_resource: ['test_115', 'parse_share', 'stage_share', 'snapshot_share', 'inspect_candidate', 'list_entries', 'search', 'library_context', 'duplicates', 'transfer_preview'],
   embymedia_series: ['status', 'workbench', 'resource_plan', 'gaps_summary'],
   embymedia_analyze: ['dashboard', 'smart_summary', 'smart_list', 'smart_get', 'smart_policies', 'smart_inspect', 'smart_workbench', 'smart_verify', 'from_task', 'poster_search'],
   embymedia_task: ['list', 'get', 'cancel'],
@@ -110,7 +110,7 @@ export function apply(ctx: Context): void {
     ctx.tools.register(defineTool({
       name: tool,
       description: tool === 'embymedia_resource'
-        ? 'Query resources. search and library_context require query. inspect_candidate requires same-session candidateId. list_entries requires cid. Search returns opaque candidateId values for resource.add_new or series.update; protected links never go through parse_share or snapshot_share.'
+        ? 'Query resources. search and library_context require query. stage_share creates a same-session opaque candidate from one user-provided 115 link and title; it returns no URL or access code. search returns opaque candidateId values for resource.add_new or series.update. inspect_candidate requires same-session candidateId.'
         : tool === 'embymedia_library'
           ? 'Query libraries. Use list_libraries or summary first, then one list_items call with libraryId or exact libraryName and optional search to resolve Emby item IDs; search ignores punctuation, quote, symbol, spacing, width, and case differences. list_strm is a bounded filesystem inventory, not an item lookup. gaps_series requires libraryId+seriesId.'
           : tool === 'embymedia_series'
@@ -133,7 +133,8 @@ export function apply(ctx: Context): void {
         ...(tool === 'embymedia_resource' ? {
           query: { type: 'string' as const }, q: { type: 'string' as const }, libraryId: { type: 'string' as const },
           diskType: { type: 'string' as const }, exact: { type: 'boolean' as const }, sort: { type: 'string' as const },
-          offset: { type: 'integer' as const }, url: { type: 'string' as const }, cid: { type: 'string' as const }, candidateId: { type: 'string' as const },
+          offset: { type: 'integer' as const }, url: { type: 'string' as const }, password: { type: 'string' as const },
+          title: { type: 'string' as const }, cid: { type: 'string' as const }, candidateId: { type: 'string' as const },
           fileIds: { type: 'array' as const, items: { type: 'string' as const } },
         } : {}),
         ...(tool === 'embymedia_series' ? {

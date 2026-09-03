@@ -12,7 +12,7 @@ Status: implemented
 
 ## Decision
 
-缺集工作从 `series.gaps_summary` 开始；其有界清单只返回不完整 Series，不包含路径或逐集 payload。随后再对一个 canonical `libraryId` 与 `seriesId` 调用 `series.resource_plan`。resource plan 返回 canonical Series、编号模式、搜索查询、精确的已播出 `requestedEpisodes`，以及已把受保护分享凭据替换为不透明且绑定 Session 的 candidate ID 的搜索结果。创建计划前，`resource.inspect_candidate` 会为一个同 Session ID 创建 snapshot，并返回不含分享 URL 或访问码的有界脱敏顶层根与递归 evidence。候选发现只搜索 115 资源，先使用 Series 名称加集数键；没有候选时仅使用 Series 名称重试一次，返回的查询标识向模型展示的结果集。写入输入严格为 `{libraryId,seriesId,numberingMode?,candidate,requestedEpisodes:[{season,episode,absolute?}]}`，并使用 `series.update`。`resource.add_new` 只创建新的媒体库根条目，绝不修复既有 Series 的缺集。
+缺集工作从 `series.gaps_summary` 开始；其有界清单只返回不完整 Series，不包含路径或逐集 payload。随后再对一个 canonical `libraryId` 与 `seriesId` 调用 `series.resource_plan`。resource plan 返回 canonical Series、编号模式、搜索查询、精确的已播出 `requestedEpisodes`，以及已把受保护分享凭据替换为不透明且绑定 Session 的 candidate ID 的搜索结果。`resource.stage_share` 会从一条用户提供的 115 分享与显示标题创建同一种 candidate，且不返回分享 URL 或访问码。创建计划前，`resource.inspect_candidate` 会为一个同 Session ID 创建 snapshot，并返回不含分享 URL 或访问码的有界脱敏顶层根与递归 evidence。候选发现只搜索 115 资源，先使用 Series 名称加集数键；没有候选时仅使用 Series 名称重试一次，返回的查询标识向模型展示的结果集。写入输入严格为 `{libraryId,seriesId,numberingMode?,candidate,requestedEpisodes:[{season,episode,absolute?}]}`，并使用 `series.update`。`resource.add_new` 只创建新的媒体库根条目，绝不修复既有 Series 的缺集。
 
 已完结 Series 如果没有任何候选的 115 snapshot 能够证明覆盖全部 requested gap，就使用两个 plan 的根替换流程，而不是降低原地 `series.update` 的证据要求。替换候选的 snapshot 必须证明一个可转存的 Series 根且没有冲突 TMDB 标记，但不需要枚举每一集。`resource.add_new` 创建一个临时的独立媒体库根；扫描后的 Emby 事实定义完整性。它们必须识别出一个 `missingCount=0` 的新相同 TMDB Series、确认每个旧 Series 仍然存在，并无歧义地给出完整的相同 TMDB 分组。随后，单独审批的 `dedup.delete` 把完整的新 Series 指定为 keeper，把每个旧的不完整 Series 指定为删除目标。入库、TMDB 绑定、集数完整性或重复分组身份验证失败时，旧根保持不变。正在更新的 Series 绝不使用该替换路径。
 

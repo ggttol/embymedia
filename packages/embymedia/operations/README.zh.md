@@ -69,7 +69,7 @@ Host 配置项选择保存 PostgreSQL 连接字符串的环境变量。服务初
 
 `gaps_summary`、`status` 与 `workbench` 每页最多计算 100 个 Series，并报告是否还有后续 Series。`gaps_summary` 返回不完整 Series 与显式 blocked row，并省略路径与逐集数组，因此运营方不会把 TMDB／Emby 认证、限流、取消或上游失败误认为零缺集。`resource_plan` 最多选择 20 个缺集，并返回 numbering mode、`gapTotal`、`deferredGapCount` 与 `searchHasMore`；运营方必须继续后续 Series 页与候选页，不能根据一个响应报告整个媒体库或 Series 已完成。
 
-资源搜索把每个 115 提取码替换为不透明且绑定 Session 的 `candidateId`。`accessCodeStaged=true` 表示 Host 已为预览与执行保存该提取码；它不是认证 blocker，运营 Agent 也不会要求用户再次输入。公开文本会移除控制符、遮蔽 URL／凭据并限制长度与数组数量。标记为 `diskType=115` 的结果只有在 URL 能解析为官方 `115.com` 或 `115cdn.com` 分享时才会公开。`resource.inspect_candidate` 接受同一 Session 的 ID，最多返回 500 条脱敏递归 evidence，并附带紧凑集数覆盖计数、`evidenceTotal` 与 `truncated`。`resource.list_entries` 分页返回直接子项事实；`resource.snapshot_share` 分页返回未保护分享的浅层根。
+资源搜索与 `resource.stage_share` 都会为 115 分享生成不透明且绑定 Session 的 `candidateId`。`resource.stage_share` 接受一条用户提供的标题和分享链接，但不返回其 URL 或提取码。`accessCodeStaged=true` 表示 Host 已为预览与执行保存该提取码；它不是认证 blocker，运营 Agent 也不会要求用户再次输入。公开文本会移除控制符、遮蔽 URL／凭据并限制长度与数组数量。标记为 `diskType=115` 的结果只有在 URL 能解析为官方 `115.com` 或 `115cdn.com` 分享时才会公开。`resource.inspect_candidate` 接受同一 Session 的 ID，最多返回 500 条脱敏递归 evidence，并附带紧凑集数覆盖计数、`evidenceTotal` 与 `truncated`。`resource.list_entries` 分页返回直接子项事实；`resource.snapshot_share` 分页返回未保护分享的浅层根。
 
 已完结 Series 在没有逐集候选时，只能把单根 Series 整包用作替换根，不能把它当作原地更新。入库前的 snapshot 必须证明一个可转存根且没有冲突 TMDB 标记，但不需要枚举每一集。`resource.add_new` 创建一个临时的独立根；扫描后的 Emby 事实必须识别新的相同 TMDB Series、证明 `missingCount=0`、确认旧 Series 仍在，并拒绝歧义。之后才能通过单独审批的 `dedup.delete` 保留新的完整 Series，并删除全部旧的不完整 Series。入库失败或内容不完整时，旧根保持不变。
 
@@ -138,7 +138,7 @@ Host 还在 loopback listener 上暴露 `POST /internal/embymedia/tool`，供受
 
 - **部署专用基础设施**——启动需要 PostgreSQL 连接与 Host 服务依赖；具体操作还会在缺少对应 Emby、115、TMDB、资源 API、文件系统或凭据前提时失败。
 - **只公布完整操作三件套**——只有预览、执行与验证全部接线的 kind 才会报告为受支持；已声明但不完整的 kind 无法通过运行时规划。
-- **分享访问码位于进程内**——资源搜索只暴露绑定 Session 的 candidate ID；candidate 或 plan 过期以及服务重启都会丢弃该值，因此尚未执行的受保护分享更新必须从新的搜索开始。持久化 confirmation 与最终验证不会恢复或暴露访问码。
+- **分享访问码位于进程内**——资源搜索与 `resource.stage_share` 只暴露绑定 Session 的 candidate ID；candidate 或 plan 过期以及服务重启都会丢弃该值，因此尚未执行的受保护分享更新必须暂存新的 candidate。持久化 confirmation 与最终验证不会恢复或暴露访问码。
 - **新入库只接受窄分享形式**——`resource.add_new` 要求一个经过包装且非空的 115 分享根目录，并且只支持 `keep` 旧版本策略；磁力／离线入库需要单独工作流。
 - **写入与计划工作选择性启用**——`writeMode` 默认为 `disabled`，且只有两个部署设置都允许工作时 scheduler 才会启用。
 

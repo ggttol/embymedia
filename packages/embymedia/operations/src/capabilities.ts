@@ -120,8 +120,8 @@ export const CAPABILITIES: readonly Capability[] = [
   query('library.strm', 'libraries-scan', 'embymedia_library', 'list_strm'),
   query('library.gaps-series', 'episode-gaps', 'embymedia_library', 'gaps_series'),
   query('library.gaps-library', 'episode-gaps', 'embymedia_library', 'gaps_library'),
-  ...['test_115', 'parse_share', 'snapshot_share', 'inspect_candidate', 'list_entries', 'auto_cid', 'stats', 'search', 'library_context', 'duplicates', 'transfer_preview'].map(action =>
-    query(`resource.${action}`, action === 'test_115' || action === 'parse_share' || action === 'snapshot_share' || action === 'inspect_candidate' || action === 'list_entries' || action === 'auto_cid' ? 'c115' : 'resource-search', 'embymedia_resource', action),
+  ...['test_115', 'parse_share', 'stage_share', 'snapshot_share', 'inspect_candidate', 'list_entries', 'auto_cid', 'stats', 'search', 'library_context', 'duplicates', 'transfer_preview'].map(action =>
+    query(`resource.${action}`, action === 'test_115' || action === 'parse_share' || action === 'stage_share' || action === 'snapshot_share' || action === 'inspect_candidate' || action === 'list_entries' || action === 'auto_cid' ? 'c115' : 'resource-search', 'embymedia_resource', action),
   ),
   ...['status', 'workbench', 'resource_plan', 'gaps_summary', 'scan_airing'].map(action =>
     query(`series.${action}`, 'series-followup', 'embymedia_series', action),
