@@ -46,6 +46,21 @@ func (s *DriveService) GetDefaultAccount() (*domain.DriveAccount, error) {
 		return nil, err
 	}
 	if len(accs) == 0 {
+		cookie, _ := s.db.GetSetting("115_cookie")
+		if cookie != "" {
+			now := time.Now()
+			fallback := domain.DriveAccount{
+				ID:        "default",
+				Name:      "默认账号",
+				Cookie:    cookie,
+				Status:    "active",
+				IsDefault: true,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			_ = s.db.SaveAccount(&fallback)
+			return &fallback, nil
+		}
 		return nil, errors.New("no drive accounts configured")
 	}
 	for _, a := range accs {
@@ -55,6 +70,7 @@ func (s *DriveService) GetDefaultAccount() (*domain.DriveAccount, error) {
 	}
 	return &accs[0], nil
 }
+
 // ListFiles lists files in a directory for a given account
 func (s *DriveService) ListFiles(accountID string, cid string, offset, limit int) ([]domain.DriveFile, int64, error) {
 	acc, err := s.getAccount(accountID)
@@ -475,6 +491,9 @@ func (s *DriveService) GetTrends() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.resourceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.resourceToken)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -483,6 +502,10 @@ func (s *DriveService) GetTrends() (map[string]any, error) {
 	var res map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
+	}
+	// If the upstream returned wrapped {"code": 0, "data": {"trends": [...]}}
+	if data, ok := res["data"].(map[string]any); ok {
+		return data, nil
 	}
 	return res, nil
 }

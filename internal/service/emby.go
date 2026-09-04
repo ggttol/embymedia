@@ -28,13 +28,16 @@ func NewEmbyService(db *storage.DB) *EmbyService {
 }
 
 func (s *EmbyService) getURLAndKey() (string, string, error) {
-	baseURL, err := s.db.GetConfig("emby_url")
+	baseURL, err := s.db.GetSetting("emby_url")
 	if err != nil || baseURL == "" {
+		baseURL, _ = s.db.GetConfig("emby_url")
+	}
+	if baseURL == "" {
 		baseURL = "http://127.0.0.1:8096"
 	}
-	apiKey, err := s.db.GetConfig("emby_api_key")
+	apiKey, err := s.db.GetSetting("emby_api_key")
 	if err != nil || apiKey == "" {
-		apiKey = ""
+		apiKey, _ = s.db.GetConfig("emby_api_key")
 	}
 	return strings.TrimRight(baseURL, "/"), apiKey, nil
 }

@@ -26,13 +26,21 @@ async function fetchHomeData() {
     ])
     if (summaryResult.status === 'fulfilled' && summaryResult.value.ok) {
       const data = await summaryResult.value.json()
-      stats.value.totalIndexedLinks = data.summary?.links ?? null
-      stats.value.validLinks = data.summary?.health_valid ?? null
-      stats.value.todayUpdated = data.summary?.today_updated ?? null
+      const summary = data.summary?.summary ?? data.summary ?? {}
+      stats.value.totalIndexedLinks = summary.links ?? null
+      stats.value.validLinks = summary.health_valid ?? null
+      stats.value.todayUpdated = summary.today_updated ?? null
     }
     if (trendsResult.status === 'fulfilled' && trendsResult.value.ok) {
       const data = await trendsResult.value.json()
-      trends.value = (data.data?.trends ?? []).map((trend: any) => trend.keyword).filter(Boolean).slice(0, 10)
+      let rawList = data.data?.trends?.trends ?? data.data?.trends ?? data.trends ?? []
+      if (rawList && typeof rawList === 'object' && !Array.isArray(rawList)) {
+        rawList = rawList.trends ?? Object.values(rawList)
+      }
+      trends.value = (Array.isArray(rawList) ? rawList : [])
+        .map((trend: any) => (typeof trend === 'string' ? trend : (trend.keyword || trend.name || '')))
+        .filter(Boolean)
+        .slice(0, 10)
     }
     if (accountsResult.status === 'fulfilled' && accountsResult.value.ok) {
       const data = await accountsResult.value.json()

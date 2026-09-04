@@ -172,6 +172,12 @@ func (s *Server) handleListAccounts(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
+	if len(accounts) == 0 {
+		def, err := s.drive.GetDefaultAccount()
+		if err == nil && def != nil {
+			accounts = []domain.DriveAccount{*def}
+		}
+	}
 	return c.JSON(http.StatusOK, map[string]any{"accounts": accounts})
 }
 
@@ -255,13 +261,13 @@ func (s *Server) handleAddOffline(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"task_id": taskID, "status": "submitted"})
+	return c.JSON(http.StatusOK, map[string]any{"task_id": taskID})
 }
 
 func (s *Server) handleEmbyLibraries(c echo.Context) error {
 	libs, err := s.emby.GetLibraries()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error(), "libraries": []any{}})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"libraries": libs})
 }

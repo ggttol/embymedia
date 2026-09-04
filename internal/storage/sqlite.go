@@ -577,15 +577,20 @@ func (d *DB) SetSettings(settings map[string]string) error {
 
 // System Config
 func (d *DB) GetConfig(key string) (string, error) {
+	val, err := d.GetSetting(key)
+	if err == nil && val != "" {
+		return val, nil
+	}
+
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	var val string
-	err := d.db.QueryRow(`SELECT value FROM system_configs WHERE key = ?`, key).Scan(&val)
+	var configVal string
+	err = d.db.QueryRow(`SELECT value FROM system_configs WHERE key = ?`, key).Scan(&configVal)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
-	return val, err
+	return configVal, err
 }
 
 func (d *DB) SetConfig(key, val, desc string) error {
