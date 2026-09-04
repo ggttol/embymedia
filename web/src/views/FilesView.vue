@@ -8,14 +8,83 @@ import {
   RefreshCw,
   Trash2,
   Edit2,
-  Download,
-  Upload,
-  ArrowLeft,
   Loader2,
-  Users
+  Users,
+  FolderInput
 } from 'lucide-vue-next'
 
-const currentCid = ref('0')
+const cidMap = ref<Record<string, string>>({})
+const actionError = ref('')
+
+async function fetchCidMap() {
+  try {
+    const res = await fetch('/api/v1/cid-map')
+    if (res.ok) {
+      const data = await res.json()
+      cidMap.value = data.map ?? {}
+    }
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+function jumpToCid(name: string, cid: string) {
+  currentCid.value = cid
+  breadcrumbs.value = [
+    { cid: '0', name: '根目录' },
+    { cid, name }
+  ]
+  fetchFiles()
+}
+
+async function deleteFile(file: any) {
+  if (!confirm(`确认删除「${file.name}」？此操作会移入回收站。`)) return
+  actionError.value = ''
+  try {
+    const res = await fetch('/api/v1/files/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: currentAccountId.value,
+        file_ids: [file.file_id || file.cid]
+      })
+    })
+    if (!res.ok) {
+      const err = await res.json()
+      actionError.value = err.error || '删除失败'
+      return
+    }
+    fetchFiles()
+  } catch (e) {
+    actionError.value = '网络请求错误'
+  }
+}
+
+async function renameFile(file: any) {
+  const newName = prompt('输入新名称', file.name)
+  if (!newName || newName === file.name) return
+  actionError.value = ''
+  try {
+    const res = await fetch('/api/v1/files/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: currentAccountId.value,
+        file_id: file.file_id || file.cid,
+        new_name: newName
+      })
+    })
+    if (!res.ok) {
+      const err = await res.json()
+      actionError.value = err.error || '重命名失败'
+      return
+    }
+    fetchFiles()
+  } catch (e) {
+    actionError.value = '网络请求错误'
+  }
+}
+
 const breadcrumbs = ref<{ cid: string; name: string }[]>([
   { cid: '0', name: '根目录' }
 ])
@@ -97,6 +166,7 @@ async function createFolder() {
 
 onMounted(async () => {
   await fetchAccounts()
+  await fetchCidMap()
   fetchFiles()
 })
 </script>
@@ -145,22 +215,41 @@ onMounted(async () => {
         </button>
       </div>
     </div>
+    <!-- CID Map Shortcuts -->
+    <div v-if="Object.keys(cidMap).length > 0" class="p-4 rounded-xl border border-border bg-surface flex items-center gap-2 flex-wrap text-xs font-mono">
+      <div class="flex items-center gap-1.5 text-text-muted">
+        <FolderInput class="w-3.5 h-3.5" />
+        <span>分类目录:</span>
+      </div>
+      <button
+        v-for="(cid, name) in cidMap"
+        :key="cid"
+        @click="jumpToCid(String(name), cid)"
+        class="px-2.5 py-1 rounded-md border transition-colors"
+        :class="currentCid === cid ? 'border-accent bg-accent-soft text-accent font-semibold' : 'border-border bg-bg text-text-muted hover:border-text-muted'"
+      >
+        {{ name }}
+      </button>
+    </div>
 
     <!-- Breadcrumb Path Bar -->
-    <div class="p-4 rounded-xl border border-border bg-surface flex items-center gap-2 text-xs font-mono text-text-muted">
-      <HardDrive class="w-4 h-4 text-accent shrink-0" />
-      <div class="flex items-center gap-2 flex-wrap">
-        <template v-for="(b, idx) in breadcrumbs" :key="b.cid">
-          <button
-            @click="navigateToBreadcrumb(idx)"
-            class="hover:text-text hover:underline transition-colors"
-            :class="{ 'text-text font-semibold': idx === breadcrumbs.length - 1 }"
-          >
-            {{ b.name }}
-          </button>
-          <span v-if="idx < breadcrumbs.length - 1" class="text-text-faint">/</span>
-        </template>
+    <div class="p-4 rounded-xl border border-border bg-surface space-y-2">
+      <div class="flex items-center gap-2 text-xs font-mono text-text-muted">
+        <HardDrive class="w-4 h-4 text-accent shrink-0" />
+        <div class="flex items-center gap-2 flex-wrap">
+          <template v-for="(b, idx) in breadcrumbs" :key="b.cid">
+            <button
+              @click="navigateToBreadcrumb(idx)"
+              class="hover:text-text hover:underline transition-colors"
+              :class="{ 'text-text font-semibold': idx === breadcrumbs.length - 1 }"
+            >
+              {{ b.name }}
+            </button>
+            <span v-if="idx < breadcrumbs.length - 1" class="text-text-faint">/</span>
+          </template>
+        </div>
       </div>
+      <div v-if="actionError" class="text-xs font-mono text-danger pl-6">{{ actionError }}</div>
     </div>
 
     <!-- File Table / Explorer -->
@@ -208,8 +297,16 @@ onMounted(async () => {
             <td class="py-3 px-4 text-text-faint">
               {{ file.updated_at ? new Date(file.updated_at).toLocaleDateString() : '-' }}
             </td>
-            <td class="py-3 px-4 text-right">
+            <td class="py-3 px-4 text-right whitespace-nowrap">
               <button
+                @click="renameFile(file)"
+                class="p-1 text-text-faint hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity mr-1"
+                title="重命名"
+              >
+                <Edit2 class="w-3.5 h-3.5" />
+              </button>
+              <button
+                @click="deleteFile(file)"
                 class="p-1 text-text-faint hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity"
                 title="删除"
               >

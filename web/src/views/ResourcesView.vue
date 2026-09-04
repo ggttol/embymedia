@@ -12,17 +12,16 @@ import {
   Loader2,
   Calendar,
   Radio,
-  SlidersHorizontal
+  FolderInput
 } from 'lucide-vue-next'
 import { useFavorites } from '@/stores/favorites'
-import { getDiskLabel, getDiskColor, getHealthLabel } from '@/utils/resourceMeta'
+import { getHealthLabel } from '@/utils/resourceMeta'
 
 const route = useRoute()
 const router = useRouter()
 const { isFavorite, toggleFavorite } = useFavorites()
 
 const keyword = ref((route.query.q as string) || '')
-const selectedDisk = ref((route.query.disk as string) || '')
 const selectedChannel = ref((route.query.channel as string) || '')
 const healthFilter = ref((route.query.health as string) || '')
 const offset = ref(0)
@@ -32,10 +31,13 @@ const loading = ref(false)
 const results = ref<any[]>([])
 const totalHits = ref(0)
 const hasMore = ref(false)
-const diskTypes = ref<{ disk_type: string; count: number }[]>([])
 const copiedId = ref<number | null>(null)
 const importingId = ref<number | null>(null)
 const importMessage = ref<{ id: number; text: string; ok: boolean } | null>(null)
+
+const cidMap = ref<Record<string, string>>({})
+const defaultCid = ref('0')
+const savedCidKey = 'embymedia_default_target_cid'
 
 async function doSearch(resetPage = true) {
   if (resetPage) {
@@ -45,7 +47,7 @@ async function doSearch(resetPage = true) {
   try {
     const params = new URLSearchParams()
     if (keyword.value) params.set('q', keyword.value)
-    if (selectedDisk.value) params.set('disk_type', selectedDisk.value)
+    params.set('disk_type', '115')
     if (selectedChannel.value) params.set('channel', selectedChannel.value)
     if (healthFilter.value) params.set('health_status', healthFilter.value)
     params.set('offset', String(offset.value))
@@ -61,9 +63,6 @@ async function doSearch(resetPage = true) {
       }
       totalHits.value = data.total || results.value.length
       hasMore.value = data.has_more ?? false
-      if (data.disk_types) {
-        diskTypes.value = data.disk_types
-      }
     }
   } catch (e) {
     console.error(e)
@@ -77,9 +76,6 @@ function handleSearchSubmit() {
     path: '/resources',
     query: {
       ...(keyword.value ? { q: keyword.value } : {}),
-      ...(selectedDisk.value ? { disk: selectedDisk.value } : {}),
-      ...(selectedChannel.value ? { channel: selectedChannel.value } : {}),
-      ...(healthFilter.value ? { health: healthFilter.value } : {}),
     }
   })
   doSearch(true)
@@ -93,23 +89,38 @@ function copyToClipboard(text: string, id: number) {
   }, 2000)
 }
 
-async function triggerOfflineImport(link: any) {
+async function fetchCidMap() {
+  try {
+    const res = await fetch('/api/v1/cid-map')
+    if (res.ok) {
+      const data = await res.json()
+      cidMap.value = data.map ?? {}
+    }
+  } catch (e) {
+    console.error(e)
+  }
+  const stored = localStorage.getItem(savedCidKey)
+  defaultCid.value = stored || Object.values(cidMap.value)[0] || '0'
+}
+
+function onDefaultCidChange() {
+  localStorage.setItem(savedCidKey, defaultCid.value)
+}
+
+async function triggerSave(link: any) {
   importingId.value = link.id
   importMessage.value = null
   try {
-    const res = await fetch('/api/v1/offline/download', {
+    const res = await fetch(`/api/v1/links/${link.id}/save`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        urls: [link.url],
-        target_cid: '0'
-      })
+      body: JSON.stringify({ target_cid: defaultCid.value })
     })
+    const data = await res.json()
     if (res.ok) {
-      importMessage.value = { id: link.id, text: '已加入 115 离线下载队列！', ok: true }
+      importMessage.value = { id: link.id, text: `已转存「${data.title || link.title}」${data.count} 项到目标目录`, ok: true }
     } else {
-      const err = await res.json()
-      importMessage.value = { id: link.id, text: err.message || '离线失败', ok: false }
+      importMessage.value = { id: link.id, text: data.error || '转存失败', ok: false }
     }
   } catch (e) {
     importMessage.value = { id: link.id, text: '网络请求错误', ok: false }
@@ -122,14 +133,14 @@ watch(
   () => route.query,
   () => {
     keyword.value = (route.query.q as string) || ''
-    selectedDisk.value = (route.query.disk as string) || ''
     selectedChannel.value = (route.query.channel as string) || ''
     healthFilter.value = (route.query.health as string) || ''
     doSearch(true)
   }
 )
 
-onMounted(() => {
+onMounted(async () => {
+  await fetchCidMap()
   doSearch(true)
 })
 </script>
@@ -144,7 +155,7 @@ onMounted(() => {
           <input
             v-model="keyword"
             type="text"
-            placeholder="搜索全网公开网盘资源（电影、剧集、动漫、纪录片、4K原盘）..."
+            placeholder="搜索 115 网盘公开分享资源（电影、剧集、动漫、纪录片、4K原盘）..."
             class="w-full pl-12 pr-28 py-3.5 rounded-lg border border-border bg-bg text-text placeholder:text-text-faint focus:outline-none focus:border-accent text-sm font-sans"
           />
           <button
@@ -157,34 +168,21 @@ onMounted(() => {
           </button>
         </div>
 
-        <!-- Filter Chips Bar -->
-        <div class="flex flex-wrap items-center gap-3 pt-2 text-xs font-mono">
+        <!-- Save target selector -->
+        <div class="flex flex-wrap items-center gap-3 pt-1 text-xs font-mono">
           <div class="flex items-center gap-1.5 text-text-muted">
-            <SlidersHorizontal class="w-3.5 h-3.5" />
-            <span>网盘筛选:</span>
+            <FolderInput class="w-3.5 h-3.5" />
+            <span>转存目标目录:</span>
           </div>
-
-          <button
-            type="button"
-            @click="selectedDisk = ''; handleSearchSubmit()"
-            class="px-2.5 py-1 rounded-md border transition-colors"
-            :class="selectedDisk === '' ? 'border-accent bg-accent-soft text-accent font-semibold' : 'border-border bg-bg text-text-muted hover:border-text-muted'"
+          <select
+            v-model="defaultCid"
+            @change="onDefaultCidChange"
+            class="px-2.5 py-1.5 rounded-md border border-border bg-bg text-text text-xs font-mono focus:outline-none focus:border-accent min-h-8"
           >
-            全部网盘
-          </button>
-
-          <button
-            v-for="d in diskTypes"
-            :key="d.disk_type"
-            type="button"
-            @click="selectedDisk = d.disk_type; handleSearchSubmit()"
-            class="px-2.5 py-1 rounded-md border transition-colors flex items-center gap-1.5"
-            :class="selectedDisk === d.disk_type ? 'border-accent bg-accent-soft text-accent font-semibold' : 'border-border bg-bg text-text-muted hover:border-text-muted'"
-          >
-            <span class="w-2 h-2 rounded-full" :style="{ backgroundColor: getDiskColor(d.disk_type) }"></span>
-            <span>{{ getDiskLabel(d.disk_type) }}</span>
-            <span class="text-text-faint">({{ d.count }})</span>
-          </button>
+            <option value="0">根目录</option>
+            <option v-for="(cid, name) in cidMap" :key="cid" :value="cid">{{ name }}</option>
+          </select>
+          <span class="text-text-faint">检索结果一键转存至所选目录</span>
         </div>
       </form>
     </div>
@@ -193,7 +191,7 @@ onMounted(() => {
     <div class="space-y-4">
       <div class="flex items-center justify-between px-1 text-xs font-mono text-text-muted">
         <div>
-          共检索到 <span class="text-text font-semibold">{{ totalHits }}</span> 条相关资源
+          共检索到 <span class="text-text font-semibold">{{ totalHits }}</span> 条 115 资源
         </div>
         <div v-if="loading" class="flex items-center gap-1 text-accent">
           <Loader2 class="w-3.5 h-3.5 animate-spin" />
@@ -207,9 +205,9 @@ onMounted(() => {
         class="p-12 rounded-xl border border-dashed border-border text-center bg-surface"
       >
         <AlertCircle class="w-8 h-8 text-text-faint mx-auto mb-3" />
-        <h3 class="font-serif font-semibold text-base text-text">未检索到匹配的公开资源</h3>
+        <h3 class="font-serif font-semibold text-base text-text">未检索到匹配的 115 资源</h3>
         <p class="text-xs text-text-muted mt-1 font-mono">
-          建议尝试更换关键词，或缩减网盘类型过滤条件
+          建议尝试更换关键词后重新检索
         </p>
       </div>
 
@@ -226,9 +224,9 @@ onMounted(() => {
               <!-- Disk badge -->
               <span
                 class="px-2 py-0.5 rounded text-[11px] font-mono font-medium text-white shadow-xs"
-                :style="{ backgroundColor: getDiskColor(item.disk_type) }"
+                style="background-color: var(--disk-115)"
               >
-                {{ getDiskLabel(item.disk_type) }}
+                115
               </span>
 
               <!-- Health badge -->
@@ -296,15 +294,15 @@ onMounted(() => {
               <Bookmark class="w-3.5 h-3.5" :class="{ 'fill-current': isFavorite(item.id) }" />
             </button>
 
-            <!-- Push to 115 offline -->
+            <!-- Save share to 115 -->
             <button
-              @click="triggerOfflineImport(item)"
+              @click="triggerSave(item)"
               :disabled="importingId === item.id"
               class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent bg-accent hover:bg-accent-strong text-accent-contrast text-xs font-mono transition-colors shadow-xs"
             >
               <Loader2 v-if="importingId === item.id" class="w-3.5 h-3.5 animate-spin" />
               <Download v-else class="w-3.5 h-3.5" />
-              <span>推送到 115</span>
+              <span>转存到 115</span>
             </button>
 
             <!-- View detail button -->

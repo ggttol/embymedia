@@ -182,7 +182,7 @@ func (m *MCPServer) handleC115Search(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("query is required"), nil
 	}
 	accID := req.GetString("account_id", "")
-	params := url.Values{"q": {q}}
+	params := url.Values{"q": {q}, "disk_type": {"115"}}
 	_ = accID
 	resp, err := m.drive.SearchResources(params)
 	if err != nil {
@@ -199,11 +199,12 @@ func (m *MCPServer) handleC115SaveShare(ctx context.Context, req mcp.CallToolReq
 	}
 	accID := req.GetString("account_id", "")
 	targetCID := req.GetString("target_cid", "0")
-	taskID, err := m.drive.AddOfflineTask(accID, u, targetCID)
+	password := req.GetString("password", "")
+	count, title, err := m.drive.SaveShare(accID, u, password, targetCID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("save share failed: %v", err)), nil
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("Offline task created: %s", taskID)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Saved %d items from share %q into cid %s", count, title, targetCID)), nil
 }
 
 func (m *MCPServer) handleC115Move(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

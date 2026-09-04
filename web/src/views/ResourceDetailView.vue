@@ -7,14 +7,11 @@ import {
   Copy,
   Check,
   Download,
-  ExternalLink,
   ShieldCheck,
-  AlertTriangle,
   Clock,
   Radio,
-  Share2,
-  Tv,
-  Loader2
+  Loader2,
+  FolderInput
 } from 'lucide-vue-next'
 import { useFavorites } from '@/stores/favorites'
 import { getDiskLabel, getDiskColor, getHealthLabel } from '@/utils/resourceMeta'
@@ -29,6 +26,10 @@ const resource = ref<any>(null)
 const copied = ref(false)
 const importing = ref(false)
 const importResult = ref<string | null>(null)
+
+const cidMap = ref<Record<string, string>>({})
+const defaultCid = ref('0')
+const savedCidKey = 'embymedia_default_target_cid'
 
 async function fetchDetail() {
   loading.value = true
@@ -52,24 +53,37 @@ function copyUrl() {
   setTimeout(() => (copied.value = false), 2000)
 }
 
-async function triggerOfflineImport() {
+async function fetchCidMap() {
+  try {
+    const res = await fetch('/api/v1/cid-map')
+    if (res.ok) {
+      const data = await res.json()
+      cidMap.value = data.map ?? {}
+    }
+  } catch (e) {
+    console.error(e)
+  }
+  const stored = localStorage.getItem(savedCidKey)
+  defaultCid.value = stored || Object.values(cidMap.value)[0] || '0'
+}
+
+async function triggerSave() {
   if (!resource.value) return
   importing.value = true
   importResult.value = null
   try {
-    const res = await fetch('/api/v1/offline/download', {
+    const res = await fetch(`/api/v1/links/${linkId}/save`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        urls: [resource.value.url],
-        target_cid: '0'
-      })
+      body: JSON.stringify({ target_cid: defaultCid.value })
     })
+    const data = await res.json()
     if (res.ok) {
-      importResult.value = '已成功添加到 115 离线下载队列'
+      importResult.value = data.method === 'share_save'
+        ? `已转存「${data.title || resource.value.title}」${data.count} 项到目标目录`
+        : '已推送到 115 离线下载队列'
     } else {
-      const err = await res.json()
-      importResult.value = err.message || '添加任务失败'
+      importResult.value = data.error || '操作失败'
     }
   } catch (e) {
     importResult.value = '网络请求失败'
@@ -78,7 +92,8 @@ async function triggerOfflineImport() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await fetchCidMap()
   fetchDetail()
 })
 </script>
@@ -133,11 +148,22 @@ onMounted(() => {
         <!-- Action Panel -->
         <div class="p-5 rounded-lg border border-border bg-bg space-y-4">
           <div class="flex items-center justify-between gap-4 flex-wrap">
-            <div class="font-mono text-xs text-text-muted break-all flex-1">
+            <div class="font-mono text-xs text-text-muted break-all flex-1 min-w-0">
               <span class="text-text-faint">资源链接: </span>
               <span class="text-text selection:bg-accent-soft select-all">{{ resource.url }}</span>
             </div>
-            <div class="flex items-center gap-2 shrink-0">
+            <div class="flex items-center gap-2 shrink-0 flex-wrap">
+              <div class="flex items-center gap-1.5">
+                <FolderInput class="w-3.5 h-3.5 text-text-faint" />
+                <select
+                  v-model="defaultCid"
+                  class="px-2.5 py-2 rounded-lg border border-border bg-surface text-text text-xs font-mono focus:outline-none focus:border-accent min-h-9"
+                  title="转存目标目录"
+                >
+                  <option value="0">根目录</option>
+                  <option v-for="(cid, name) in cidMap" :key="cid" :value="cid">{{ name }}</option>
+                </select>
+              </div>
               <button
                 @click="copyUrl"
                 class="flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-border hover:border-text-muted bg-surface text-xs font-mono text-text transition-colors"
@@ -157,13 +183,13 @@ onMounted(() => {
               </button>
 
               <button
-                @click="triggerOfflineImport"
+                @click="triggerSave"
                 :disabled="importing"
                 class="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-accent bg-accent hover:bg-accent-strong text-accent-contrast text-xs font-mono transition-colors shadow-sm"
               >
                 <Loader2 v-if="importing" class="w-4 h-4 animate-spin" />
                 <Download v-else class="w-4 h-4" />
-                <span>一键推送到 115 离线</span>
+                <span>转存到 115</span>
               </button>
             </div>
           </div>

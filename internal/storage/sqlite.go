@@ -337,7 +337,7 @@ func (d *DB) ListAsyncTasks(status string, limit int) ([]domain.AsyncTask, error
 		query += ` WHERE status = ?`
 		args = append(args, status)
 	}
-	query += ` ORDER BY created_at ASC`
+	query += ` ORDER BY created_at DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(` LIMIT %d`, limit)
 	}

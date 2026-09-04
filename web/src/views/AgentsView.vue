@@ -12,8 +12,8 @@ const copied = ref(false)
 
 const mcpTools = [
   ['c115_list_files', '列出指定 CID 下的文件与目录'],
-  ['c115_search', '按关键词搜索 115 文件'],
-  ['c115_save_share', '转存分享链接到目标目录'],
+  ['c115_search', '按关键词搜索 115 网盘公开分享资源'],
+  ['c115_save_share', '解析 115 分享链接并转存到指定目录'],
   ['c115_move', '移动文件或目录'],
   ['c115_rename', '重命名文件或目录'],
   ['c115_mkdir', '在指定目录下创建文件夹'],

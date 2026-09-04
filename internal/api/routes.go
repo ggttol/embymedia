@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
@@ -65,6 +67,10 @@ func (s *Server) registerRoutes() {
 	v1.GET("/search", s.handleSearch)
 	s.echo.GET("/search", s.handleSearch) // also directly on /search
 	v1.GET("/links/:id", s.handleGetLink)
+	v1.POST("/links/:id/save", s.handleSaveLink)
+	v1.GET("/cid-map", s.handleCidMap)
+	v1.POST("/files/save_share", s.handleSaveShare)
+	v1.POST("/files/share_snapshot", s.handleSnapshotShare)
 
 	// 115 Accounts & Cloud Drive
 	v1.GET("/accounts", s.handleListAccounts)
@@ -73,10 +79,11 @@ func (s *Server) registerRoutes() {
 	v1.POST("/files/mkdir", s.handleMkdir)
 	v1.POST("/files/rename", s.handleRename)
 	v1.POST("/files/move", s.handleMove)
+	v1.POST("/files/delete", s.handleDelete)
 	v1.POST("/offline/download", s.handleAddOffline)
 
 	// Emby & Media
-	v1.GET("/emby/libraries", s.handleEmbyLibraries)
+	v1.POST("/files/delete", s.handleDelete)
 	v1.POST("/emby/refresh", s.handleEmbyRefresh)
 	v1.POST("/emby/match", s.handleEmbyMatch)
 
@@ -87,7 +94,7 @@ func (s *Server) registerRoutes() {
 	v1.GET("/tasks", s.handleListTasks)
 	v1.POST("/tasks", s.handleCreateTask)
 	v1.POST("/tasks/:id/run", s.handleRunTask)
-	v1.POST("/tasks/batch", s.handleBatchTasks)
+	v1.GET("/async-tasks", s.handleListAsyncTasks)
 	v1.GET("/async-tasks/:id", s.handleGetAsyncTask)
 
 	// Settings & Agent Tokens
@@ -168,6 +175,90 @@ func (s *Server) handleGetLink(c echo.Context) error {
 	})
 }
 
+
+func (s *Server) handleCidMap(c echo.Context) error {
+	raw, err := s.settings.Get("c115_cid_map")
+	if err != nil {
+		return c.JSON(http.StatusOK, map[string]any{"map": map[string]string{}})
+	}
+	var cidMap map[string]string
+	if err := json.Unmarshal([]byte(raw), &cidMap); err != nil {
+		return c.JSON(http.StatusOK, map[string]any{"map": map[string]string{}})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"map": cidMap})
+}
+
+func (s *Server) handleSaveShare(c echo.Context) error {
+	var req struct {
+		URL       string `json:"url"`
+		Password  string `json:"password"`
+		TargetCID string `json:"target_cid"`
+		AccountID string `json:"account_id"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	if req.URL == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "url is required"})
+	}
+	count, title, err := s.drive.SaveShare(req.AccountID, req.URL, req.Password, req.TargetCID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"success": true, "count": count, "title": title, "target_cid": req.TargetCID})
+}
+
+func (s *Server) handleSnapshotShare(c echo.Context) error {
+	var req struct {
+		URL      string `json:"url"`
+		Password string `json:"password"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	title, files, err := s.drive.SnapshotShare("", req.URL, req.Password)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"title": title, "files": files})
+}
+
+func (s *Server) handleSaveLink(c echo.Context) error {
+	id := c.Param("id")
+	var req struct {
+		TargetCID string `json:"target_cid"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	link, err := s.drive.GetLink(id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": "link not found"})
+	}
+	data, ok := link["data"].(map[string]any)
+	if !ok {
+		data = link
+	}
+	rawURL, _ := data["url"].(string)
+	if rawURL == "" {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": "link has no url"})
+	}
+	password, _ := data["password"].(string)
+	diskType, _ := data["disk_type"].(string)
+
+	if diskType == "115" || strings.Contains(rawURL, "115.com/s/") || strings.Contains(rawURL, "115cdn.com/s/") {
+		count, title, err := s.drive.SaveShare("", rawURL, password, req.TargetCID)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]any{"success": true, "method": "share_save", "count": count, "title": title, "target_cid": req.TargetCID})
+	}
+	taskIDs, err := s.drive.AddOfflineTasks(c.Request().Context(), "", []string{rawURL}, req.TargetCID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"success": true, "method": "offline", "task_ids": taskIDs, "target_cid": req.TargetCID})
+}
 func (s *Server) handleListAccounts(c echo.Context) error {
 	accounts, err := s.db.ListAccounts()
 	if err != nil {
@@ -249,6 +340,35 @@ func (s *Server) handleMove(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
 }
 
+func (s *Server) handleDelete(c echo.Context) error {
+	var req struct {
+		AccountID string   `json:"account_id"`
+		FileIDs   []string `json:"file_ids"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	if len(req.FileIDs) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "file_ids is required"})
+	}
+	if err := s.drive.Delete(req.AccountID, req.FileIDs); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"success": true})
+}
+
+func (s *Server) handleListAsyncTasks(c echo.Context) error {
+	status := c.QueryParam("status")
+	tasks, err := s.db.ListAsyncTasks(status, 50)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	if tasks == nil {
+		tasks = []domain.AsyncTask{}
+	}
+	return c.JSON(http.StatusOK, map[string]any{"tasks": tasks})
+}
+
 func (s *Server) handleAddOffline(c echo.Context) error {
 	var req struct {
 		AccountID string   `json:"account_id"`
@@ -264,6 +384,7 @@ func (s *Server) handleAddOffline(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, map[string]any{"task_id": taskID})
 }
+
 
 func (s *Server) handleEmbyLibraries(c echo.Context) error {
 	libs, err := s.emby.GetLibraries()

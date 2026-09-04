@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -269,6 +270,201 @@ func (s *DriveService) ListOfflineTasks(accountID string) ([]domain.OfflineTask,
 	}
 
 	return res, nil
+}
+
+// ShareEntry is one entry inside a share snapshot.
+type ShareEntry struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size,omitempty"`
+	IsDir     bool   `json:"is_dir"`
+}
+
+var shareURLPattern = regexp.MustCompile(`115(?:cdn)?\.com/s/([A-Za-z0-9]+)`)
+
+// ParseShareCode extracts the share code and receive code (password) from a
+// share URL like https://115cdn.com/s/xxxx?password=yyy or a bare share code.
+func ParseShareCode(rawURL, password string) (string, string, error) {
+	code := ""
+	receive := strings.TrimSpace(password)
+	if m := shareURLPattern.FindStringSubmatch(rawURL); m != nil {
+		code = m[1]
+	}
+	if code == "" {
+		trimmed := strings.TrimSpace(rawURL)
+		if regexp.MustCompile(`^[A-Za-z0-9_-]{4,128}$`).MatchString(trimmed) {
+			code = trimmed
+		}
+	}
+	if code == "" {
+		return "", "", fmt.Errorf("无法从输入中解析 115 分享码: %s", rawURL)
+	}
+	if receive == "" {
+		if u, err := url.Parse(rawURL); err == nil {
+			receive = u.Query().Get("password")
+			if receive == "" {
+				receive = u.Query().Get("pwd")
+			}
+		}
+	}
+	if len(receive) > 128 {
+		return "", "", fmt.Errorf("115 提取码过长")
+	}
+	return code, receive, nil
+}
+
+func (s *DriveService) snapshotShareEntries(acc *domain.DriveAccount, shareCode, receiveCode, cid string) (string, []ShareEntry, error) {
+	reqURL := fmt.Sprintf("https://webapi.115.com/share/snap?share_code=%s&receive_code=%s&cid=%s&offset=0&limit=1150", url.QueryEscape(shareCode), url.QueryEscape(receiveCode), url.QueryEscape(cid))
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+	req.Header.Set("Referer", "https://115.com/")
+	req.Header.Set("Cookie", acc.Cookie)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("115 分享预检请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+	var raw struct {
+		State bool   `json:"state"`
+		Error string `json:"error"`
+		Data  struct {
+			ShareInfo struct {
+				ShareTitle string `json:"share_title"`
+				FileName   string `json:"file_name"`
+			} `json:"shareinfo"`
+			List []struct {
+				Fid any    `json:"fid"`
+				Cid any    `json:"cid"`
+				N   string `json:"n"`
+				S   int64  `json:"s"`
+			} `json:"list"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return "", nil, fmt.Errorf("115 分享预检响应解析失败: %w", err)
+	}
+	if !raw.State {
+		return "", nil, fmt.Errorf("115 分享预检被拒绝: %s", raw.Error)
+	}
+	title := raw.Data.ShareInfo.ShareTitle
+	if title == "" {
+		title = raw.Data.ShareInfo.FileName
+	}
+	files := make([]ShareEntry, 0, len(raw.Data.List))
+	for _, item := range raw.Data.List {
+		fid := fmt.Sprintf("%v", item.Fid)
+		cidStr := fmt.Sprintf("%v", item.Cid)
+		isDir := fid == "" || fid == "<nil>"
+		id := fid
+		if isDir {
+			id = cidStr
+		}
+		if id == "" || id == "<nil>" {
+			continue
+		}
+		files = append(files, ShareEntry{ID: id, Name: item.N, Size: item.S, IsDir: isDir})
+	}
+	return title, files, nil
+}
+
+// SnapshotShare lists the top-level contents of a 115 share link.
+func (s *DriveService) SnapshotShare(accountID, rawURL, password string) (string, []ShareEntry, error) {
+	acc, err := s.getAccount(accountID)
+	if err != nil {
+		return "", nil, err
+	}
+	code, receive, err := ParseShareCode(rawURL, password)
+	if err != nil {
+		return "", nil, err
+	}
+	return s.snapshotShareEntries(acc, code, receive, "0")
+}
+
+// SaveShare transfers all top-level files of a 115 share into targetCid.
+func (s *DriveService) SaveShare(accountID, rawURL, password, targetCid string) (int, string, error) {
+	acc, err := s.getAccount(accountID)
+	if err != nil {
+		return 0, "", err
+	}
+	if targetCid == "" {
+		targetCid = "0"
+	}
+	code, receive, err := ParseShareCode(rawURL, password)
+	if err != nil {
+		return 0, "", err
+	}
+	title, files, err := s.snapshotShareEntries(acc, code, receive, "0")
+	if err != nil {
+		return 0, "", err
+	}
+	if len(files) == 0 {
+		return 0, title, fmt.Errorf("115 分享内容为空或已失效")
+	}
+	ids := make([]string, 0, len(files))
+	for _, f := range files {
+		ids = append(ids, f.ID)
+	}
+
+	uid := ""
+	if m := regexp.MustCompile(`(?:^|;\s*)UID=([^_;]+)`).FindStringSubmatch(acc.Cookie); m != nil {
+		uid = m[1]
+	}
+
+	form := url.Values{}
+	form.Set("share_code", code)
+	form.Set("receive_code", receive)
+	form.Set("file_id", strings.Join(ids, ","))
+	form.Set("cid", targetCid)
+	form.Set("user_id", uid)
+
+	req, err := http.NewRequest("POST", "https://webapi.115.com/share/receive", strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+	req.Header.Set("Referer", "https://115.com/")
+	req.Header.Set("Cookie", acc.Cookie)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return 0, title, fmt.Errorf("115 转存请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, title, err
+	}
+	var raw struct {
+		State  bool   `json:"state"`
+		Error  string `json:"error"`
+		ErrNo  int    `json:"errno"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, title, fmt.Errorf("115 转存响应解析失败: %w", err)
+	}
+	if !raw.State {
+		msg := raw.Error
+		if msg == "" {
+			msg = raw.Status
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("errno=%d", raw.ErrNo)
+		}
+		return 0, title, fmt.Errorf("115 转存失败: %s", msg)
+	}
+	return len(ids), title, nil
 }
 
 // MakeDir creates a new directory in 115

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {
   Bookmark,
   Trash2,
@@ -7,8 +7,10 @@ import {
   Copy,
   Check,
   Search,
-  ExternalLink,
-  SlidersHorizontal
+  FolderInput,
+  Loader2,
+  CheckSquare,
+  Square
 } from 'lucide-vue-next'
 import { useFavorites } from '@/stores/favorites'
 import { getDiskLabel, getDiskColor } from '@/utils/resourceMeta'
@@ -19,6 +21,12 @@ const selectedDisk = ref('')
 const copiedId = ref<number | null>(null)
 const pushingId = ref<number | null>(null)
 const pushMessage = ref<{ id: number; text: string; ok: boolean } | null>(null)
+const batchRunning = ref(false)
+const batchMessage = ref<string | null>(null)
+const selectedIds = ref<Set<number>>(new Set())
+const cidMap = ref<Record<string, string>>({})
+const defaultCid = ref('0')
+const savedCidKey = 'embymedia_default_target_cid'
 
 const filteredFavorites = computed(() => {
   return favorites.value.filter(item => {
@@ -28,6 +36,26 @@ const filteredFavorites = computed(() => {
   })
 })
 
+const is115 = (item: any) => item.disk_type === '115'
+const selectedCount = computed(() => selectedIds.value.size)
+
+function toggleSelect(id: number) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedIds.value = next
+}
+
+function selectAllVisible() {
+  const next = new Set(selectedIds.value)
+  filteredFavorites.value.forEach(item => next.add(item.id))
+  selectedIds.value = next
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
+}
+
 function copyToClipboard(text: string, id: number) {
   navigator.clipboard.writeText(text)
   copiedId.value = id
@@ -36,30 +64,65 @@ function copyToClipboard(text: string, id: number) {
   }, 2000)
 }
 
-async function triggerOfflineImport(link: any) {
+async function fetchCidMap() {
+  try {
+    const res = await fetch('/api/v1/cid-map')
+    if (res.ok) {
+      const data = await res.json()
+      cidMap.value = data.map ?? {}
+    }
+  } catch (e) {
+    console.error(e)
+  }
+  const stored = localStorage.getItem(savedCidKey)
+  defaultCid.value = stored || Object.values(cidMap.value)[0] || '0'
+}
+
+async function saveOne(link: any, targetCid: string): Promise<string> {
+  const res = await fetch(`/api/v1/links/${link.id}/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target_cid: targetCid })
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || '转存失败')
+  return `已转存「${data.title || link.title}」${data.count} 项`
+}
+
+async function triggerSave(link: any) {
   pushingId.value = link.id
   pushMessage.value = null
   try {
-    const res = await fetch('/api/v1/offline/download', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        urls: [link.url],
-        target_cid: '0'
-      })
-    })
-    if (res.ok) {
-      pushMessage.value = { id: link.id, text: '已推送至 115 离线任务！', ok: true }
-    } else {
-      const err = await res.json()
-      pushMessage.value = { id: link.id, text: err.message || '离线失败', ok: false }
-    }
+    const message = await saveOne(link, defaultCid.value)
+    pushMessage.value = { id: link.id, text: message, ok: true }
   } catch (e) {
-    pushMessage.value = { id: link.id, text: '请求失败', ok: false }
+    pushMessage.value = { id: link.id, text: e instanceof Error ? e.message : '请求失败', ok: false }
   } finally {
     pushingId.value = null
   }
 }
+
+async function triggerBatchSave() {
+  const targets = filteredFavorites.value.filter(item => selectedIds.value.has(item.id))
+  if (targets.length === 0) return
+  batchRunning.value = true
+  batchMessage.value = null
+  let ok = 0
+  const failures: string[] = []
+  for (const item of targets) {
+    try {
+      await saveOne(item, defaultCid.value)
+      ok++
+    } catch (e) {
+      failures.push(`${item.title}: ${e instanceof Error ? e.message : '失败'}`)
+    }
+  }
+  batchMessage.value = `批量转存完成：成功 ${ok} / ${targets.length}` + (failures.length ? `；失败: ${failures.slice(0, 3).join('；')}` : '')
+  batchRunning.value = false
+  selectedIds.value = new Set()
+}
+
+onMounted(fetchCidMap)
 </script>
 
 <template>
@@ -85,6 +148,45 @@ async function triggerOfflineImport(link: any) {
           class="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-bg text-text placeholder:text-text-faint text-xs font-mono focus:outline-none focus:border-accent"
         />
       </div>
+      <div class="flex items-center gap-1.5 text-xs font-mono text-text-muted shrink-0">
+        <FolderInput class="w-3.5 h-3.5" />
+        <span>转存目录:</span>
+        <select
+          v-model="defaultCid"
+          class="px-2.5 py-1.5 rounded-md border border-border bg-bg text-text text-xs font-mono focus:outline-none focus:border-accent min-h-8"
+        >
+          <option value="0">根目录</option>
+          <option v-for="(cid, name) in cidMap" :key="cid" :value="cid">{{ name }}</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Batch actions -->
+    <div v-if="selectedCount > 0" class="flex items-center justify-between gap-3 p-4 rounded-xl border border-accent/40 bg-accent-soft">
+      <div class="text-xs font-mono text-text">
+        已选 <span class="font-bold">{{ selectedCount }}</span> 项
+      </div>
+      <div class="flex items-center gap-2">
+        <button
+          @click="triggerBatchSave"
+          :disabled="batchRunning"
+          class="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-accent bg-accent hover:bg-accent-strong text-accent-contrast text-xs font-mono transition-colors disabled:opacity-60"
+        >
+          <Loader2 v-if="batchRunning" class="w-3.5 h-3.5 animate-spin" />
+          <Download v-else class="w-3.5 h-3.5" />
+          <span>{{ batchRunning ? '批量转存中...' : '批量转存到 115' }}</span>
+        </button>
+        <button
+          @click="clearSelection"
+          class="px-3 py-2 rounded-lg border border-border bg-surface text-xs font-mono text-text-muted hover:text-text transition-colors"
+        >
+          取消选择
+        </button>
+      </div>
+    </div>
+
+    <div v-if="batchMessage" class="px-4 py-2.5 rounded-lg border border-border bg-surface text-xs font-mono text-text-muted">
+      {{ batchMessage }}
     </div>
 
     <!-- Empty State -->
@@ -111,38 +213,59 @@ async function triggerOfflineImport(link: any) {
 
     <!-- Favorites List -->
     <div v-else class="space-y-3">
+      <div class="flex items-center gap-3 px-1">
+        <button
+          @click="selectAllVisible"
+          class="flex items-center gap-1 text-xs font-mono text-text-muted hover:text-accent transition-colors"
+        >
+          <CheckSquare class="w-3.5 h-3.5" />
+          <span>全选当前列表</span>
+        </button>
+      </div>
       <div
         v-for="item in filteredFavorites"
         :key="item.id"
-        class="p-4 rounded-xl border border-border bg-surface hover:border-border-strong transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+        class="p-4 rounded-xl border bg-surface transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+        :class="selectedIds.has(item.id) ? 'border-accent' : 'border-border hover:border-border-strong'"
       >
-        <div class="space-y-1.5 flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            <span
-              class="px-2 py-0.5 rounded text-[11px] font-mono font-medium text-white shrink-0 shadow-xs"
-              :style="{ backgroundColor: getDiskColor(item.disk_type) }"
-            >
-              {{ getDiskLabel(item.disk_type) }}
-            </span>
-            <RouterLink
-              :to="`/resource/${item.id}`"
-              class="text-sm font-medium text-text hover:text-accent truncate block"
-            >
-              {{ item.title }}
-            </RouterLink>
-          </div>
-          <div class="text-xs font-mono text-text-faint flex items-center gap-3">
-            <span>保存时间: {{ new Date(item.savedAt).toLocaleDateString() }}</span>
-            <span v-if="item.password">密码: {{ item.password }}</span>
-            <span v-if="item.first_source">来源: {{ item.first_source }}</span>
-          </div>
-
-          <div
-            v-if="pushMessage && pushMessage.id === item.id"
-            class="text-xs font-mono pt-1"
-            :class="pushMessage.ok ? 'text-ok' : 'text-danger'"
+        <div class="flex items-start gap-3 flex-1 min-w-0">
+          <button
+            v-if="is115(item)"
+            @click="toggleSelect(item.id)"
+            class="mt-0.5 text-text-faint hover:text-accent transition-colors shrink-0"
+            :title="selectedIds.has(item.id) ? '取消选择' : '加入批量转存'"
           >
-            {{ pushMessage.text }}
+            <CheckSquare v-if="selectedIds.has(item.id)" class="w-4 h-4 text-accent" />
+            <Square v-else class="w-4 h-4" />
+          </button>
+          <div class="space-y-1.5 flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span
+                class="px-2 py-0.5 rounded text-[11px] font-mono font-medium text-white shrink-0 shadow-xs"
+                :style="{ backgroundColor: getDiskColor(item.disk_type) }"
+              >
+                {{ getDiskLabel(item.disk_type) }}
+              </span>
+              <RouterLink
+                :to="`/resource/${item.id}`"
+                class="text-sm font-medium text-text hover:text-accent truncate block"
+              >
+                {{ item.title }}
+              </RouterLink>
+            </div>
+            <div class="text-xs font-mono text-text-faint flex items-center gap-3">
+              <span>保存时间: {{ new Date(item.savedAt).toLocaleDateString() }}</span>
+              <span v-if="item.password">密码: {{ item.password }}</span>
+              <span v-if="item.first_source">来源: {{ item.first_source }}</span>
+            </div>
+
+            <div
+              v-if="pushMessage && pushMessage.id === item.id"
+              class="text-xs font-mono pt-1"
+              :class="pushMessage.ok ? 'text-ok' : 'text-danger'"
+            >
+              {{ pushMessage.text }}
+            </div>
           </div>
         </div>
 
@@ -157,12 +280,14 @@ async function triggerOfflineImport(link: any) {
           </button>
 
           <button
-            @click="triggerOfflineImport(item)"
+            v-if="is115(item)"
+            @click="triggerSave(item)"
             :disabled="pushingId === item.id"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent bg-accent hover:bg-accent-strong text-accent-contrast text-xs font-mono transition-colors shadow-xs"
           >
-            <Download class="w-3.5 h-3.5" />
-            <span>推送到 115</span>
+            <Loader2 v-if="pushingId === item.id" class="w-3.5 h-3.5 animate-spin" />
+            <Download v-else class="w-3.5 h-3.5" />
+            <span>转存到 115</span>
           </button>
 
           <button
