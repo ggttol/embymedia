@@ -820,6 +820,11 @@ export class EmbymediaService extends TypertRemoteService {
     return this.credentialAvailability.check(id, signal) as unknown as Promise<JsonValue>
   }
 
+  async adminCredentialSave(id: string, value: string, signal: AbortSignal): Promise<void> {
+    if (!isCredentialId(id)) throw new EmbymediaError('INVALID_INPUT', 'unknown credential id')
+    await this.credentialRecords.saveDirect(id, value, signal)
+  }
+
   private wireResult(capabilityId: string, data: JsonValue): JsonValue {
     return { schemaVersion: SCHEMA_VERSION, capabilityId, correlationId: randomUUID(), data, warnings: [] }
   }

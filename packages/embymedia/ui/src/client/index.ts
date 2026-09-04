@@ -38,6 +38,10 @@ interface AdminRemote {
       | { readonly ok: true; readonly value: unknown }
       | { readonly ok: false; readonly error: { readonly message?: string } }
     >
+    credentialSave(id: string, value: string, signal: AbortSignal): Promise<
+      | { readonly ok: true; readonly value: unknown }
+      | { readonly ok: false; readonly error: { readonly message?: string } }
+    >
   }
 }
 
@@ -83,6 +87,12 @@ export function apply(ctx: Context): void {
         const result = await admin.credentialCheck(id, signal)
         if (!result.ok) throw new Error(result.error.message ?? '凭据可用性检查失败')
         return result.value
+      },
+      saveCredential: async (id: string, value: string, signal: AbortSignal) => {
+        const admin = adminRemote['embymedia-admin']
+        if (admin === undefined) throw new Error('EmbyMedia Admin Remote 尚未就绪')
+        const result = await admin.credentialSave(id, value, signal)
+        if (!result.ok) throw new Error(result.error?.message ?? '凭据保存失败')
       },
       sendPrompt: async (text: string) => {
         const current = sessions.list.getSnapshot().current

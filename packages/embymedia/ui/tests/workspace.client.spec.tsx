@@ -58,17 +58,18 @@ describe('Emby operations workspace', () => {
     expect(await screen.findByRole('button', { name: /打开 Emby 运营台/ })).toBeTruthy()
   })
 
-  it('routes credential configuration to a write-only rotation plan', async () => {
-    const sendPrompt = vi.fn(async () => {})
-    render(<EmbyWorkspace loadSnapshot={vi.fn(async () => snapshot)} checkCredential={checkCredential} sendPrompt={sendPrompt} />)
+  it('supports direct inline paste and save for credentials', async () => {
+    const saveCredential = vi.fn(async () => {})
+    render(<EmbyWorkspace loadSnapshot={vi.fn(async () => snapshot)} checkCredential={checkCredential} saveCredential={saveCredential} sendPrompt={vi.fn(async () => {})} />)
     await screen.findByText('媒体信号脊柱')
     fireEvent.click(screen.getByRole('button', { name: /配置中心/ }))
-    const buttons = screen.getAllByRole('button', { name: '配置 / 轮换' })
+    const buttons = screen.getAllByRole('button', { name: '粘贴配置' })
     fireEvent.click(buttons[1]!)
-    await waitFor(() => { expect(sendPrompt).toHaveBeenCalledOnce() })
-    expect(sendPrompt).toHaveBeenCalledWith(expect.stringContaining('config.credential_rotate'))
-    expect(sendPrompt).toHaveBeenCalledWith(expect.stringContaining('tmdb-api-key'))
-    expect(document.body.textContent).not.toContain('sensitive-value')
+    const input = screen.getByPlaceholderText(/直接在此粘贴新的/)
+    fireEvent.change(input, { target: { value: 'new-secret-value' } })
+    fireEvent.click(screen.getByRole('button', { name: '直接保存' }))
+    await waitFor(() => { expect(saveCredential).toHaveBeenCalledOnce() })
+    expect(saveCredential).toHaveBeenCalledWith('tmdb-api-key', 'new-secret-value', expect.any(AbortSignal))
   })
 
   it('checks one configured credential and renders only redacted availability feedback', async () => {

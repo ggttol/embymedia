@@ -27,6 +27,7 @@ interface Snapshot {
 export interface EmbyWorkspaceProps {
   loadSnapshot(signal: AbortSignal): Promise<unknown>
   checkCredential(id: string, signal: AbortSignal): Promise<unknown>
+  saveCredential?(id: string, value: string, signal: AbortSignal): Promise<void>
   sendPrompt(text: string): Promise<void>
 }
 
@@ -131,7 +132,7 @@ function SettingEditor({ label, settingKey, value, onPrompt }: { label: string; 
   </div>
 }
 
-export function EmbyWorkspace({ loadSnapshot, checkCredential, sendPrompt }: EmbyWorkspaceProps) {
+export function EmbyWorkspace({ loadSnapshot, checkCredential, saveCredential, sendPrompt }: EmbyWorkspaceProps) {
   const [open, setOpen] = useState(() => localStorage.getItem('embymedia.workspace.open') !== 'false')
   const [module, setModule] = useState<ModuleId>('dashboard')
   const [snapshot, setSnapshot] = useState<Snapshot>()
@@ -139,7 +140,9 @@ export function EmbyWorkspace({ loadSnapshot, checkCredential, sendPrompt }: Emb
   const [error, setError] = useState('')
   const [action, setAction] = useState('')
   const [credentialChecks, setCredentialChecks] = useState<Record<string, CredentialCheckState>>({})
-
+  const [editingCred, setEditingCred] = useState<string | null>(null)
+  const [credDraft, setCredDraft] = useState('')
+  const [credSaving, setCredSaving] = useState(false)
   const refresh = () => {
     const controller = new AbortController()
     setLoading(true)
@@ -196,6 +199,27 @@ export function EmbyWorkspace({ loadSnapshot, checkCredential, sendPrompt }: Emb
   const show = () => { localStorage.setItem('embymedia.workspace.open', 'true'); setOpen(true) }
 
   if (!open) return <button className={css.launcher} onClick={show}><span>EM</span>打开 Emby 运营台</button>
+
+  const saveDirectCredential = async (id: string) => {
+    if (!credDraft.trim()) return
+    setCredSaving(true)
+    setError('')
+    try {
+      if (saveCredential) {
+        await saveCredential(id, credDraft.trim(), new AbortController().signal)
+      } else {
+        throw new Error('未支持直接保存凭据')
+      }
+      setEditingCred(null)
+      setCredDraft('')
+      refresh()
+      void runCredentialCheck(id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCredSaving(false)
+    }
+  }
 
   const data = snapshot
   const activeTasks = (data?.tasks.counts.running ?? 0) + (data?.tasks.counts.queued ?? 0) + (data?.tasks.counts.verifying ?? 0)
@@ -295,9 +319,42 @@ export function EmbyWorkspace({ loadSnapshot, checkCredential, sendPrompt }: Emb
           <div className={css.configBlockHeading}><h3>只写凭据 / Write-only credentials</h3><button disabled={checksRunning || !data?.credentials.some(item => item.configured)} onClick={() => { void runAllCredentialChecks() }}>{checksRunning ? '检查中…' : '全部检查'}</button></div>
           {data?.credentials.map((credential) => {
             const meta = CREDENTIAL_LABELS[credential.id] ?? { title: credential.id, note: '' }
-            const webhook = credential.id === 'clouddrive-webhook-secret'
             const check = credentialChecks[credential.id]
-            return <div className={css.credentialRow} key={credential.id}><span className={css.credentialGlyph}>{credential.configured ? '●' : '○'}</span><div><strong>{meta.title}</strong><small>{meta.note}</small><code>{credential.id}</code>{check && <span className={css.credentialCheck} data-tone={check.running ? 'running' : check.ok ? 'ok' : 'error'} aria-live="polite">{check.running ? '正在检查…' : `${check.message ?? '检查完成'}${check.latencyMs === undefined ? '' : ` · ${String(check.latencyMs)} ms`}`}</span>}</div><Status value={credential.configured ? 'configured' : 'missing'} /><div className={css.credentialActions}><button disabled={!credential.configured || check?.running === true} onClick={() => { void runCredentialCheck(credential.id) }}>{check?.running ? '检查中…' : '检查可用性'}</button><button disabled={!credential.writable || webhook || !supported.has('config.credential_rotate')} onClick={() => { void prompt(`创建 config.credential_rotate plan，credential=${credential.id}。只生成安全输入卡，等待我填写并审批，不要在聊天中要求或回显秘密。`) }}>{webhook ? '维护流程' : '配置 / 轮换'}</button></div></div>
+            const isEditing = editingCred === credential.id
+            return <div className={css.credentialRow} key={credential.id} style={{ flexWrap: 'wrap' }}>
+              <span className={css.credentialGlyph}>{credential.configured ? '●' : '○'}</span>
+              <div><strong>{meta.title}</strong><small>{meta.note}</small><code>{credential.id}</code>{check && <span className={css.credentialCheck} data-tone={check.running ? 'running' : check.ok ? 'ok' : 'error'} aria-live="polite">{check.running ? '正在检查…' : `${check.message ?? '检查完成'}${check.latencyMs === undefined ? '' : ` · ${String(check.latencyMs)} ms`}`}</span>}</div>
+              <Status value={credential.configured ? 'configured' : 'missing'} />
+              <div className={css.credentialActions}>
+                <button disabled={!credential.configured || check?.running === true} onClick={() => { void runCredentialCheck(credential.id) }}>{check?.running ? '检查中…' : '检查可用性'}</button>
+                <button disabled={!credential.writable} onClick={() => {
+                  if (isEditing) {
+                    setEditingCred(null)
+                    setCredDraft('')
+                  } else {
+                    setEditingCred(credential.id)
+                    setCredDraft('')
+                  }
+                }}>{isEditing ? '取消' : '粘贴配置'}</button>
+              </div>
+              {isEditing && <div style={{ width: '100%', marginTop: '10px', display: 'flex', gap: '8px' }}>
+                <input
+                  type={credential.id.includes('key') || credential.id.includes('secret') ? 'password' : 'text'}
+                  placeholder={`直接在此粘贴新的 ${meta.title}…`}
+                  value={credDraft}
+                  onChange={(e) => { setCredDraft(e.target.value) }}
+                  style={{ flex: 1, padding: '8px 12px', background: '#1c1917', border: '1px solid #44403c', color: '#f5f5f4', borderRadius: '4px', fontSize: '13px' }}
+                  autoFocus
+                />
+                <button
+                  disabled={credSaving || !credDraft.trim()}
+                  onClick={() => { void saveDirectCredential(credential.id) }}
+                  style={{ padding: '8px 16px', background: '#eab308', color: '#000', fontWeight: 'bold', border: 'none', borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                >
+                  {credSaving ? '保存中…' : '直接保存'}
+                </button>
+              </div>}
+            </div>
           }) ?? <Empty>凭据状态不可用</Empty>}
         </div>
         <div className={css.configNote}><strong>115 API 说明</strong><p>当前运营插件使用 115 Cookie，不等同于 CloudDrive2 的 115 Open API。Open API OAuth 尚未接入，界面不会假装已支持。</p></div>
