@@ -64,12 +64,29 @@ func (s *DriveService) GetDefaultAccount() (*domain.DriveAccount, error) {
 		}
 		return nil, errors.New("no drive accounts configured")
 	}
-	for _, a := range accs {
-		if a.IsDefault {
-			return &a, nil
+	for i := range accs {
+		if accs[i].IsDefault {
+			s.syncAccountCookie(&accs[i])
+			return &accs[i], nil
 		}
 	}
+	s.syncAccountCookie(&accs[0])
 	return &accs[0], nil
+}
+
+// syncAccountCookie keeps the stored account credential in step with the
+// settings-center cookie, which is the value the operator actually updates.
+func (s *DriveService) syncAccountCookie(acc *domain.DriveAccount) {
+	if acc == nil {
+		return
+	}
+	cookie, _ := s.db.GetSetting("115_cookie")
+	if cookie == "" || cookie == acc.Cookie {
+		return
+	}
+	acc.Cookie = cookie
+	acc.UpdatedAt = time.Now()
+	_ = s.db.SaveAccount(acc)
 }
 
 // ListFiles lists files in a directory for a given account
@@ -639,9 +656,10 @@ func (s *DriveService) getAccount(id string) (*domain.DriveAccount, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, a := range accs {
-		if a.ID == id {
-			return &a, nil
+	for i := range accs {
+		if accs[i].ID == id {
+			s.syncAccountCookie(&accs[i])
+			return &accs[i], nil
 		}
 	}
 	return s.GetDefaultAccount()

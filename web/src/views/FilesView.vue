@@ -12,7 +12,7 @@ import {
   Users,
   FolderInput
 } from 'lucide-vue-next'
-
+const currentCid = ref('0')
 const cidMap = ref<Record<string, string>>({})
 const actionError = ref('')
 
@@ -279,11 +279,11 @@ onMounted(async () => {
             class="hover:bg-bg-muted/30 transition-colors group"
           >
             <td class="py-3 px-5 flex items-center gap-3">
-              <Folder v-if="file.is_dir" class="w-4 h-4 text-accent shrink-0" />
+              <Folder v-if="file.is_folder" class="w-4 h-4 text-accent shrink-0" />
               <File v-else class="w-4 h-4 text-text-faint shrink-0" />
 
               <button
-                v-if="file.is_dir"
+                v-if="file.is_folder"
                 @click="enterFolder(file)"
                 class="text-text font-medium hover:text-accent truncate text-left"
               >
@@ -292,10 +292,10 @@ onMounted(async () => {
               <span v-else class="text-text truncate">{{ file.name }}</span>
             </td>
             <td class="py-3 px-4 text-text-faint">
-              {{ file.is_dir ? '-' : (file.size ? (file.size / (1024*1024)).toFixed(1) + ' MB' : '-') }}
+              {{ file.is_folder ? '-' : (file.size ? (file.size / (1024*1024)).toFixed(1) + ' MB' : '-') }}
             </td>
             <td class="py-3 px-4 text-text-faint">
-              {{ file.updated_at ? new Date(file.updated_at).toLocaleDateString() : '-' }}
+              {{ file.updated_time ? new Date(file.updated_time).toLocaleDateString() : '-' }}
             </td>
             <td class="py-3 px-4 text-right whitespace-nowrap">
               <button
