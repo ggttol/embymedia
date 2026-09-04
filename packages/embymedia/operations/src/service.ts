@@ -34,6 +34,8 @@ import { absoluteEpisodeKeysFromText, episodeKeysFromText } from './domain/serie
 const INTERNAL_TOOL_MAX_BYTES = 1024 * 1024
 const WIRE_TOOL_SET = new Set<string>(WIRE_TOOLS)
 const RESOURCE_CANDIDATE_TTL_MS = 15 * 60_000
+const MAX_STAGED_RESOURCE_CANDIDATES = 1_000
+const MAX_STAGED_PLAN_SECRETS = 1_000
 const DISPLAY_CONTROL = /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/gu
 const DISPLAY_ANSI = /\u001B\[[0-?]*[ -/]*[@-~]/gu
 const DISPLAY_URL = /https?:\/\/\S+/giu
@@ -213,10 +215,17 @@ export class EmbymediaService extends TypertRemoteService {
       const callId = typeof payload.callId === 'string' && payload.callId.trim().length > 0 ? payload.callId.trim() : randomUUID()
       const agent = { id: sessionId } as Agent
       const approval: ApprovalRequester = { request: async () => 'allowed-once' }
+      const requestAbort = new AbortController()
+      const abortOnDisconnect = (): void => { requestAbort.abort(new Error('client disconnected')) }
+      request.on('aborted', abortOnDisconnect)
+      response.on('close', () => {
+        if (!response.writableEnded) abortOnDisconnect()
+      })
+      const signal = AbortSignal.any([this.lifecycle.signal, requestAbort.signal])
       const result = await this.invokeTool(toolValue as WireTool, args, {
         agent,
         callId,
-        signal: this.lifecycle.signal,
+        signal,
         approval,
       })
       reply(200, { ok: true, result })
@@ -663,6 +672,17 @@ export class EmbymediaService extends TypertRemoteService {
     }
   }
   private stageResourceCandidate(item: ResourceSearchItem, sessionId: string): string {
+    if (this.resourceCandidates.size >= MAX_STAGED_RESOURCE_CANDIDATES) {
+      let oldestKey: string | undefined
+      let oldestExpiresAt = Number.POSITIVE_INFINITY
+      for (const [key, staged] of this.resourceCandidates.entries()) {
+        if (staged.expiresAt < oldestExpiresAt) {
+          oldestExpiresAt = staged.expiresAt
+          oldestKey = key
+        }
+      }
+      if (oldestKey !== undefined) this.dropResourceCandidate(oldestKey)
+    }
     const candidateId = randomUUID()
     const expiresAt = Date.now() + RESOURCE_CANDIDATE_TTL_MS
     const timer = setTimeout(() => { this.dropResourceCandidate(candidateId) }, RESOURCE_CANDIDATE_TTL_MS)
@@ -757,6 +777,17 @@ export class EmbymediaService extends TypertRemoteService {
 
   private stagePlanSecret(plan: OperationProjection, sessionId: string, value: string | readonly (string | undefined)[]): void {
     this.dropPlanSecret(plan.id)
+    if (this.planSecrets.size >= MAX_STAGED_PLAN_SECRETS) {
+      let oldestKey: string | undefined
+      let oldestExpiresAt = Number.POSITIVE_INFINITY
+      for (const [key, staged] of this.planSecrets.entries()) {
+        if (staged.expiresAt < oldestExpiresAt) {
+          oldestExpiresAt = staged.expiresAt
+          oldestKey = key
+        }
+      }
+      if (oldestKey !== undefined) this.dropPlanSecret(oldestKey)
+    }
     const expiresAt = Date.parse(plan.expiresAt)
     const timer = setTimeout(() => { this.dropPlanSecret(plan.id) }, Math.max(0, expiresAt - Date.now()))
     timer.unref()

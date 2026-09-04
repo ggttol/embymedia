@@ -197,6 +197,25 @@ it('dispatches bounded secret-free candidate and directory inspection', async ()
   expect(c115.listEntriesPage).toHaveBeenCalledWith('10', 300, 500, expect.any(AbortSignal))
 })
 
+it('bounds staged candidates and evicts the oldest entries when capacity is reached', async () => {
+  const service = new EmbymediaService(new Context(), {}) as unknown as CandidateHarness & {
+    stageResourceCandidate: (item: unknown, sessionId: string) => string
+    resourceCandidates: Map<string, unknown>
+  }
+  const ids: string[] = []
+  for (let i = 0; i < 1_005; i++) {
+    ids.push(service.stageResourceCandidate({
+      title: `Candidate ${i}`,
+      diskType: '115',
+      url: `https://115.com/s/code${i}`,
+    }, 'session-cap'))
+  }
+  expect(service.resourceCandidates.size).toBeLessThanOrEqual(1_000)
+  // The earliest items should have been evicted to make room for newer ones
+  expect(service.resourceCandidates.has(ids[0]!)).toBe(false)
+  expect(service.resourceCandidates.has(ids[1_004]!)).toBe(true)
+})
+
 
 describe('Embymedia Host service', () => {
   it('opens one state owner, registers loopback health, and quiesces on disposal', async () => {
