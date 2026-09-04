@@ -93,6 +93,7 @@ func (s *Server) registerRoutes() {
 	// Settings & Agent Tokens
 	v1.GET("/settings", s.handleGetSettings)
 	v1.POST("/settings", s.handleUpdateSettings)
+	v1.POST("/settings/check", s.handleCheckSettings)
 	v1.GET("/tokens", s.handleListTokens)
 	v1.POST("/tokens", s.handleCreateToken)
 	v1.DELETE("/tokens/:id", s.handleDeleteToken)
@@ -380,6 +381,24 @@ func (s *Server) handleUpdateSettings(c echo.Context) error {
 		"success":    true,
 		"settings":   state.Values,
 		"configured": state.Configured,
+		"health":     state.Health,
+	})
+}
+
+func (s *Server) handleCheckSettings(c echo.Context) error {
+	var req struct {
+		Component string `json:"component"`
+	}
+	_ = c.Bind(&req)
+	if req.Component != "" {
+		health := s.settings.CheckAvailability(req.Component)
+		return c.JSON(http.StatusOK, map[string]any{
+			"component": req.Component,
+			"health":    health,
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"health": s.settings.CheckAll(),
 	})
 }
 

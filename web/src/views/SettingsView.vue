@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Check, CircleAlert, FileCode, HardDrive, Loader2, Radio, Save, Tv } from 'lucide-vue-next'
+import { Check, CircleAlert, FileCode, HardDrive, Loader2, Radio, RefreshCw, Save, Tv } from 'lucide-vue-next'
 
 const emptySettings: Record<string, string> = {
   '115_cookie': '',
@@ -11,16 +11,16 @@ const emptySettings: Record<string, string> = {
   'resource_api_url': '',
   'resource_api_token': '',
 }
-
 const settings = ref({ ...emptySettings })
 const configured = ref<Record<string, boolean>>({ c115: false, emby: false, clouddrive: false, resource: false })
+const health = ref<Record<string, { status: string; message: string; latency?: number; details?: string }>>({})
+const checking = ref<Record<string, boolean>>({ c115: false, emby: false, clouddrive: false, resource: false })
 const baseline = ref(JSON.stringify(settings.value))
 const loaded = ref(false)
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const feedback = ref('')
 const dirty = computed(() => loaded.value && JSON.stringify(settings.value) !== baseline.value)
 const configuredCount = computed(() => Object.values(configured.value).filter(Boolean).length)
-
 const integrationItems = [
   {
     key: 'c115',
@@ -56,12 +56,34 @@ async function fetchSettings() {
     const data = await response.json()
     settings.value = { ...emptySettings, ...(data.settings ?? {}) }
     configured.value = { ...configured.value, ...(data.configured ?? {}) }
+    health.value = data.health ?? {}
     baseline.value = JSON.stringify(settings.value)
     saveState.value = 'idle'
     loaded.value = true
   } catch (error) {
     saveState.value = 'error'
     feedback.value = error instanceof Error ? error.message : '无法读取设置'
+  }
+}
+
+async function checkComponent(key: string) {
+  checking.value[key] = true
+  try {
+    const response = await fetch('/api/v1/settings/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ component: key }),
+    })
+    if (response.ok) {
+      const data = await response.json()
+      if (data.health) {
+        health.value = { ...health.value, [key]: data.health }
+      }
+    }
+  } catch (e) {
+    console.error(e)
+  } finally {
+    checking.value[key] = false
   }
 }
 
@@ -79,15 +101,15 @@ async function saveSettings() {
     if (!response.ok) throw new Error(data.error || '保存设置失败')
     settings.value = { ...settings.value, ...(data.settings ?? {}) }
     configured.value = { ...configured.value, ...(data.configured ?? {}) }
+    if (data.health) health.value = data.health
     baseline.value = JSON.stringify(settings.value)
     saveState.value = 'saved'
-    feedback.value = '设置已持久化。状态仅表示必填值已保存，不代表外部服务连接正常。'
+    feedback.value = '设置已保存并同步状态。'
   } catch (error) {
     saveState.value = 'error'
     feedback.value = error instanceof Error ? error.message : '保存设置失败'
   }
 }
-
 watch(settings, () => {
   if (loaded.value && saveState.value === 'saved') {
     saveState.value = 'idle'
@@ -113,12 +135,36 @@ onMounted(fetchSettings)
     </header>
 
     <div class="grid grid-cols-2 lg:grid-cols-4 border border-border bg-surface rounded-xl overflow-hidden">
-      <div v-for="item in integrationItems" :key="item.key" class="p-4 border-b border-r border-border last:border-r-0 lg:border-b-0">
-        <div class="text-xs text-text-muted">{{ item.label }}</div>
-        <div class="mt-2 flex items-center gap-2 text-xs font-mono" :class="configured[item.key] ? 'text-ok' : 'text-warn'">
-          <Check v-if="configured[item.key]" class="w-3.5 h-3.5" />
-          <CircleAlert v-else class="w-3.5 h-3.5" />
-          <span>{{ configured[item.key] ? '已保存' : '待配置' }}</span>
+      <div v-for="item in integrationItems" :key="item.key" class="p-4 border-b border-r border-border last:border-r-0 lg:border-b-0 flex flex-col justify-between">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-text-muted">{{ item.label }}</span>
+          <button type="button" :disabled="checking[item.key]" class="p-1 text-text-faint hover:text-text rounded transition-colors" title="测试连接" @click="checkComponent(item.key)">
+            <Loader2 v-if="checking[item.key]" class="w-3 h-3 animate-spin text-accent" />
+            <RefreshCw v-else class="w-3 h-3" />
+          </button>
+        </div>
+        <div class="mt-2.5">
+          <div class="flex items-center gap-2 text-xs font-mono">
+            <span v-if="health[item.key]?.status === 'ok'" class="inline-flex items-center gap-1.5 text-ok font-semibold">
+              <span class="w-2 h-2 rounded-full bg-ok"></span>
+              正常在线
+            </span>
+            <span v-else-if="health[item.key]?.status === 'error'" class="inline-flex items-center gap-1.5 text-danger font-semibold">
+              <span class="w-2 h-2 rounded-full bg-danger"></span>
+              异常
+            </span>
+            <span v-else-if="configured[item.key]" class="inline-flex items-center gap-1.5 text-ok">
+              <Check class="w-3.5 h-3.5" />
+              已配置
+            </span>
+            <span v-else class="inline-flex items-center gap-1.5 text-warn">
+              <CircleAlert class="w-3.5 h-3.5" />
+              待配置
+            </span>
+          </div>
+          <p v-if="health[item.key]?.message" class="text-[11px] text-text-faint mt-1 truncate" :title="health[item.key]?.message">
+            {{ health[item.key]?.message }}
+          </p>
         </div>
       </div>
     </div>
