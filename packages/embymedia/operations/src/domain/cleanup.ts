@@ -44,6 +44,43 @@ export interface PreparedDedupDelete extends PreparedMediaDelete {
   readonly dedupExpectation: DedupExpectation
 }
 
+/** Cross-library duplicate movie pair with quality comparison. */
+export interface CrossLibraryDuplicate {
+  readonly name: string
+  readonly tmdbId?: string | undefined
+  readonly primaryItem: EmbyItem
+  readonly latestItem: EmbyItem
+  readonly betterQuality: 'primary' | 'latest' | 'equal'
+}
+
+const QUALITY_RANK: Record<string, number> = {
+  '2160p': 40,
+  '4k': 40,
+  '1080p': 30,
+  '720p': 20,
+  '480p': 10,
+}
+
+export function compareMediaQuality(pathA: string, pathB: string): 'a' | 'b' | 'equal' {
+  const score = (p: string) => {
+    let s = 0
+    const lower = p.toLowerCase()
+    for (const [k, v] of Object.entries(QUALITY_RANK)) {
+      if (lower.includes(k)) { s = Math.max(s, v); break }
+    }
+    if (lower.includes('dv') || lower.includes('dolby')) s += 5
+    if (lower.includes('hdr')) s += 3
+    if (lower.includes('60fps')) s += 2
+    if (lower.includes('remux') || lower.includes('edr') || lower.includes('hq')) s += 2
+    return s
+  }
+  const sa = score(pathA)
+  const sb = score(pathB)
+  if (sa > sb) return 'a'
+  if (sb > sa) return 'b'
+  return 'equal'
+}
+
 
 function directMediaRoot(root: string, path: string, itemId: string, itemType: string): { readonly relativePath: string; readonly nested: boolean } {
   if (!path.startsWith(`${root}/`)) throw new EmbymediaError('POLICY_DENIED', `Emby item ${itemId} is outside its library root`)
@@ -256,6 +293,44 @@ export class MediaCleanupDomainService {
     }
     const prepared = await this.prepareTargets(libraryId, removeItemIds, true, signal, cloudRootIds, seriesInventory)
     return { ...prepared, dedupExpectation: { libraryId, tmdbId, keepItemId } }
+  }
+
+  /**
+   * Scans two Emby libraries (e.g. 电影 and 最新电影) for duplicate items by TMDB or exact title.
+   * @param libraryA First library ID.
+   * @param libraryB Second library ID.
+   * @param signal Cancellation signal.
+   * @returns List of duplicate pairs with quality comparison.
+   */
+  async findCrossLibraryDuplicates(libraryA: string, libraryB: string, signal: AbortSignal): Promise<readonly CrossLibraryDuplicate[]> {
+    const emby = await this.embyClient(signal)
+    const itemsA = await emby.items(libraryA, 'Movie', 'ProviderIds,Path', signal)
+    const itemsB = await emby.items(libraryB, 'Movie', 'ProviderIds,Path', signal)
+    const byTmdb = new Map<string, EmbyItem>()
+    const byName = new Map<string, EmbyItem>()
+    for (const item of itemsA) {
+      if (item.ProviderIds?.Tmdb) byTmdb.set(item.ProviderIds.Tmdb, item)
+      if (item.Name) byName.set(item.Name, item)
+    }
+    const duplicates: CrossLibraryDuplicate[] = []
+    for (const item of itemsB) {
+      signal.throwIfAborted()
+      const tmdbMatch = item.ProviderIds?.Tmdb ? byTmdb.get(item.ProviderIds.Tmdb) : undefined
+      const nameMatch = item.Name ? byName.get(item.Name) : undefined
+      const match = tmdbMatch ?? nameMatch
+      if (match !== undefined) {
+        const cmp = compareMediaQuality(match.Path ?? '', item.Path ?? '')
+        const betterQuality = cmp === 'a' ? 'primary' : cmp === 'b' ? 'latest' : 'equal'
+        duplicates.push({
+          name: item.Name,
+          tmdbId: item.ProviderIds?.Tmdb ?? match.ProviderIds?.Tmdb,
+          primaryItem: match,
+          latestItem: item,
+          betterQuality,
+        })
+      }
+    }
+    return duplicates
   }
 
   /**

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { C115Client, C115Entry } from '../src/clients/c115.ts'
 import type { EmbyClient, EmbyItem } from '../src/clients/emby.ts'
-import { MediaCleanupDomainService } from '../src/domain/cleanup.ts'
+import { compareMediaQuality, MediaCleanupDomainService } from '../src/domain/cleanup.ts'
 
 const signal = new AbortController().signal
 
@@ -15,6 +15,7 @@ describe('media cleanup preparation and verification', () => {
   let embyItems: Map<string, EmbyItem>
   let cloudEntries: C115Entry[]
   let cloudLookups: string[]
+  let libraryItems: Map<string, EmbyItem[]>
   let service: MediaCleanupDomainService
 
   beforeEach(async () => {
@@ -24,11 +25,12 @@ describe('media cleanup preparation and verification', () => {
     await mkdir(mediaRoot)
     await mkdir(strmRoot)
     embyItems = new Map()
+    libraryItems = new Map<string, EmbyItem[]>()
     cloudEntries = []
     cloudLookups = []
     const emby = {
       item: async (itemId: string) => embyItems.get(itemId),
-      items: async () => [...embyItems.values()].filter(item => item.Type === 'Series'),
+      items: async (libraryId: string, itemType?: string) => (libraryItems.get(libraryId) ?? [...embyItems.values()]).filter(item => itemType === undefined || item.Type === itemType),
       itemsByPath: async (_libraryId: string, path: string) => [...embyItems.values()].filter(item => item.Path === path || item.Path?.startsWith(`${path}/`) === true),
     } as unknown as EmbyClient
     const c115 = {
@@ -323,6 +325,26 @@ describe('media cleanup preparation and verification', () => {
         targets: [{ embyAbsent: false, strmAbsent: false, cloudAbsent: false }],
         dedup: { currentItemIds: ['series-old', 'series-keeper'], keeperRetained: false },
       },
+    })
+  })
+  it('compares media quality heuristics correctly', () => {
+    expect(compareMediaQuality('Movie.2025.2160p.DV.HDR.strm', 'Movie.2025.1080p.strm')).toBe('a')
+    expect(compareMediaQuality('Movie.2025.1080p.strm', 'Movie.2025.2160p.strm')).toBe('b')
+    expect(compareMediaQuality('Movie.2025.1080p.strm', 'Movie.2025.1080p.strm')).toBe('equal')
+  })
+
+  it('scans cross-library duplicates and identifies quality differences', async () => {
+    const movie1: EmbyItem = { Id: 'm1', Name: 'Test Movie', Type: 'Movie', Path: '/strm/电影/Test.Movie.1080p.strm', ProviderIds: { Tmdb: '100' } }
+    const movie2: EmbyItem = { Id: 'm2', Name: 'Test Movie', Type: 'Movie', Path: '/strm/最新电影/Test.Movie.2160p.DV.strm', ProviderIds: { Tmdb: '100' } }
+    libraryItems.set('library-1', [movie1])
+    libraryItems.set('library-2', [movie2])
+
+    const dups = await service.findCrossLibraryDuplicates('library-1', 'library-2', signal)
+    expect(dups).toHaveLength(1)
+    expect(dups[0]).toMatchObject({
+      name: 'Test Movie',
+      tmdbId: '100',
+      betterQuality: 'latest',
     })
   })
 })

@@ -8,6 +8,9 @@ describe('poster and metadata repair', () => {
   it('preserves useful legacy name cleanup and year matching heuristics', () => {
     expect(cleanMediaName('The.Movie.2024.2160p.BluRay.REMUX.DV.HDR')).toEqual({ name: 'The Movie', year: 2024 })
     expect(cleanMediaName('剧集名称 [国语中字] 1080p WEB-DL')).toEqual({ name: '剧集名称' })
+    expect(cleanMediaName('能有多大事 [全30集][臻彩MAXPLUS]')).toEqual({ name: '能有多大事' })
+    expect(cleanMediaName('满分恋人 [全 25 集][臻彩 MAXPLUS] (2026)')).toEqual({ name: '满分恋人', year: 2026 })
+    expect(cleanMediaName('F1：狂飙飞车 内嵌官方简繁字幕 F1 (2025)')).toEqual({ name: 'F1：狂飙飞车 内嵌官方简繁字幕 F1', year: 2025 })
   })
 
   it('rejects private, loopback, credentialed, and non-HTTP image URLs', async () => {
@@ -36,7 +39,18 @@ describe('poster and metadata repair', () => {
     const service = new PosterDomainService(async () => emby, async () => tmdb, new ProxyHttpTransport())
     const candidates = await service.search('The.Movie.2024.2160p', undefined, 'movie', new AbortController().signal)
     expect(candidates[0]).toMatchObject({ tmdbId: '42', name: 'The Movie', year: 2024, score: 100 })
+
     await expect(service.apply('item-1', '42', new AbortController().signal)).resolves.toMatchObject({ ProviderIds: { Tmdb: '42' } })
     expect(calls).toEqual(['apply', 'refresh'])
+  })
+
+  it('locks item poster against automatic metadata overwrite', async () => {
+    const calls: Array<{ itemId: string; body: unknown }> = []
+    const emby = {
+      updateItem: async (itemId: string, body: unknown) => { calls.push({ itemId, body }) },
+    } as unknown as EmbyClient
+    const service = new PosterDomainService(async () => emby, async () => ({} as TmdbClient), new ProxyHttpTransport())
+    await service.lockPoster('lib-123', new AbortController().signal)
+    expect(calls).toEqual([{ itemId: 'lib-123', body: { LockData: true, LockedFields: ['PrimaryImage', 'All'] } }])
   })
 })

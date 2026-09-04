@@ -342,6 +342,10 @@ export class EmbyClient {
     await this.status('DELETE', `/Items/${encodeURIComponent(nonEmpty(itemId, 'item id'))}`, signal)
   }
 
+  async updateItem(itemId: string, item: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<void> {
+    await this.status('POST', `/Items/${encodeURIComponent(nonEmpty(itemId, 'item id'))}`, signal, { body: item })
+  }
+
   async notifyMediaUpdated(updates: readonly { readonly Path: string; readonly UpdateType: 'Created' | 'Modified' | 'Deleted' }[], signal: AbortSignal): Promise<void> {
     if (updates.length === 0) throw new EmbymediaError('INVALID_INPUT', 'at least one media update is required')
     await this.status('POST', '/Library/Media/Updated', signal, { body: { Updates: updates } })

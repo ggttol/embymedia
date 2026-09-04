@@ -7,7 +7,7 @@ import { EmbymediaError } from '../errors.ts'
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const YEAR_PATTERN = /(?:^|[\s.\-_[(])((?:19|20)\d{2})(?:$|[\s.\-_\])])/g
-const NOISE_PATTERN = /\b(?:2160p|1080p|720p|4k|bluray|blu-ray|web[-_. ]?dl|webrip|hdtv|remux|x26[45]|h26[45]|hevc|aac|dts|atmos|hdr(?:10)?|dv|dolby|proper|repack)\b/gi
+const NOISE_PATTERN = /\b(?:2160p|1080p|720p|4k|bluray|blu-ray|web[-_. ]?dl|webrip|hdtv|remux|x26[45]|h26[45]|hevc|aac|dts(?:[-_. ]?5\.1)?|atmos|hdr(?:10(?:\+)?)?|dv|dolby|proper|repack|maxplus|edr|ddp(?:[-_. ]?5\.1)?|60fps|hq)\b/gi
 
 export interface PosterCandidate {
   readonly tmdbId: string
@@ -33,7 +33,8 @@ export function cleanMediaName(value: string): { name: string; year?: number } {
   const name = normalized
     .replace(YEAR_PATTERN, ' ')
     .replace(NOISE_PATTERN, ' ')
-    .replace(/\[[^\]]*]|\([^)]*(?:rip|字幕|国语|粤语|中字)[^)]*\)/gi, ' ')
+    .replace(/\[[^\]]*]|\([^)]*(?:rip|字幕|国语|粤语|中字|全\d+集|完结|更新|臻彩|高码|4K|HD|简繁|双语|特别版)[^)]*\)/gi, ' ')
+    .replace(/(?:\[(?:全\d+集|完结|更新至\d+集|臻彩|高码|4K|HD|简繁|双语|国粤双语|MAXPLUS|\d+fps)\])+/gi, ' ')
     .replace(/\s+/g, ' ')
     .replace(/[-–—_ ]+$/g, '')
     .trim()
@@ -154,6 +155,16 @@ export class PosterDomainService {
     const verified = await emby.item(itemId, 'ProviderIds,Path', signal)
     if (verified === undefined) throw new EmbymediaError('VERIFICATION_FAILED', 'refreshed Emby item is not visible')
     return verified
+  }
+
+  /**
+   * Locks an Emby library or media item's poster images to prevent automatic refresh overwrite.
+   * @param itemId Target Emby item ID.
+   * @param signal Cancellation signal.
+   */
+  async lockPoster(itemId: string, signal: AbortSignal): Promise<void> {
+    const emby = await this.embyClient(signal)
+    await emby.updateItem(itemId, { LockData: true, LockedFields: ['PrimaryImage', 'All'] }, signal)
   }
 
   async proxyImage(input: string, signal: AbortSignal): Promise<{ contentType: string; bytes: Uint8Array }> {
