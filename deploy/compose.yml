@@ -92,6 +92,23 @@ services:
       retries: 30
     security_opt: [no-new-privileges:true]
 
+  embymedia:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: embymedia
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
+    environment:
+      - RESOURCE_INDEX_URL=http://gaotao.cc:8100
+      - EMBYMEDIA_DB=/data/embymedia.db
+    volumes:
+      - /srv/embymedia/data:/data
+      - /srv/clouddrive:/clouddrive:ro
+    security_opt: [no-new-privileges:true]
+
 secrets:
   postgres_password:
     file: /etc/embymedia/secrets/postgres-password

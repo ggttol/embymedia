@@ -39,3 +39,31 @@ apps/web/dist/
 worktrees/
 .agents/worktrees/
 .typert-*/
+
+# EmbyMedia Go binary & SQLite storage
+embymedia
+*.db
+*.db-shm
+*.db-wal
+
+# Temporary migration & debug scripts
+scripts/check_*.py
+scripts/inspect_*.py
+scripts/test_*.py
+scripts/batch_*.py
+scripts/debug_*.py
+scripts/render_posters_*.py
+scripts/execute_transfer_*.py
+scripts/extract_115_*.py
+scripts/filter_real_*.py
+scripts/inherit_season_*.py
+scripts/list_*.py
+scripts/print_*.py
+scripts/retry_*.py
+scripts/save_*.py
+scripts/search_*.py
+scripts/select_*.py
+scripts/summarize_*.py
+scripts/update_system_*.py
+scripts/count_*.py
+scripts/render_*.py
