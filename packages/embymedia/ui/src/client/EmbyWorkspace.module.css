@@ -135,7 +135,7 @@
 
 .resourcePage { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(420px, 1.5fr); gap: 32px; }
 .resourceHero { align-self: start; padding-top: 50px; }
-.resourceHero h2 { max-width: 500px; margin: 12px 0; font-family: "Avenir Next Condensed", "PingFang SC", sans-serif; font-size: clamp(42px, 6vw, 78px); line-height: .92; letter-spacing: -.055em; }
+.resourceHero h2 { max-width: 500px; margin: 12px 0; font-family: "Avenir Next Condensed", "PingFang SC", sans-serif; font-size: clamp(28px, 3.5vw, 42px); line-height: 1.15; letter-spacing: -.03em; }
 .resourceHero p { max-width: 540px; color: var(--muted); font-size: 14px; line-height: 1.7; }
 .resourceHero button { width: 190px; }
 .pipeline { display: grid; align-content: start; border-top: 1px solid var(--line); margin-top: 30px; }
