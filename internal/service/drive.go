@@ -685,6 +685,9 @@ func (s *DriveService) GetHomeSummary() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.resourceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.resourceToken)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
@@ -707,6 +710,7 @@ func (s *DriveService) GetSources() (map[string]any, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	var res map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err

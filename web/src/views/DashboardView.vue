@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { HardDrive, Tv, ListTodo, TrendingUp, ArrowUpRight, Sparkles, RefreshCw, FolderSync } from 'lucide-vue-next'
+import { HardDrive, Tv, ListTodo, TrendingUp, ArrowUpRight, Sparkles, RefreshCw, FolderSync, ArrowRight } from 'lucide-vue-next'
 
 const stats = ref({
   totalIndexedLinks: null as number | null,
   validLinks: null as number | null,
-  todayUpdated: null as number | null,
   driveAccounts: null as number | null,
   embyLibraries: null as number | null,
   activeTasks: null as number | null,
@@ -80,38 +79,72 @@ onMounted(fetchHomeData)
       </button>
     </div>
 
-    <section aria-label="系统指标" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-      <article class="p-5 rounded-xl border border-border bg-surface shadow-sm">
-        <div class="flex items-center justify-between mb-4"><span class="text-xs font-mono text-text-muted">资源索引</span><TrendingUp class="w-4 h-4 text-accent" /></div>
-        <div class="text-2xl font-bold font-mono tracking-tight text-text">{{ stats.totalIndexedLinks === null ? '—' : stats.totalIndexedLinks.toLocaleString() }}</div>
-        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2 text-xs text-text-muted font-mono">
-          <span v-if="stats.validLinks === null">有效数未返回</span>
-          <span v-else>有效链接：{{ stats.validLinks.toLocaleString() }}</span>
-          <span v-if="stats.todayUpdated !== null" class="text-text-faint">今日 +{{ stats.todayUpdated.toLocaleString() }}</span>
+    <section aria-label="核心管理指标" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <article class="p-6 rounded-2xl border border-border bg-gradient-to-br from-surface to-bg shadow-sm hover:border-accent/40 transition-colors">
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="w-1.5 h-6 bg-accent rounded-full"></span>
+              <span class="text-sm font-mono text-text-muted">全库资源索引</span>
+            </div>
+            <div class="text-4xl font-bold font-mono tracking-tight text-text mt-4">{{ stats.totalIndexedLinks === null ? '—' : stats.totalIndexedLinks.toLocaleString() }}</div>
+          </div>
+          <TrendingUp class="w-10 h-10 text-accent/20" />
+        </div>
+        <div class="flex items-center justify-between mt-6 pt-4 border-t border-border/50 text-xs font-mono">
+          <span class="text-text-muted">有效数：{{ stats.validLinks === null ? '—' : stats.validLinks.toLocaleString() }}</span>
+          <span v-if="stats.todayUpdated !== null" class="px-2 py-0.5 rounded-full bg-accent-soft text-accent">今日 +{{ stats.todayUpdated.toLocaleString() }}</span>
         </div>
       </article>
 
-      <article class="p-5 rounded-xl border border-border bg-surface shadow-sm">
-        <div class="flex items-center justify-between mb-4"><span class="text-xs font-mono text-text-muted">115 账号</span><HardDrive class="w-4 h-4 text-accent" /></div>
-        <div class="text-2xl font-bold font-mono tracking-tight text-text">{{ stats.driveAccounts === null ? '—' : stats.driveAccounts }}</div>
-        <div class="mt-2 text-xs text-text-muted">{{ stats.driveAccounts === null ? '连接状态未返回' : '个已纳管账号' }}</div>
-      </article>
-
-      <article class="p-5 rounded-xl border border-border bg-surface shadow-sm">
-        <div class="flex items-center justify-between mb-4"><span class="text-xs font-mono text-text-muted">Emby 媒体库</span><Tv class="w-4 h-4 text-accent" /></div>
-        <div class="text-2xl font-bold font-mono tracking-tight text-text">{{ stats.embyLibraries === null ? '—' : stats.embyLibraries }}</div>
-        <div class="mt-2 text-xs text-text-muted">{{ stats.embyLibraries === null ? '连接状态未返回' : '个已发现媒体库' }}</div>
-      </article>
-
-      <article class="p-5 rounded-xl border border-border bg-surface shadow-sm">
-        <div class="flex items-center justify-between mb-4"><span class="text-xs font-mono text-text-muted">运行任务</span><ListTodo class="w-4 h-4 text-accent" /></div>
-        <div class="text-2xl font-bold font-mono tracking-tight text-text">{{ stats.activeTasks === null ? '—' : stats.activeTasks }}</div>
-        <div class="mt-2 text-xs text-text-muted">{{ stats.activeTasks === null ? '任务状态未返回' : '个任务正在执行' }}</div>
+      <article class="p-6 rounded-2xl border border-border bg-gradient-to-br from-surface to-bg shadow-sm hover:border-accent/40 transition-colors">
+        <div class="flex items-start justify-between">
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="w-1.5 h-6 bg-accent rounded-full"></span>
+              <span class="text-sm font-mono text-text-muted">115 云端纳管</span>
+            </div>
+            <div class="text-4xl font-bold font-mono tracking-tight text-text mt-4">{{ stats.driveAccounts === null ? '—' : stats.driveAccounts }}<span class="text-lg text-text-faint ml-2 font-serif font-normal">个账号</span></div>
+          </div>
+          <HardDrive class="w-10 h-10 text-accent/20" />
+        </div>
+        <div class="flex items-center justify-between mt-6 pt-4 border-t border-border/50 text-xs font-mono">
+          <span class="text-text-muted">实时挂载 / 存储在线</span>
+          <RouterLink to="/files" class="text-accent hover:underline flex items-center gap-1">管理文件 <ArrowRight class="w-3 h-3" /></RouterLink>
+        </div>
       </article>
     </section>
 
-    <div class="grid grid-cols-1 xl:grid-cols-[minmax(260px,0.75fr)_minmax(0,1.7fr)] gap-5">
-      <section class="p-6 rounded-xl border border-border bg-surface shadow-sm">
+    <section aria-label="应用与流水" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <article class="p-6 rounded-2xl border border-border bg-surface shadow-sm hover:border-accent/40 transition-colors flex items-center gap-6">
+        <div class="w-12 h-12 rounded-xl bg-accent-soft flex items-center justify-center shrink-0">
+          <Tv class="w-6 h-6 text-accent" />
+        </div>
+        <div class="min-w-0 flex-1">
+           <div class="text-sm font-mono text-text-muted mb-1">Emby 媒体库</div>
+           <div class="flex items-baseline gap-2">
+             <span class="text-2xl font-bold font-mono tracking-tight text-text">{{ stats.embyLibraries === null ? '—' : stats.embyLibraries }}</span>
+             <span class="text-xs text-text-faint">个挂载源已接驳</span>
+           </div>
+        </div>
+      </article>
+
+      <article class="p-6 rounded-2xl border border-border bg-surface shadow-sm hover:border-accent/40 transition-colors flex items-center gap-6">
+        <div class="w-12 h-12 rounded-xl bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center shrink-0">
+          <ListTodo class="w-6 h-6 text-orange-600 dark:text-orange-400" />
+        </div>
+        <div class="min-w-0 flex-1">
+           <div class="text-sm font-mono text-text-muted mb-1">活跃后台任务</div>
+           <div class="flex items-baseline gap-2">
+             <span class="text-2xl font-bold font-mono tracking-tight text-text">{{ stats.activeTasks === null ? '—' : stats.activeTasks }}</span>
+             <span class="text-xs text-text-faint">个自动机运行中</span>
+           </div>
+        </div>
+      </article>
+    </section>
+
+    <div class="grid grid-cols-1 xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)] gap-5">
+      <section class="p-6 rounded-2xl border border-border bg-surface shadow-sm hover:border-accent/30 transition-colors">
         <div class="flex items-center gap-2 pb-4 mb-4 border-b border-border">
           <Sparkles class="w-4 h-4 text-annotation" />
           <h2 class="font-serif font-semibold text-lg text-text">实时搜索趋势</h2>
