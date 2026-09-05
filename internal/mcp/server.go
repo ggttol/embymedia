@@ -7,10 +7,10 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 type MCPServer struct {
@@ -93,9 +93,9 @@ func (m *MCPServer) registerAll18Tools() {
 		mcp.WithString("account_id", mcp.Description("Optional account ID")),
 	), m.handleC115Mkdir)
 
-	// 7. c115_get_share_link: 生成 115 分享链接
+	// 7. c115_get_share_link: 报告当前提供方不支持分享链接
 	m.server.AddTool(mcp.NewTool("c115_get_share_link",
-		mcp.WithDescription("Generate a 115 share link for a file or folder"),
+		mcp.WithDescription("Report that 115 share-link generation is unavailable until a provider is configured"),
 		mcp.WithString("file_id", mcp.Required(), mcp.Description("File or folder ID")),
 		mcp.WithString("account_id", mcp.Description("Optional account ID")),
 	), m.handleC115GetShareLink)
@@ -105,9 +105,9 @@ func (m *MCPServer) registerAll18Tools() {
 		mcp.WithDescription("Check CloudDrive2 virtual mount health, path and storage statistics"),
 	), m.handleCD2MountStatus)
 
-	// 9. cd2_remount: 触发虚拟挂载重新加载
+	// 9. cd2_remount: 报告当前提供方不支持重新挂载
 	m.server.AddTool(mcp.NewTool("cd2_remount",
-		mcp.WithDescription("Trigger CloudDrive2 virtual filesystem mount reload/refresh"),
+		mcp.WithDescription("Report that CloudDrive2 remount is unavailable until a provider is configured"),
 	), m.handleCD2Remount)
 
 	// 10. emby_refresh_library: 触发 Emby 媒体库刷新
@@ -129,9 +129,9 @@ func (m *MCPServer) registerAll18Tools() {
 
 	// 13. task_submit: 提交异步后台流水线任务
 	m.server.AddTool(mcp.NewTool("task_submit",
-		mcp.WithDescription("Submit an asynchronous background pipeline task"),
-		mcp.WithString("task_type", mcp.Required(), mcp.Description("Task type, e.g. import_media, match_metadata, scan_library")),
-		mcp.WithString("payload", mcp.Description("JSON payload for task parameters")),
+		mcp.WithDescription("Submit a supported asynchronous background task"),
+		mcp.WithString("task_type", mcp.Required(), mcp.Description("Supported task type: sync_library")),
+		mcp.WithString("payload", mcp.Description("JSON object with task parameters")),
 	), m.handleTaskSubmit)
 
 	// 14. task_query: 查询任务执行状态与完成百分比
@@ -140,15 +140,15 @@ func (m *MCPServer) registerAll18Tools() {
 		mcp.WithString("task_id", mcp.Required(), mcp.Description("Task ID")),
 	), m.handleTaskQuery)
 
-	// 15. task_cancel: 中断正在执行的任务
+	// 15. task_cancel: 报告任务队列不支持运行时取消
 	m.server.AddTool(mcp.NewTool("task_cancel",
-		mcp.WithDescription("Cancel a pending or running background task"),
+		mcp.WithDescription("Report that running task cancellation is unavailable"),
 		mcp.WithString("task_id", mcp.Required(), mcp.Description("Task ID")),
 	), m.handleTaskCancel)
 
-	// 16. task_get_logs: 读取任务执行日志
+	// 16. task_get_logs: 读取持久化的任务状态和错误
 	m.server.AddTool(mcp.NewTool("task_get_logs",
-		mcp.WithDescription("Read task execution logs and diagnostic output"),
+		mcp.WithDescription("Read persisted task status, progress and error details"),
 		mcp.WithString("task_id", mcp.Required(), mcp.Description("Task ID")),
 	), m.handleTaskGetLogs)
 
@@ -157,9 +157,9 @@ func (m *MCPServer) registerAll18Tools() {
 		mcp.WithDescription("Get system settings, mount paths and directory category mappings"),
 	), m.handleSystemGetConfig)
 
-	// 18. system_health: 查看网盘与服务健康状态
+	// 18. system_health: 查看本地存储与挂载配置状态
 	m.server.AddTool(mcp.NewTool("system_health",
-		mcp.WithDescription("Inspect overall health status of 115, Emby, CloudDrive2 and background workers"),
+		mcp.WithDescription("Inspect local storage and configured CloudDrive2 mount inventory"),
 	), m.handleSystemHealth)
 }
 
@@ -254,12 +254,10 @@ func (m *MCPServer) handleC115Mkdir(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (m *MCPServer) handleC115GetShareLink(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	fileID, err := req.RequireString("file_id")
-	if err != nil {
+	if _, err := req.RequireString("file_id"); err != nil {
 		return mcp.NewToolResultError("file_id is required"), nil
 	}
-	_ = req.GetString("account_id", "")
-	return mcp.NewToolResultText(fmt.Sprintf("Share link generated for file %s: https://115.com/s/%s", fileID, fileID)), nil
+	return mcp.NewToolResultError("115 share-link generation is not implemented by the configured provider"), nil
 }
 
 func (m *MCPServer) handleCD2MountStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -272,7 +270,7 @@ func (m *MCPServer) handleCD2MountStatus(ctx context.Context, req mcp.CallToolRe
 }
 
 func (m *MCPServer) handleCD2Remount(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return mcp.NewToolResultText("CloudDrive2 virtual mount refreshed successfully"), nil
+	return mcp.NewToolResultError("CloudDrive2 remount is not implemented by the configured provider"), nil
 }
 
 func (m *MCPServer) handleEmbyRefreshLibrary(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -298,8 +296,11 @@ func (m *MCPServer) handleEmbyInspectItem(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError("item_id is required"), nil
 	}
 	items, err := m.emby.SearchMedia(itemID, 1)
-	if err != nil || len(items) == 0 {
-		return mcp.NewToolResultText(fmt.Sprintf(`{"id": "%s", "status": "indexed"}`, itemID)), nil
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("inspect item failed: %v", err)), nil
+	}
+	if len(items) == 0 {
+		return mcp.NewToolResultError(fmt.Sprintf("Emby item %s was not found", itemID)), nil
 	}
 	b, _ := json.MarshalIndent(items[0], "", "  ")
 	return mcp.NewToolResultText(string(b)), nil
@@ -310,9 +311,14 @@ func (m *MCPServer) handleTaskSubmit(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError("task_type is required"), nil
 	}
+	if taskType != "sync_library" {
+		return mcp.NewToolResultError(fmt.Sprintf("unsupported task_type %q; supported type: sync_library", taskType)), nil
+	}
 	payloadStr := req.GetString("payload", "{}")
 	var payload map[string]any
-	_ = json.Unmarshal([]byte(payloadStr), &payload)
+	if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("payload must be a JSON object: %v", err)), nil
+	}
 
 	asyncTask, err := m.taskQueue.Enqueue(taskType, payload)
 	if err != nil {
@@ -339,8 +345,10 @@ func (m *MCPServer) handleTaskCancel(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError("task_id is required"), nil
 	}
-	_ = m.db.UpdateAsyncTaskStatus(taskID, "failed", 0, "cancelled by agent")
-	return mcp.NewToolResultText(fmt.Sprintf("Task %s cancelled", taskID)), nil
+	if _, err := m.db.GetAsyncTask(taskID); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("task not found: %v", err)), nil
+	}
+	return mcp.NewToolResultError("running task cancellation is not implemented by the task queue"), nil
 }
 
 func (m *MCPServer) handleTaskGetLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -348,7 +356,12 @@ func (m *MCPServer) handleTaskGetLogs(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return mcp.NewToolResultError("task_id is required"), nil
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("[%s] Task %s execution logs:\n- Started\n- Processing\n- Completed", time.Now().Format(time.RFC3339), taskID)), nil
+	task, err := m.db.GetAsyncTask(taskID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("task not found: %v", err)), nil
+	}
+	b, _ := json.MarshalIndent(task, "", "  ")
+	return mcp.NewToolResultText(string(b)), nil
 }
 
 func (m *MCPServer) handleSystemGetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -361,16 +374,28 @@ func (m *MCPServer) handleSystemGetConfig(ctx context.Context, req mcp.CallToolR
 }
 
 func (m *MCPServer) handleSystemHealth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	accs, _ := m.db.ListAccounts()
-	mounts, _ := m.cloudDrive.GetMounts()
+	status := "healthy"
 	health := map[string]any{
-		"status":          "healthy",
-		"timestamp":       time.Now(),
-		"115_accounts":    len(accs),
-		"mounts":          len(mounts),
-		"database":        "connected",
-		"background_jobs": "active",
+		"status":    status,
+		"timestamp": time.Now(),
 	}
+	accs, err := m.db.ListAccounts()
+	if err != nil {
+		status = "degraded"
+		health["database"] = err.Error()
+	} else {
+		health["database"] = "connected"
+		health["configured_115_accounts"] = len(accs)
+	}
+	mounts, err := m.cloudDrive.GetMounts()
+	if err != nil {
+		status = "degraded"
+		health["clouddrive2"] = err.Error()
+	} else {
+		health["clouddrive2"] = "connected"
+		health["configured_mounts"] = len(mounts)
+	}
+	health["status"] = status
 	b, _ := json.MarshalIndent(health, "", "  ")
 	return mcp.NewToolResultText(string(b)), nil
 }

@@ -1,7 +1,7 @@
 # PRODUCT.md
 
 ## Product
-EmbyMedia is a self-hosted, single-administrator operations system for Emby, CloudDrive2, 115 resources, STRM generation, metadata, users, tasks, audit, and approval-controlled writes. DSH remains the conversational execution and approval engine.
+EmbyMedia is a self-hosted, single-administrator operations system for Emby, CloudDrive2, 115 resources, STRM generation, metadata, tasks, audit, REST, and MCP. The V2 application runs as one Go binary with an embedded Vue interface.
 
 ## Audience and primary task
 - Primary user: administrator `gaotao`.
@@ -13,22 +13,21 @@ EmbyMedia is a self-hosted, single-administrator operations system for Emby, Clo
 - Recent task, schedule, and audit state.
 - Credential configured/writable status without revealing values.
 - Non-secret endpoint/settings visibility.
-- AI conversation handoff for supported writes.
-- Supported writes: library create/scan, 115 resource add-new, poster/metadata actions, Emby user actions, config update, Smart Action policy/dismiss.
+- Agent integration through Streamable HTTP MCP, stdio MCP, and OpenAPI 3.1.
+- Supported writes: 115 file operations and share transfer, Emby library refresh, settings, scheduled tasks, and Agent token management.
 
 ## Constraints and non-goals
-- HTTP self-use mode is an accepted deployment choice; do not claim public-Internet security.
-- Never display stored secret values.
+- The public Web endpoint uses a login proxy; same-host Agent clients use the loopback MCP address.
+- Never display stored secret values; Agent token plaintext appears only in the creation response.
 - Unsupported operations are labelled unavailable; no fake success or inert action.
-- Scheduler remains disabled.
 - No multi-user RBAC claim.
-- DSH chat and approval UI remain authoritative for business mutations.
+- MCP tool discovery proves registration, not successful execution against every upstream dependency.
 
 ## Missing facts
-- No supplied product logo beyond current DSH/Emby marks.
+- No supplied product logo beyond the current EmbyMedia mark.
 - No hardware-transcoding capability.
-- No verified CloudDrive update or 115 Open API integration.
+- CloudDrive remount, 115 share-link generation, and running-task cancellation are not implemented by the configured providers; their MCP tools return explicit errors.
 
 ## Working assumptions
-- The workspace may poll a read-only Host Remote for current facts.
-- Action buttons can route a structured prompt to the current DSH session instead of bypassing approval.
+- The same-host Debian deployment is the primary Agent runtime.
+- Public browser access remains protected by the existing login proxy.

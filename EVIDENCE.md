@@ -12,5 +12,9 @@
 | CloudDrive no longer depends on NAS | runtime network, mounts, DB/text audit | verified | “无运行时 NAS 依赖” |
 | TLS/MFA protects public endpoints | user-selected HTTP topology | false | omit |
 | Metrics represent live state | admin snapshot Remote | verified at snapshot time | label with generated time |
+| Debian Hermes is version 0.21.0 and connects to the V2 MCP registry | `hermes mcp test embymedia` on gaotao.cc | verified | “Hermes v0.21.0” and “18 tools discovered” |
+| Streamable HTTP MCP is available on the main service listener | Real `initialize` and `tools/list` exchange against `/mcp` | verified | “MCP protocol handshake succeeded” |
+| Public port 3081 is reachable | External connection probe timed out while the on-host SSE probe succeeded | false | Describe 3081 as on-host legacy SSE only |
+| OpenAPI alias returns a 3.1 schema | `/api/v1/openapi.json` response | verified | “OpenAPI 3.1.0” with the observed REST path count |
 
 No third-party logo, customer, price, performance guarantee, or unsupported capability may be added.

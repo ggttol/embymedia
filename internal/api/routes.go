@@ -1,27 +1,40 @@
 package api
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
+type rateBucket struct {
+	windowStart time.Time
+	count       int
+}
+
 type Server struct {
-	echo       *echo.Echo
-	db         *storage.DB
-	drive      *service.DriveService
-	emby       *service.EmbyService
-	cloudDrive *service.CloudDriveService
-	taskQueue  *service.TaskQueueService
-	cron       *service.CronManager
-	settings   *service.SettingsService
+	echo        *echo.Echo
+	db          *storage.DB
+	drive       *service.DriveService
+	emby        *service.EmbyService
+	cloudDrive  *service.CloudDriveService
+	taskQueue   *service.TaskQueueService
+	cron        *service.CronManager
+	settings    *service.SettingsService
+	rateMu      sync.Mutex
+	rateBuckets map[string]rateBucket
 }
 
 func NewServer(
@@ -35,14 +48,15 @@ func NewServer(
 	settings *service.SettingsService,
 ) *Server {
 	s := &Server{
-		echo:       e,
-		db:         db,
-		drive:      drive,
-		emby:       emby,
-		cloudDrive: cloudDrive,
-		taskQueue:  taskQueue,
-		cron:       cron,
-		settings:   settings,
+		echo:        e,
+		db:          db,
+		drive:       drive,
+		emby:        emby,
+		cloudDrive:  cloudDrive,
+		taskQueue:   taskQueue,
+		cron:        cron,
+		settings:    settings,
+		rateBuckets: make(map[string]rateBucket),
 	}
 	s.registerRoutes()
 	return s
@@ -55,6 +69,7 @@ func (s *Server) Start(addr string) error {
 func (s *Server) registerRoutes() {
 	// OpenAPI 3.1 schema
 	s.echo.GET("/openapi.json", s.handleOpenAPI)
+	s.echo.GET("/api/v1/openapi.json", s.handleOpenAPI)
 
 	// API v1 group
 	v1 := s.echo.Group("/api/v1")
@@ -84,7 +99,6 @@ func (s *Server) registerRoutes() {
 
 	// Emby & Media
 	v1.GET("/emby/libraries", s.handleEmbyLibraries)
-	v1.POST("/files/delete", s.handleDelete)
 	v1.POST("/emby/refresh", s.handleEmbyRefresh)
 	v1.POST("/emby/match", s.handleEmbyMatch)
 
@@ -105,6 +119,7 @@ func (s *Server) registerRoutes() {
 	v1.GET("/tokens", s.handleListTokens)
 	v1.POST("/tokens", s.handleCreateToken)
 	v1.DELETE("/tokens/:id", s.handleDeleteToken)
+	v1.GET("/audit-logs", s.handleListAuditLogs)
 }
 
 func (s *Server) handleHomeSummary(c echo.Context) error {
@@ -175,7 +190,6 @@ func (s *Server) handleGetLink(c echo.Context) error {
 		"data":    res,
 	})
 }
-
 
 func (s *Server) handleCidMap(c echo.Context) error {
 	raw, err := s.settings.Get("c115_cid_map")
@@ -386,7 +400,6 @@ func (s *Server) handleAddOffline(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"task_id": taskID})
 }
 
-
 func (s *Server) handleEmbyLibraries(c echo.Context) error {
 	libs, err := s.emby.GetLibraries()
 	if err != nil {
@@ -535,23 +548,54 @@ func (s *Server) handleListTokens(c echo.Context) error {
 func (s *Server) handleCreateToken(c echo.Context) error {
 	var req struct {
 		Name        string   `json:"name"`
-		Role        string   `json:"role"`
 		Permissions []string `json:"permissions"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "name is required"})
+	}
+	scopes := make([]string, 0, len(req.Permissions))
+	role := "readonly"
+	for _, permission := range req.Permissions {
+		switch permission {
+		case "read":
+			scopes = append(scopes, permission)
+		case "write":
+			scopes = append(scopes, permission)
+			role = "full-access"
+		default:
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": "permissions must be read or write"})
+		}
+	}
+	if len(scopes) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "at least one permission is required"})
+	}
+
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": "generate token"})
+	}
+	secret := "embymedia_" + base64.RawURLEncoding.EncodeToString(secretBytes)
+	digest := sha256.Sum256([]byte(secret))
 	token := &domain.AgentToken{
+		ID:        uuid.NewString(),
+		Token:     hex.EncodeToString(digest[:]),
 		Name:      req.Name,
-		Role:      "agent",
-		Scopes:    req.Permissions,
+		Role:      role,
+		Scopes:    scopes,
 		RateLimit: 60,
 		CreatedAt: time.Now(),
 	}
 	if err := s.db.SaveToken(token); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, token)
+	return c.JSON(http.StatusCreated, map[string]any{
+		"id": token.ID, "token": secret, "name": token.Name, "role": token.Role,
+		"scopes": token.Scopes, "rate_limit": token.RateLimit, "created_at": token.CreatedAt,
+	})
 }
 
 func (s *Server) handleDeleteToken(c echo.Context) error {
@@ -560,6 +604,18 @@ func (s *Server) handleDeleteToken(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
+}
+
+func (s *Server) handleListAuditLogs(c echo.Context) error {
+	limit := 20
+	if requested, err := strconv.Atoi(c.QueryParam("limit")); err == nil && requested > 0 {
+		limit = min(requested, 100)
+	}
+	logs, err := s.db.ListAuditLogs(limit)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"logs": logs})
 }
 
 func (s *Server) handleOpenAPI(c echo.Context) error {
@@ -593,25 +649,68 @@ func (s *Server) handleOpenAPI(c echo.Context) error {
 	return c.JSON(http.StatusOK, schema)
 }
 
+func hasScope(scopes []string, required string) bool {
+	for _, scope := range scopes {
+		if scope == required {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) takeRateLimit(token *domain.AgentToken, now time.Time) bool {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+
+	bucket := s.rateBuckets[token.ID]
+	if bucket.windowStart.IsZero() || now.Sub(bucket.windowStart) >= time.Minute {
+		s.rateBuckets[token.ID] = rateBucket{windowStart: now, count: 1}
+		return true
+	}
+	if bucket.count >= token.RateLimit {
+		return false
+	}
+	bucket.count++
+	s.rateBuckets[token.ID] = bucket
+	return true
+}
+
 func (s *Server) auditLogMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		caller := "ui"
 		tokenID := ""
-		authHeader := c.Request().Header.Get("Authorization")
-		if authHeader != "" {
+		secret := strings.TrimSpace(c.Request().Header.Get("X-Agent-Token"))
+		if secret == "" {
+			if auth := strings.TrimSpace(c.Request().Header.Get("Authorization")); strings.HasPrefix(auth, "Bearer ") {
+				secret = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+			}
+		}
+		if secret != "" {
+			digest := sha256.Sum256([]byte(secret))
+			token, err := s.db.GetTokenByDigest(hex.EncodeToString(digest[:]))
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, map[string]any{"error": "invalid agent token"})
+			}
+			now := time.Now()
+			if !s.takeRateLimit(token, now) {
+				return c.JSON(http.StatusTooManyRequests, map[string]any{"error": "agent token rate limit exceeded"})
+			}
+			method := c.Request().Method
+			if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions && !hasScope(token.Scopes, "write") {
+				return c.JSON(http.StatusForbidden, map[string]any{"error": "agent token lacks write permission"})
+			}
 			caller = "agent"
-			tokenID = authHeader
+			tokenID = token.ID
+			_ = s.db.TouchToken(token.ID, now)
 		}
 
 		err := next(c)
-
-		// Record write operations or sensitive operations
 		method := c.Request().Method
 		if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
 			log := &domain.AuditLog{
 				Caller:    caller,
 				TokenID:   tokenID,
-				Action:    c.Request().Method + " " + c.Path(),
+				Action:    method + " " + c.Path(),
 				Target:    c.Request().RequestURI,
 				IP:        c.RealIP(),
 				CreatedAt: time.Now(),

@@ -10,7 +10,7 @@ This repository extends [DeepSeek Harness](https://github.com/deepseek-ai/deepse
 
 ## Current deployment
 
-The supported deployment runs on Debian 13. Emby, CloudDrive2, PostgreSQL, the DSH Web application, the HTTP login service, Caddy, and the Hermes messaging gateway run on one host. Public forwarding terminates at Caddy; DSH, Emby, CloudDrive2, PostgreSQL, and the EmbyMedia MCP application route listen only on loopback or container-private addresses.
+The supported deployment runs on Debian 13. Emby, CloudDrive2, PostgreSQL, the DSH Web application, the standalone Go/Vue operations service, the HTTP login service, Caddy, and the Hermes messaging gateway run on one host. Caddy terminates public forwarding and login; service listeners remain host-local or container-private deployment details rather than general public ingress.
 
 The repository does not contain production credentials. Runtime secrets live under `/etc/embymedia/secrets/` and service environment files under `/etc/embymedia/`.
 
@@ -22,33 +22,30 @@ The repository does not contain production credentials. Runtime secrets live und
 - Search 115 resources, preserve protected-share credentials outside model-visible results, and inspect recursive leaf evidence.
 - Create canonical plans for scans, resource onboarding, series repair, metadata changes, user policy changes, cleanup, deletion, and undo.
 - Execute plans with write-mode enforcement, target revalidation, audit records, partial-state handling, and independent verification.
-- Operate from either the DSH browser or Hermes over Weixin with the same business dispatcher and structured results.
+- Operate the plan-and-verify workflow from DSH, or use Hermes over Weixin with the standalone Go MCP registry for its registered 115, CloudDrive2, Emby, task, and system operations.
 
 ## Hermes and MCP
 
-Hermes connects to the local `embymedia` MCP server over stdio. The adapter exposes the same thirteen wire tools as DSH:
+Hermes v0.21 connects to the standalone Go service over Streamable HTTP at `http://127.0.0.1:3080/mcp`. Its `embymedia` registry discovers eighteen tools. Discovery proves protocol registration; each call can still fail because of upstream configuration, permissions, or an explicitly unavailable provider action.
 
-```text
-embymedia_health      embymedia_library     embymedia_resource
-embymedia_series      embymedia_analyze     embymedia_task
-embymedia_audit       embymedia_user        embymedia_schedule
-embymedia_config      embymedia_plan        embymedia_execute
-embymedia_verify
+```sh
+hermes mcp add embymedia --url http://127.0.0.1:3080/mcp
+hermes mcp test embymedia
 ```
 
-The MCP process forwards calls to `POST /internal/embymedia/tool` on the DSH loopback listener. Caddy rejects `/internal/*`, and the Host rejects non-loopback peers. The stable `hermes-weixin` session keeps resource candidate IDs and operation-plan ownership valid across Weixin turns.
+The Go service serves MCP, the Web UI, and REST on port 3080. `/agents` is the browser console, not an MCP transport address. Caddy authenticates public access to port 3080; same-host Hermes uses loopback and does not depend on the unpublished legacy SSE listener on port 3081.
 
 Example Weixin requests:
 
 ```text
-现在有多少部电影？必须调用 embymedia MCP 精确统计。
-检查电视剧追更库还有哪些缺集。
-搜索这部剧的 115 资源，检查叶文件证据并创建补集计划。
-执行刚才的计划并验证最终结果。
-列出最近失败或部分完成的任务。
+列出 Emby 媒体库和路径。
+搜索名称中包含这部剧的 115 资源。
+刷新 Emby 媒体库。
+检查 CloudDrive2 挂载清单。
+查询这个后台任务的状态和错误。
 ```
 
-Every mutation follows `plan -> execute -> verify`. The private self-use deployment auto-allows the approval request, but write mode, canonical plan hashes, target revalidation, audit, and verification remain enforced. Destructive operations still require an explicit user request naming the intended outcome.
+MCP mutation tools execute their configured provider action directly and return upstream errors. Share-link generation, CloudDrive2 remount, and running-task cancellation report explicit unavailable errors instead of synthetic success. Use the DSH plan path when an operation requires canonical `plan -> execute -> verify` controls.
 
 ## Repository layout
 
@@ -62,7 +59,7 @@ deploy/
 migration/
 ```
 
-The EmbyMedia domain, database, client, planning, execution, and verification modules remain ordinary TypeScript classes. DSH-specific code is limited to the Host/tool adapters. Hermes uses the Host's loopback application route rather than a second SQL implementation, so both clients share one application path.
+The repository contains two application paths. The DSH packages own the canonical planning, execution, and verification workflow. The standalone Go service owns its Vue console, REST API, SQLite state, and eighteen-tool MCP registry; the deployed Hermes configuration uses this Go registry rather than the DSH dispatcher.
 
 <a id="run-from-source"></a>
 
@@ -97,12 +94,12 @@ pnpm --filter @embymedia/dsh-operations bundle
 sudo systemctl restart embymedia-dsh.service
 ```
 
-Hermes runs its messaging gateway as a user systemd service and discovers the local MCP server from `~/.hermes/config.yaml`. Only one Hermes gateway may poll a given Weixin iLink bot account.
+Hermes runs its messaging gateway as a user systemd service and discovers `http://127.0.0.1:3080/mcp` from `~/.hermes/config.yaml`. Only one Hermes gateway may poll a given Weixin iLink bot account.
 
 ## Safety
 
 - Never commit `.env`, API keys, cookies, passwords, Weixin tokens, 115 access codes, or generated credential stores.
-- Keep the DSH tool route on loopback and block `/internal/*` at every reverse proxy.
+- Keep MCP on loopback for same-host clients, require Caddy authentication for public port 3080, and block DSH `/internal/*` routes at every reverse proxy.
 - Keep the scheduler disabled unless its write-policy path is explicitly reviewed and enabled.
 - Treat `previewed`, `queued`, `running`, and `verifying` as non-terminal states; only verified `done` is success.
 - Preserve local encrypted backups and complete an isolated restore before destructive infrastructure changes.

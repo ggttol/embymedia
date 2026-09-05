@@ -16,6 +16,8 @@ The deployment MCP server exposes all thirteen DSH wire tools with the same acti
 
 Hermes loads the eight Emby operator skills plus one routing skill. The skills require exact count actions, query-before-plan resource handling, `plan -> execute -> verify` for every mutation, and explicit user intent for destructive work.
 
+The standalone V2 deployment replaces this Hermes route with the Go-owned Streamable HTTP registry described in [EmbyMedia Go MCP shares the Web port](2026-09-05-embymedia-go-mcp-web-port.md). This DSH adapter remains the authority only for deployments that still use the DSH application path.
+
 ## Alternatives considered
 
 **Implement business queries in the MCP server.** Rejected because direct SQL and ad hoc Emby calls bypass domain rules and cannot support resource candidates or verified writes.

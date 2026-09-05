@@ -14,12 +14,12 @@ import (
 )
 
 type TaskQueueService struct {
-	db        *storage.DB
-	cron      *cron.Cron
-	driveSvc  *DriveService
-	embySvc   *EmbyService
-	mu        sync.Mutex
-	stopChan  chan struct{}
+	db       *storage.DB
+	cron     *cron.Cron
+	driveSvc *DriveService
+	embySvc  *EmbyService
+	mu       sync.Mutex
+	stopChan chan struct{}
 }
 
 func NewTaskQueueService(db *storage.DB, driveSvc *DriveService, embySvc *EmbyService) *TaskQueueService {
@@ -127,10 +127,10 @@ func (s *TaskQueueService) runScrapeMetadata(ctx context.Context, task domain.As
 }
 
 func (s *TaskQueueService) runSyncLibrary(ctx context.Context, task domain.AsyncTask) error {
-	if s.embySvc != nil {
-		_ = s.embySvc.RefreshLibrary("")
+	if s.embySvc == nil {
+		return fmt.Errorf("Emby service is unavailable")
 	}
-	return nil
+	return s.embySvc.RefreshLibrary("")
 }
 
 func (s *TaskQueueService) runCheckDeadLinks(ctx context.Context, task domain.AsyncTask) error {

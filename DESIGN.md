@@ -1,25 +1,24 @@
 # DESIGN.md
 
 ## Direction
-A cinema projection-booth operations console: warm black metal, projector amber, status green, ivory type, and a live media-signal spine that makes CloudDrive → STRM → Emby → client state legible at a glance.
+A warm-paper media operations ledger: forest-green signal lines, terracotta annotations, ivory surfaces, and a live service path that makes resource, storage, Emby, task, and Agent state legible at a glance.
 
-Reading this as: an operations application for one technical administrator, industrial/utilitarian language, signature moment: an interactive live signal spine.
+Reading this as: an operations application for one technical administrator, industrial/editorial language, signature moment: an interactive live signal spine.
 
 Candidate directions considered:
-- Safe: restrained dark admin console — clear but interchangeable.
-- Bold: projection booth control desk — selected; it belongs to a media system and supports dense operations.
-- Unexpected: film contact-sheet editorial layout — distinctive but weaker for live controls.
+- Safe: restrained light admin console — clear but interchangeable.
+- Bold: media operations ledger — selected; dense facts and live paths read like an operator's annotated runbook.
+- Unexpected: film contact-sheet layout — distinctive but weaker for continuous controls.
 
-Ambition: VARIANCE 6 · MOTION 3 · DENSITY 8.
+Ambition: VARIANCE 6 · MOTION 2 · DENSITY 8.
 
 ## Color
-Source: product-world rationale (projection booth, film leader, equipment status).
-- background / foreground: `#11110f` / `#f2eddf`
-- surface / foreground: `#1b1b17` / `#f2eddf`
-- primary / foreground: `#e6a537` / `#17120a`
-- accent / foreground: `#6fba78` / `#0d160f`
-- muted / foreground: `#25251f` / `#a9a495`
-- border / focus / destructive: `#3a392f` / `#f4bd5b` / `#df6b57`
+Source: the Warm Paper reference and operational status conventions.
+- background / surface: `#ebe5d6` / `#f8f5eb`
+- text / secondary: `#1d241f` / `#4e574f`
+- accent / accent-strong: `#164b38` / `#0f382a`
+- annotation / danger: `#a6432f` / `#97392f`
+- border / focus: `#c9c0ac` / `#a6432f`
 
 ## Type
 Source: custom rationale; privacy/performance-preserving local font stacks.
@@ -35,19 +34,19 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - One elevation level for command drawers; most grouping uses borders and color blocks.
 
 ## Components
-- Signal spine: four labelled nodes with real health state.
-- Module rail: Dashboard, Libraries, Resources/Series, Metadata, Tasks, Users, Configuration, and Audit; AI Conversation stays a persistent handoff action.
-- Status ticker: write mode, scheduler, credentials, last refresh.
+- Signal spine: four labelled nodes with live service or protocol state.
+- Module rail: Dashboard, Resources, Favorites, Files, Tasks, Agents, and Settings.
+- Agent console: actual MCP `initialize` and `tools/list` checks, a server-discovered tool roster, and copyable Hermes configuration.
 - Configuration matrix: endpoint settings and write-only credential status/actions.
-- Action controls launch explicit DSH prompts; unsupported actions show exact blocker text.
+- Destructive controls require explicit confirmation and report upstream errors.
 
 ## Composition
 Persistent module rail → signal spine/status header → module-specific continuous canvas → contextual action dock. Configuration uses a table/matrix rather than another card grid.
 
 ## Motion
-Status pulse and 180ms panel transitions only. No scroll reveal. Reduced motion removes pulses/transitions while preserving state.
+Status pulse and 180ms control transitions only. No scroll reveal. Reduced motion removes pulses/transitions while preserving state.
 
 ## Responsive behavior
-- ≥1100px: rail + full dashboard.
-- 720–1099px: compact icon/text rail, two-column modules.
-- <720px: 4×2 top module matrix, single-column data rows, sticky action dock; signal spine becomes horizontal scroll-snap.
+- ≥1100px: fixed rail and full operations canvas.
+- 720–1099px: compact top navigation and two-column modules where content permits.
+- <720px: wrapped top navigation, single-column modules, vertical signal path, and horizontally scrollable data tables.

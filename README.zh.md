@@ -10,7 +10,7 @@ Emby、CloudDrive2、115、Hermes 与 DeepSeek Harness 的私有自托管媒体�
 
 ## 当前部署
 
-受支持部署运行于 Debian 13。Emby、CloudDrive2、PostgreSQL、DSH Web 应用、HTTP 登录服务、Caddy 与 Hermes 消息 gateway 运行在同一台主机。公网转发在 Caddy 终止；DSH、Emby、CloudDrive2、PostgreSQL 与 EmbyMedia MCP 应用路由只监听 loopback 或容器私有地址。
+受支持部署运行于 Debian 13。Emby、CloudDrive2、PostgreSQL、DSH Web 应用、独立 Go/Vue 运营服务、HTTP 登录服务、Caddy 与 Hermes 消息 gateway 运行在同一台主机。公网转发与登录在 Caddy 终止；各服务 listener 属于主机本地或容器私有部署细节，不作为通用公网入口。
 
 仓库不包含生产凭据。运行时 secret 位于 `/etc/embymedia/secrets/`，服务环境文件位于 `/etc/embymedia/`。
 
@@ -22,33 +22,30 @@ Emby、CloudDrive2、115、Hermes 与 DeepSeek Harness 的私有自托管媒体�
 - 搜索 115 资源，使受保护分享凭据不进入模型可见结果，并检查递归叶文件证据。
 - 为扫描、资源入库、Series 补集、元数据变更、用户策略变更、清理、删除与撤销创建 canonical 计划。
 - 在 write mode、目标重验证、审计记录、partial 状态处理与独立验证保护下执行计划。
-- 从 DSH 浏览器或微信 Hermes 操作同一个业务分派器，并获得相同结构化结果。
+- 从 DSH 操作规划与验证工作流，或通过微信 Hermes 使用独立 Go MCP registry 中已注册的 115、CloudDrive2、Emby、任务与系统操作。
 
 ## Hermes 与 MCP
 
-Hermes 通过 stdio 连接本机 `embymedia` MCP server。适配器暴露与 DSH 相同的十三个 wire tool：
+Hermes v0.21 通过 Streamable HTTP 连接独立 Go 服务的 `http://127.0.0.1:3080/mcp`。其 `embymedia` registry 可发现十八个工具。发现成功只证明协议注册；每次调用仍可能因为上游配置、权限或明确不可用的 provider 操作而失败。
 
-```text
-embymedia_health      embymedia_library     embymedia_resource
-embymedia_series      embymedia_analyze     embymedia_task
-embymedia_audit       embymedia_user        embymedia_schedule
-embymedia_config      embymedia_plan        embymedia_execute
-embymedia_verify
+```sh
+hermes mcp add embymedia --url http://127.0.0.1:3080/mcp
+hermes mcp test embymedia
 ```
 
-MCP 进程把调用转发到 DSH loopback listener 上的 `POST /internal/embymedia/tool`。Caddy 拒绝 `/internal/*`，Host 拒绝非 loopback 对端。稳定的 `hermes-weixin` session 使资源 candidate ID 与操作计划归属跨微信 turn 保持有效。
+Go 服务在 3080 端口提供 MCP、Web UI 与 REST。`/agents` 是浏览器控制台，不是 MCP transport 地址。Caddy 验证公网 3080 访问；同主机 Hermes 使用 loopback，不依赖未发布的 3081 旧式 SSE listener。
 
 微信请求示例：
 
 ```text
-现在有多少部电影？必须调用 embymedia MCP 精确统计。
-检查电视剧追更库还有哪些缺集。
-搜索这部剧的 115 资源，检查叶文件证据并创建补集计划。
-执行刚才的计划并验证最终结果。
-列出最近失败或部分完成的任务。
+列出 Emby 媒体库和路径。
+搜索名称中包含这部剧的 115 资源。
+刷新 Emby 媒体库。
+检查 CloudDrive2 挂载清单。
+查询这个后台任务的状态和错误。
 ```
 
-每次 mutation 均执行 `plan -> execute -> verify`。私有自用部署自动允许审批请求，但 write mode、canonical 计划哈希、目标重验证、审计与验证保持有效。Destructive 操作仍需用户明确说明预期结果。
+MCP mutation 工具直接执行已配置的 provider 操作并返回上游错误。分享链接生成、CloudDrive2 重新挂载与运行中任务取消会返回明确的不可用错误，而非合成成功结果。操作需要 canonical `plan -> execute -> verify` 控制时，应使用 DSH 规划路径。
 
 ## 仓库布局
 
@@ -62,7 +59,7 @@ deploy/
 migration/
 ```
 
-EmbyMedia 领域、数据库、客户端、规划、执行与验证模块保持为普通 TypeScript 类。DSH 专属代码仅位于 Host/tool 适配器。Hermes 使用 Host 的 loopback 应用路由而不是第二套 SQL 实现，因此两个客户端共享同一个应用路径。
+本仓库包含两条应用路径。DSH packages 负责 canonical 规划、执行与验证工作流。独立 Go 服务负责其 Vue 控制台、REST API、SQLite 状态与十八工具 MCP registry；已部署 Hermes 配置使用该 Go registry，而不是 DSH dispatcher。
 
 <a id="run-from-source"></a>
 
@@ -97,12 +94,12 @@ pnpm --filter @embymedia/dsh-operations bundle
 sudo systemctl restart embymedia-dsh.service
 ```
 
-Hermes 把消息 gateway 作为 user systemd 服务运行，并从 `~/.hermes/config.yaml` 发现本机 MCP server。同一个微信 iLink bot 账号只能由一个 Hermes gateway 轮询。
+Hermes 把消息 gateway 作为 user systemd 服务运行，并从 `~/.hermes/config.yaml` 发现 `http://127.0.0.1:3080/mcp`。同一个微信 iLink bot 账号只能由一个 Hermes gateway 轮询。
 
 ## 安全
 
 - 禁止提交 `.env`、API key、cookie、密码、微信 token、115 提取码或生成的凭据存储。
-- DSH 工具路由必须保持 loopback，在每个 reverse proxy 拒绝 `/internal/*`。
+- 同主机客户端应使用 loopback MCP，公网 3080 必须经过 Caddy 身份验证，并在每个 reverse proxy 拒绝 DSH `/internal/*` 路由。
 - Scheduler 应保持禁用，除非其写策略路径已被明确审查并启用。
 - `previewed`、`queued`、`running` 与 `verifying` 均不是终态；只有通过验证的 `done` 才是成功。
 - 保留本地加密备份，并在 destructive 基础设施变更前完成隔离恢复。

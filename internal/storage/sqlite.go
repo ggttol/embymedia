@@ -422,6 +422,11 @@ func (d *DB) ListTokens() ([]domain.AgentToken, error) {
 		if lastUsed.Valid {
 			tok.LastUsedAt = &lastUsed.Time
 		}
+		if scopes.Valid && scopes.String != "" {
+			if err := json.Unmarshal([]byte(scopes.String), &tok.Scopes); err != nil {
+				return nil, fmt.Errorf("decode token scopes: %w", err)
+			}
+		}
 		res = append(res, tok)
 	}
 	return res, nil
@@ -434,8 +439,12 @@ func (d *DB) SaveToken(tok *domain.AgentToken) error {
 	if tok.CreatedAt.IsZero() {
 		tok.CreatedAt = time.Now()
 	}
+	scopes, err := json.Marshal(tok.Scopes)
+	if err != nil {
+		return fmt.Errorf("encode token scopes: %w", err)
+	}
 
-	_, err := d.db.Exec(`
+	_, err = d.db.Exec(`
 		INSERT INTO agent_tokens (id, token, name, role, scopes, rate_limit, last_used_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -445,7 +454,41 @@ func (d *DB) SaveToken(tok *domain.AgentToken) error {
 			scopes = excluded.scopes,
 			rate_limit = excluded.rate_limit,
 			last_used_at = excluded.last_used_at
-	`, tok.ID, tok.Token, tok.Name, tok.Role, "", tok.RateLimit, tok.LastUsedAt, tok.CreatedAt)
+	`, tok.ID, tok.Token, tok.Name, tok.Role, string(scopes), tok.RateLimit, tok.LastUsedAt, tok.CreatedAt)
+	return err
+}
+
+// GetTokenByDigest resolves an Agent token from its stored SHA-256 digest.
+func (d *DB) GetTokenByDigest(digest string) (*domain.AgentToken, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var tok domain.AgentToken
+	var scopes sql.NullString
+	var lastUsed sql.NullTime
+	err := d.db.QueryRow(`
+		SELECT id, token, name, role, scopes, rate_limit, last_used_at, created_at
+		FROM agent_tokens WHERE token = ?
+	`, digest).Scan(&tok.ID, &tok.Token, &tok.Name, &tok.Role, &scopes, &tok.RateLimit, &lastUsed, &tok.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if scopes.Valid && scopes.String != "" {
+		if err := json.Unmarshal([]byte(scopes.String), &tok.Scopes); err != nil {
+			return nil, fmt.Errorf("decode token scopes: %w", err)
+		}
+	}
+	if lastUsed.Valid {
+		tok.LastUsedAt = &lastUsed.Time
+	}
+	return &tok, nil
+}
+
+// TouchToken records successful Agent token use.
+func (d *DB) TouchToken(id string, usedAt time.Time) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`UPDATE agent_tokens SET last_used_at = ? WHERE id = ?`, usedAt, id)
 	return err
 }
 

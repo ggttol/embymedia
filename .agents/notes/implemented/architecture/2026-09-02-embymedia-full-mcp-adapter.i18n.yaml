@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-02-embymedia-full-mcp-adapter.md
-2026-09-02-embymedia-full-mcp-adapter.md: ee15b0f46488e28d30431c586f094b46b084ba55
-2026-09-02-embymedia-full-mcp-adapter.zh.md: dcd5cac0f97dcbe2be3ae8739cb81b4262d04d32
+2026-09-02-embymedia-full-mcp-adapter.md: 5fc158cd0ab548fee2ff95764bd4cc4adf8964f9
+2026-09-02-embymedia-full-mcp-adapter.zh.md: 3d8362925eaf71c3f6ec616a8bd088ed27c22b12

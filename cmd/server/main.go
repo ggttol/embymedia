@@ -22,6 +22,7 @@ func main() {
 	port := flag.String("port", "8080", "HTTP port to listen on")
 	mcpPort := flag.String("mcp-port", "8081", "MCP SSE port to listen on")
 	dbPath := flag.String("db", "embymedia.db", "SQLite database file path")
+	mcpMode := flag.Bool("mcp", false, "serve MCP over stdio instead of HTTP")
 	resourceURL := flag.String("resource-url", "http://127.0.0.1:8100", "Resource Index API URL")
 	resourceToken := flag.String("resource-token", "", "Resource Index API Token")
 	flag.Parse()
@@ -43,16 +44,27 @@ func main() {
 	cronManager := service.NewCronManager(db)
 	settingsService := service.NewSettingsService(db)
 
-	// 3. Initialize Unified Echo HTTP Server
+	// 3. Initialize the HTTP and MCP servers.
 	e := echo.New()
 	e.HideBanner = true
 	apiServer := api.NewServer(e, db, driveService, embyService, cloudDriveService, taskQueue, cronManager, settingsService)
-	// Mount embedded Web UI
-	_ = RegisterWebUI(e)
-
-	// 4. Initialize MCP Server
 	mcpServer := mcp.NewMCPServer(db, driveService, embyService, cloudDriveService, taskQueue)
 
+	if *mcpMode {
+		if err := mcpserver.ServeStdio(mcpServer.Server()); err != nil {
+			log.Fatalf("MCP stdio server error: %v", err)
+		}
+		return
+	}
+
+	// Streamable HTTP shares the login-protected Web/API listener. Caddy
+	// authenticates public requests before forwarding the original Host header.
+	streamableMCP := mcpserver.NewStreamableHTTPServer(
+		mcpServer.Server(),
+		mcpserver.WithDisableLocalhostProtection(true),
+	)
+	e.Any("/mcp", echo.WrapHandler(streamableMCP))
+	_ = RegisterWebUI(e)
 	// 5. Start MCP SSE Server in background
 	go func() {
 		sseServer := mcpserver.NewSSEServer(mcpServer.Server())

@@ -16,6 +16,8 @@ EmbyMedia Host 拥有唯一的工具分派器。DSH `/tools` 在进程内调用�
 
 Hermes 加载八个 Emby 运营技能与一个路由技能。技能要求精确计数 action、先查询再规划的资源处理、每次 mutation 执行 `plan -> execute -> verify`，并要求 destructive 工作具有明确用户意图。
 
+独立 V2 部署以 [EmbyMedia Go MCP shares the Web port](2026-09-05-embymedia-go-mcp-web-port.zh.md) 所述的 Go-owned Streamable HTTP registry 替换了这条 Hermes 路由。本 Note 只对仍使用 DSH 应用路径的部署保持权威。
+
 ## Alternatives considered
 
 **在 MCP server 中实现业务查询。** 不采用，因为直接 SQL 与临时 Emby 调用会绕过领域规则，且无法支持资源 candidate 或已验证写入。
