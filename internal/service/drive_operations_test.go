@@ -1,0 +1,214 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/embymedia/embymedia/internal/domain"
+	"github.com/embymedia/embymedia/internal/storage"
+)
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestDriveProviderOperations(t *testing.T) {
+	calls := make(map[string]int)
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		calls[request.URL.Path]++
+		if request.Header.Get("Cookie") != "UID=42_A1; CID=test; SEID=test" {
+			t.Fatalf("provider request omitted account cookie for %s", request.URL.Path)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/files":
+			_, _ = io.WriteString(response, `{"state":true,"count":2,"data":[{"fid":"11","pid":"0","n":"movie.mkv","s":"1024"},{"cid":"12","pid":"0","n":"Series"}]}`)
+		case "/files/index_info":
+			_, _ = io.WriteString(response, `{"state":true,"data":{"vip":2,"expire":4102444800,"space_info":{"all_total":{"size":1000},"all_use":{"size":250}}}}`)
+		case "/files/add":
+			_ = request.ParseForm()
+			if request.Method != http.MethodPost || request.Form.Get("pid") != "0" || request.Form.Get("cname") != "New" {
+				t.Fatalf("unexpected mkdir request: %s %v", request.Method, request.Form)
+			}
+			_, _ = io.WriteString(response, `{"state":true,"cid":"13"}`)
+		case "/files/edit":
+			_ = request.ParseForm()
+			if request.Form.Get("fid") != "11" || request.Form.Get("file_name") != "renamed.mkv" {
+				t.Fatalf("unexpected rename request: %v", request.Form)
+			}
+			_, _ = io.WriteString(response, `{"state":true}`)
+		case "/files/move":
+			_ = request.ParseForm()
+			if request.Form.Get("pid") != "13" || request.Form.Get("fid[0]") != "11" {
+				t.Fatalf("unexpected move request: %v", request.Form)
+			}
+			_, _ = io.WriteString(response, `{"state":true}`)
+		case "/rb/delete":
+			_ = request.ParseForm()
+			if request.Form.Get("fid[0]") != "11" {
+				t.Fatalf("unexpected delete request: %v", request.Form)
+			}
+			_, _ = io.WriteString(response, `{"state":true}`)
+		case "/share/snap":
+			_, _ = io.WriteString(response, `{"state":true,"data":{"shareinfo":{"share_title":"Example"},"list":[{"fid":"11","n":"movie.mkv","s":1024}]}}`)
+		case "/share/receive":
+			_, _ = io.WriteString(response, `{"state":true}`)
+		case "/share/send":
+			body, _ := io.ReadAll(request.Body)
+			if !strings.Contains(string(body), "file_ids=11") {
+				t.Fatalf("share request omitted file ID: %s", body)
+			}
+			_, _ = io.WriteString(response, `{"state":true,"data":{"share_code":"abc123","receive_code":"p4ss"}}`)
+		case "/web/lixian/":
+			_, _ = io.WriteString(response, `{"state":true,"info_hash":"hash123"}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer db.Close()
+	account := &domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "UID=42_A1; CID=test; SEID=test", IsDefault: true}
+	if err := db.SaveAccount(account); err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	service := NewDriveService(db, "http://127.0.0.1:8100", "")
+	service.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme = upstreamURL.Scheme
+		clone.URL.Host = upstreamURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	ctx := context.Background()
+	files, err := service.ListFilesCtx(ctx, account.ID, "0")
+	if err != nil || len(files) != 2 || files[1].FileID != "12" || !files[1].IsFolder {
+		t.Fatalf("list files: %+v, err=%v", files, err)
+	}
+	if cid, err := service.MkdirCtx(ctx, account.ID, "0", "New"); err != nil || cid != "13" {
+		t.Fatalf("mkdir: cid=%s err=%v", cid, err)
+	}
+	if err := service.RenameCtx(ctx, account.ID, "11", "renamed.mkv"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := service.MoveCtx(ctx, account.ID, []string{"11"}, "13"); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if err := service.DeleteCtx(ctx, account.ID, []string{"11"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if count, title, err := service.SaveShareCtx(ctx, account.ID, "https://115.com/s/shared?password=code", "", "13"); err != nil || count != 1 || title != "Example" {
+		t.Fatalf("save share: count=%d title=%s err=%v", count, title, err)
+	}
+	share, err := service.GenerateShareLink(ctx, account.ID, "11")
+	if err != nil || share.URL != "https://115.com/s/abc123?password=p4ss" {
+		t.Fatalf("generate share: %+v, err=%v", share, err)
+	}
+	if id, err := service.AddOfflineTaskCtx(ctx, account.ID, "magnet:?xt=urn:btih:test", "13"); err != nil || id != "hash123" {
+		t.Fatalf("offline download: id=%s err=%v", id, err)
+	}
+	health, err := service.CheckAccounts(ctx)
+	if err != nil || len(health) != 1 || health[0].Status != "active" || health[0].VIPLevel != 2 || health[0].QuotaTotal != 1000 || health[0].QuotaUsed != 250 {
+		t.Fatalf("account health: %+v, err=%v", health, err)
+	}
+	for _, path := range []string{"/files", "/files/index_info", "/files/add", "/files/edit", "/files/move", "/rb/delete", "/share/snap", "/share/receive", "/share/send", "/web/lixian/"} {
+		if calls[path] == 0 {
+			t.Fatalf("provider operation %s was not called", path)
+		}
+	}
+}
+
+func TestDriveMultiAccountLifecycle(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer db.Close()
+	first := &domain.DriveAccount{ID: "first", Type: "115", Name: "First", Cookie: "cookie-1", IsDefault: true}
+	second := &domain.DriveAccount{ID: "second", Type: "115", Name: "Second", Cookie: "cookie-2", IsDefault: true}
+	if err := db.SaveAccount(first); err != nil {
+		t.Fatalf("save first account: %v", err)
+	}
+	if err := db.SaveAccount(second); err != nil {
+		t.Fatalf("save second account: %v", err)
+	}
+	accounts, err := db.ListAccounts()
+	if err != nil || len(accounts) != 2 || accounts[0].ID != "second" || !accounts[0].IsDefault || accounts[1].IsDefault {
+		t.Fatalf("default account transition failed: %+v, err=%v", accounts, err)
+	}
+	service := NewDriveService(db, "", "")
+	resolved, err := service.getAccount("first")
+	if err != nil || resolved.Cookie != "cookie-1" {
+		t.Fatalf("selected account was not preserved: %+v, err=%v", resolved, err)
+	}
+	if _, err := service.getAccount("missing"); err == nil {
+		t.Fatal("unknown account unexpectedly fell back to the default")
+	}
+	if err := db.DeleteAccount("first"); err != nil {
+		t.Fatalf("delete account: %v", err)
+	}
+	accounts, err = db.ListAccounts()
+	if err != nil || len(accounts) != 1 || accounts[0].ID != "second" {
+		t.Fatalf("account deletion failed: %+v, err=%v", accounts, err)
+	}
+}
+
+func TestSaveSharePaginatesEveryTopLevelEntry(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/share/snap":
+			offset := request.URL.Query().Get("offset")
+			list := make([]map[string]any, 0, 1000)
+			if offset == "0" {
+				for index := range 1000 {
+					list = append(list, map[string]any{"fid": fmt.Sprintf("id-%d", index), "n": fmt.Sprintf("file-%d", index)})
+				}
+			} else {
+				list = append(list, map[string]any{"fid": "id-1000", "n": "file-1000"})
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"state": true, "data": map[string]any{"count": 1001, "shareinfo": map[string]any{"share_title": "Large"}, "list": list}})
+		case "/share/receive":
+			_ = request.ParseForm()
+			if got := len(strings.Split(request.Form.Get("file_id"), ",")); got != 1001 {
+				t.Fatalf("received %d share IDs", got)
+			}
+			_, _ = io.WriteString(response, `{"state":true}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer db.Close()
+	if err := db.SaveAccount(&domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "cookie", IsDefault: true, Status: "active"}); err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	service := NewDriveService(db, "", "")
+	service.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme = upstreamURL.Scheme
+		clone.URL.Host = upstreamURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	count, title, err := service.SaveShareCtx(context.Background(), "account", "https://115.com/s/shared", "", "0")
+	if err != nil || count != 1001 || title != "Large" {
+		t.Fatalf("paginated share save: count=%d title=%s err=%v", count, title, err)
+	}
+}

@@ -4,24 +4,33 @@
 
 # Self-use HTTP mode (no TLS, no ACME, no Authelia forward_auth gate).
 # The http:// scheme forces Caddy to serve plain HTTP (no automatic HTTPS).
-# The webhook bridge (query key -> X-Webhook-Secret header) is preserved so
-# CloudDrive events still reach the DSH host. /internal/* stays 404.
+# The webhook bridge converts the configured query key to X-Webhook-Secret so
+# CloudDrive2 can authenticate its event delivery to the standalone service.
 # For the operator's own use over the loopback/tunnel; not public-facing.
 
-# `dsh.gaotao.cc` is intentionally not a DSH entrypoint. Reserve the
-# authority explicitly so a future DNS/port-forward change fails closed.
-http://dsh.gaotao.cc {
-	respond 404
-}
 
-# NPS maps gaotao.cc:3080/8096/19798 to Debian port 80. Preserve the
+# NPS maps gaotao.cc:3080/8096/8100/19798 to Debian port 80. Preserve the
 # original Host header so one Caddy listener can route each external port while
-# DSH, Emby, and CloudDrive stay loopback-only.
+# application services stay loopback-only.
 http://gaotao.cc {
-	@dsh header Host gaotao.cc:3080
-	handle @dsh {
+	@app header Host gaotao.cc:3080
+	handle @app {
 		@internal path /internal/*
 		respond @internal 404
+	@agent {
+		path /mcp /api/v1/*
+		header X-Agent-Token *
+	}
+	handle @agent {
+		header {
+			Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+			Referrer-Policy no-referrer
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+		}
+		reverse_proxy 127.0.0.1:3080
+	}
+
 
 		@login path /login /logout
 		handle @login {
@@ -42,11 +51,7 @@ http://gaotao.cc {
 				X-Content-Type-Options nosniff
 				X-Frame-Options DENY
 			}
-			reverse_proxy 127.0.0.1:3080 {
-				header_up Host dsh.gaotao.cc
-				header_up Origin http://dsh.gaotao.cc
-				header_up Cookie {$DSH_UPSTREAM_COOKIE}
-			}
+			reverse_proxy 127.0.0.1:3080
 		}
 	}
 
@@ -58,6 +63,30 @@ http://gaotao.cc {
 	@clouddrive header Host gaotao.cc:19798
 	handle @clouddrive {
 		reverse_proxy 127.0.0.1:19798
+	}
+
+	@resource header Host gaotao.cc:8100
+	handle @resource {
+		@resource_private path /api/v1/auth /api/v1/auth/* /api/v1/me /api/v1/me/* /api/admin/*
+		handle @resource_private {
+			respond 403
+		}
+
+		@resource_api path /api/* /search /stats /channels /sources /admin/refresh/status /admin/refresh /admin/refresh/stop /admin/api/stats /admin/sources /admin/sources/refresh /admin/runs/latest/channels
+		handle @resource_api {
+			reverse_proxy 127.0.0.1:18080
+		}
+
+		@resource_admin_channel path_regexp resourceAdminChannel ^/admin/channels/[^/]+/(enable|disable|refresh)$
+		handle @resource_admin_channel {
+			reverse_proxy 127.0.0.1:18080
+		}
+
+		handle {
+			root * /var/www/tg-resource/dist
+			try_files {path} {path}/ /index.html
+			file_server
+		}
 	}
 
 	handle {
@@ -74,9 +103,7 @@ http://host.docker.internal {
 			request_header X-Webhook-Secret {query.key}
 			request_header Content-Type application/json
 			rewrite * {path}?
-			reverse_proxy 127.0.0.1:3080 {
-				header_up Host dsh.gaotao.cc
-			}
+			reverse_proxy 127.0.0.1:3080
 		}
 	}
 	handle {

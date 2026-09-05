@@ -5,29 +5,31 @@ EmbyMedia is a self-hosted, single-administrator operations system for Emby, Clo
 
 ## Audience and primary task
 - Primary user: administrator `gaotao`.
-- Primary task: understand media-system state, inspect libraries/resources/tasks, configure upstream services, and launch safe plan → approval → execute → verify workflows.
+- Primary task: understand media-system state, inspect libraries/resources/tasks, configure upstream services, and execute bounded provider operations with explicit errors and durable audit records.
 
 ## Allowed visible capabilities
-- Health and dependency status.
-- Emby library inventory.
-- Recent task, schedule, and audit state.
-- Credential configured/writable status without revealing values.
-- Non-secret endpoint/settings visibility.
-- Agent integration through Streamable HTTP MCP, stdio MCP, and OpenAPI 3.1.
-- Supported writes: 115 file operations and share transfer, Emby library refresh, settings, scheduled tasks, and Agent token management.
+- Live dependency, 115 account, VIP, quota, CloudDrive mount, and filesystem status.
+- Emby library inventory, exact item inspection, refresh, explicit TMDB matching, and missing-poster inspection.
+- 115 file lifecycle, share receive/create, offline download, and indexed resource search.
+- STRM synchronization and containment-aware target verification.
+- Persistent task, schedule, execution-attempt, cancellation, retry, and audit state.
+- Credential configured/writable status without revealing stored values.
+- Agent integration through authenticated Streamable HTTP MCP, loopback legacy SSE, stdio MCP, and OpenAPI 3.1.
+- Supported writes: bounded 115 and Emby operations, CloudDrive gRPC remount, settings, scheduled tasks, and Agent token management.
 
 ## Constraints and non-goals
-- The public Web endpoint uses a login proxy; same-host Agent clients use the loopback MCP address.
+- The public Web endpoint uses a login proxy; public Agent calls use `X-Agent-Token`, while same-host Hermes also uses a token on the loopback MCP address.
 - Never display stored secret values; Agent token plaintext appears only in the creation response.
-- Unsupported operations are labelled unavailable; no fake success or inert action.
+- Tool discovery is not execution evidence; the UI distinguishes discovery from successful or failed read calls.
 - No multi-user RBAC claim.
-- MCP tool discovery proves registration, not successful execution against every upstream dependency.
+- Provider operations fail with their actual configuration, authorization, transport, or response error; no synthetic success or empty fallback.
 
 ## Missing facts
 - No supplied product logo beyond the current EmbyMedia mark.
 - No hardware-transcoding capability.
-- CloudDrive remount, 115 share-link generation, and running-task cancellation are not implemented by the configured providers; their MCP tools return explicit errors.
+- Missing-poster inspection and explicit TMDB-ID application are implemented; automatic TMDB candidate selection remains intentionally absent because ambiguous matches require an operator choice.
 
 ## Working assumptions
 - The same-host Debian deployment is the primary Agent runtime.
 - Public browser access remains protected by the existing login proxy.
+- CloudDrive container restarts require an Emby restart and media-canary verification before playback resumes.

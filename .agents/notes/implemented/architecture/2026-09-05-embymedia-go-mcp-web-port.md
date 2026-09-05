@@ -10,20 +10,20 @@ The standalone Go service exposed its browser and REST API on port 3080 but expo
 
 ## Decision
 
-The Go MCP registry is available through Streamable HTTP at `/mcp` on the main Web listener. The deployment proxy authenticates public requests and forwards the original Host header, so the embedded MCP handler disables its loopback-only Host check while the proxy remains the public security boundary. The same binary supports `-mcp` for stdio clients, while port 3081 remains a legacy on-host SSE listener. The Agent page performs a real `initialize` and `tools/list` exchange and derives its tool status from the response instead of displaying a fixed availability claim.
+The Go MCP registry is available through Streamable HTTP at `/mcp` on the main Web listener. The Go HTTP wrapper requires an Agent token before MCP initialization unless the request carries the authenticated browser identity; tool calls then enforce read/write scope and the shared rate bucket. The same binary supports trusted local `-mcp` stdio clients, while port 3081 remains a token-authenticated, on-host SSE listener. The Agent page performs a real `initialize`, `tools/list`, and safe read-tool exchange and distinguishes discovery from execution results.
 
-Hermes on the Debian host connects to `http://127.0.0.1:3080/mcp`. This loopback route avoids the login proxy and the unpublished SSE port. The deployed Hermes configuration uses the standalone Go registry under the `embymedia` name and discovers eighteen tools.
+Hermes on the Debian host connects to `http://127.0.0.1:3080/mcp` with `X-Agent-Token`. The deployed configuration uses the standalone Go registry under the `embymedia` name and discovers eighteen tools.
 
-Agent token creation returns a random secret once and stores only its SHA-256 digest. REST requests that present `X-Agent-Token` or a Bearer token are authenticated, rate-limited, and checked for write scope; invalid credentials fail closed. Browser requests continue through the deployment login proxy.
+Agent token creation returns a random secret once and stores only its SHA-256 digest. REST and HTTP MCP requests authenticate, rate-limit, and check read/write scope through one process-wide authorizer; invalid credentials fail closed. Browser requests continue through the deployment login proxy.
 
 ## Alternatives considered
 
 **Publish port 3081.** Rejected because a second public listener expands deployment and firewall configuration while Streamable HTTP can share the protected application listener.
 
-**Keep the DSH-backed Hermes adapter.** Rejected for the standalone V2 deployment because it retains a second runtime and a different tool roster. The earlier adapter remains relevant only to the DSH application path documented in the superseded note.
+**Keep the DSH-backed Hermes adapter.** Rejected because it retains a second runtime and a different tool roster; the standalone release removes the adapter and its deployment service.
 
 **Display static green status.** Rejected because route presence does not prove an MCP handshake or tool discovery.
 
 ## Consequences
 
-One application port serves the Web UI, REST schema, and preferred MCP transport. Same-host Hermes avoids public-network authentication and has a tested eighteen-tool connection. Tool discovery means protocol registration, not successful upstream execution; actions without a configured implementation return explicit MCP errors instead of synthetic success. External MCP clients still pass through the deployment login proxy; the UI does not claim that the plain HTTP public hostname is a generally usable unauthenticated MCP endpoint.
+One application port serves the Web UI, REST schema, and preferred MCP transport. Same-host Hermes has a tested eighteen-tool connection and uses the same token policy as public Agent clients. Tool discovery means protocol registration, not successful upstream execution; provider configuration and runtime failures return explicit MCP errors instead of synthetic success. Caddy forwards token-bearing Agent paths directly to the fail-closed Go middleware and keeps headerless browser traffic behind login.

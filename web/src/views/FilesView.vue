@@ -10,22 +10,25 @@ import {
   Edit2,
   Loader2,
   Users,
-  FolderInput
+  FolderInput,
+  UserMinus,
+  UserPlus
 } from 'lucide-vue-next'
 const currentCid = ref('0')
 const cidMap = ref<Record<string, string>>({})
 const actionError = ref('')
 const selectedFiles = ref<Set<string>>(new Set())
+const moveTargetCid = ref('')
 
 async function fetchCidMap() {
   try {
-    const res = await fetch('/api/v1/cid-map')
-    if (res.ok) {
-      const data = await res.json()
-      cidMap.value = data.map ?? {}
-    }
-  } catch (e) {
-    console.error(e)
+    const response = await fetch('/api/v1/cid-map')
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '读取目录映射失败')
+    cidMap.value = data.map ?? {}
+    if (!moveTargetCid.value) moveTargetCid.value = Object.values(cidMap.value)[0] || '0'
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : '读取目录映射失败'
   }
 }
 
@@ -36,6 +39,13 @@ function jumpToCid(name: string, cid: string) {
     { cid, name }
   ]
   fetchFiles()
+}
+
+async function changeAccount() {
+  currentCid.value = '0'
+  breadcrumbs.value = [{ cid: '0', name: '根目录' }]
+  selectedFiles.value.clear()
+  await fetchFiles()
 }
 
 
@@ -85,6 +95,32 @@ async function batchDelete() {
     }
   } catch (error: any) {
     actionError.value = error.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function batchMove() {
+  if (selectedFiles.value.size === 0 || !moveTargetCid.value) return
+  if (!confirm(`确认移动选中的 ${selectedFiles.value.size} 个项目？`)) return
+  loading.value = true
+  actionError.value = ''
+  try {
+    const response = await fetch('/api/v1/files/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: currentAccountId.value,
+        file_ids: Array.from(selectedFiles.value),
+        target_cid: moveTargetCid.value,
+      }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '批量移动失败')
+    selectedFiles.value.clear()
+    await fetchFiles()
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : '批量移动失败'
   } finally {
     loading.value = false
   }
@@ -147,36 +183,80 @@ const currentAccountId = ref('')
 const loading = ref(false)
 const showNewFolderModal = ref(false)
 const newFolderName = ref('')
+const showAccountModal = ref(false)
+const newAccount = ref({ name: '', cookie: '', is_default: false })
+const accountBusy = ref(false)
 
 async function fetchAccounts() {
   try {
-    const res = await fetch('/api/v1/accounts')
-    if (res.ok) {
-      const data = await res.json()
-      accounts.value = data.accounts ?? []
-      if (accounts.value.length > 0) {
-        const def = accounts.value.find((account: any) => account.is_default) || accounts.value[0]
-        currentAccountId.value = def.id
-      }
+    const response = await fetch('/api/v1/accounts')
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '读取 115 账号失败')
+    accounts.value = data.accounts ?? []
+    if (accounts.value.length > 0) {
+      const defaultAccount = accounts.value.find((account: any) => account.is_default) || accounts.value[0]
+      currentAccountId.value = defaultAccount.id
     }
-  } catch (e) {
-    console.error(e)
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : '读取 115 账号失败'
+  }
+}
+
+async function createAccount() {
+  actionError.value = ''
+  accountBusy.value = true
+  try {
+    const response = await fetch('/api/v1/accounts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newAccount.value),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '添加账号失败')
+    newAccount.value = { name: '', cookie: '', is_default: false }
+    showAccountModal.value = false
+    await fetchAccounts()
+    currentAccountId.value = data.id
+    await changeAccount()
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : '添加账号失败'
+  } finally {
+    accountBusy.value = false
+  }
+}
+
+async function deleteCurrentAccount() {
+  if (!currentAccountId.value || !confirm('确认移除当前 115 账号？不会删除网盘文件。')) return
+  accountBusy.value = true
+  try {
+    const response = await fetch(`/api/v1/accounts/${encodeURIComponent(currentAccountId.value)}`, { method: 'DELETE' })
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.error || '移除账号失败')
+    }
+    currentAccountId.value = ''
+    await fetchAccounts()
+    await changeAccount()
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : '移除账号失败'
+  } finally {
+    accountBusy.value = false
   }
 }
 
 async function fetchFiles() {
+  selectedFiles.value.clear()
   loading.value = true
+  actionError.value = ''
   try {
     const params = new URLSearchParams()
     if (currentAccountId.value) params.set('account_id', currentAccountId.value)
     params.set('cid', currentCid.value)
-    const res = await fetch(`/api/v1/files?${params.toString()}`)
-    if (res.ok) {
-      const data = await res.json()
-      files.value = data.files ?? []
-    }
-  } catch (e) {
-    console.error(e)
+    const response = await fetch(`/api/v1/files?${params.toString()}`)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '读取目录失败')
+    files.value = data.files ?? []
+  } catch (error) {
+    files.value = []
+    actionError.value = error instanceof Error ? error.message : '读取目录失败'
   } finally {
     loading.value = false
   }
@@ -197,24 +277,21 @@ function navigateToBreadcrumb(idx: number) {
 }
 
 async function createFolder() {
-  if (!newFolderName.value) return
+  if (!newFolderName.value.trim()) return
+  actionError.value = ''
   try {
-    const res = await fetch('/api/v1/files/mkdir', {
+    const response = await fetch('/api/v1/files/mkdir', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        account_id: currentAccountId.value,
-        parent_cid: currentCid.value,
-        name: newFolderName.value
-      })
+      body: JSON.stringify({ account_id: currentAccountId.value, parent_cid: currentCid.value, name: newFolderName.value.trim() }),
     })
-    if (res.ok) {
-      newFolderName.value = ''
-      showNewFolderModal.value = false
-      fetchFiles()
-    }
-  } catch (e) {
-    console.error(e)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '创建文件夹失败')
+    newFolderName.value = ''
+    showNewFolderModal.value = false
+    await fetchFiles()
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : '创建文件夹失败'
   }
 }
 
@@ -228,7 +305,7 @@ onMounted(async () => {
 <template>
   <div class="space-y-6">
     <!-- Header -->
-    <div class="flex items-center justify-between pb-6 border-b border-border">
+    <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-border">
       <div>
         <h1 class="font-serif text-2xl font-bold text-text">115 网盘文件管理</h1>
         <p class="text-sm text-text-muted mt-1 font-mono">
@@ -237,12 +314,12 @@ onMounted(async () => {
       </div>
 
       <!-- Account Selector & Tools -->
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <div class="flex items-center gap-2 bg-surface px-3 py-1.5 rounded-lg border border-border">
           <Users class="w-3.5 h-3.5 text-text-muted" />
           <select
             v-model="currentAccountId"
-            @change="fetchFiles"
+            @change="changeAccount"
             class="bg-transparent text-xs font-mono text-text focus:outline-none cursor-pointer"
           >
             <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
@@ -252,10 +329,9 @@ onMounted(async () => {
           </select>
         </div>
 
-        <button
-          @click="showNewFolderModal = true"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:border-text-muted bg-surface text-xs font-mono text-text transition-colors"
-        >
+		<button type="button" :disabled="accountBusy" @click="showAccountModal = true" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-surface text-xs font-mono disabled:opacity-50"><UserPlus class="w-3.5 h-3.5" />添加账号</button>
+		<button v-if="currentAccountId" type="button" :disabled="accountBusy" @click="deleteCurrentAccount" class="p-2 rounded-lg border border-border bg-surface text-text-faint hover:text-danger disabled:opacity-50" aria-label="移除当前账号"><UserMinus class="w-3.5 h-3.5" /></button>
+        <button type="button" @click="showNewFolderModal = true" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:border-text-muted bg-surface text-xs font-mono text-text transition-colors">
           <FolderPlus class="w-3.5 h-3.5" />
           <span>新建文件夹</span>
         </button>
@@ -271,10 +347,21 @@ onMounted(async () => {
         </button>
 
 
+        <template v-if="selectedFiles.size > 0">
+          <select v-model="moveTargetCid" class="min-h-9 max-w-40 rounded-lg border border-border bg-surface px-2 text-xs font-mono" aria-label="批量移动目标目录">
+            <option value="0">根目录</option>
+            <option v-for="(cid, name) in cidMap" :key="cid" :value="cid">{{ name }}</option>
+          </select>
+          <button type="button" @click="batchMove" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent bg-surface text-xs font-mono text-accent">
+            <FolderInput class="w-3.5 h-3.5" />批量移动
+          </button>
+        </template>
+
         <button
           @click="fetchFiles"
           :disabled="loading"
           class="p-2 rounded-lg border border-border hover:border-text-muted bg-surface text-text-muted hover:text-text transition-colors"
+          aria-label="刷新文件列表"
         >
           <RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" />
         </button>
@@ -382,14 +469,14 @@ onMounted(async () => {
             <td class="py-3 px-4 text-right whitespace-nowrap">
               <button
                 @click="renameFile(file)"
-                class="p-1 text-text-faint hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity mr-1"
+				class="p-1 text-text-faint hover:text-accent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 transition-opacity mr-1"
                 title="重命名"
               >
                 <Edit2 class="w-3.5 h-3.5" />
               </button>
               <button
                 @click="deleteFile(file)"
-                class="p-1 text-text-faint hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity"
+				class="p-1 text-text-faint hover:text-danger opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 transition-opacity"
                 title="删除"
               >
                 <Trash2 class="w-3.5 h-3.5" />
@@ -401,33 +488,22 @@ onMounted(async () => {
     </div>
 
     <!-- New Folder Modal -->
-    <div
-      v-if="showNewFolderModal"
-      class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4"
-    >
-      <div class="w-full max-w-md p-6 rounded-xl border border-border bg-surface shadow-lg space-y-4">
+    <div v-if="showNewFolderModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" @click.self="showNewFolderModal = false">
+      <div class="w-full max-w-md p-6 rounded-xl border border-border bg-surface shadow-lg space-y-4" role="dialog" aria-modal="true" aria-label="新建文件夹">
         <h3 class="font-serif font-semibold text-base text-text">新建文件夹</h3>
-        <input
-          v-model="newFolderName"
-          type="text"
-          placeholder="请输入文件夹名称..."
-          class="w-full px-3.5 py-2 rounded-lg border border-border bg-bg text-text text-xs font-sans focus:outline-none focus:border-accent"
-        />
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            @click="showNewFolderModal = false"
-            class="px-4 py-2 rounded-lg border border-border text-xs font-mono text-text-muted hover:bg-bg-muted"
-          >
-            取消
-          </button>
-          <button
-            @click="createFolder"
-            class="px-4 py-2 rounded-lg bg-accent text-accent-contrast text-xs font-mono hover:bg-accent-strong"
-          >
-            创建
-          </button>
-        </div>
+        <input v-model="newFolderName" type="text" placeholder="请输入文件夹名称" class="w-full min-h-11 px-3.5 border border-border bg-bg text-text text-sm" />
+        <div class="flex justify-end gap-2"><button type="button" @click="showNewFolderModal = false" class="min-h-11 px-4 border border-border text-sm">取消</button><button type="button" @click="createFolder" class="min-h-11 px-4 bg-accent text-accent-contrast text-sm">创建</button></div>
       </div>
+    </div>
+
+    <div v-if="showAccountModal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" @click.self="showAccountModal = false">
+      <form class="w-full max-w-md p-6 rounded-xl border border-border bg-surface shadow-lg space-y-4" role="dialog" aria-modal="true" aria-label="添加 115 账号" @submit.prevent="createAccount">
+        <h3 class="font-serif font-semibold text-base text-text">添加 115 账号</h3>
+		<div><label for="account-name" class="block mb-2 text-xs font-mono text-text-muted">名称</label><input id="account-name" v-model="newAccount.name" required class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
+		<div><label for="account-cookie" class="block mb-2 text-xs font-mono text-text-muted">浏览器 Cookie</label><input id="account-cookie" v-model="newAccount.cookie" type="password" autocomplete="new-password" required class="w-full min-h-11 border border-border bg-bg px-3 text-sm font-mono" /></div>
+        <label class="inline-flex items-center gap-2 text-sm"><input v-model="newAccount.is_default" type="checkbox" />设为默认账号</label>
+		<div class="flex justify-end gap-2"><button type="button" :disabled="accountBusy" class="min-h-11 px-4 border border-border" @click="showAccountModal = false">取消</button><button type="submit" :disabled="accountBusy" class="min-h-11 px-4 bg-accent text-accent-contrast disabled:opacity-50">{{ accountBusy ? '正在保存' : '保存账号' }}</button></div>
+      </form>
     </div>
   </div>
 </template>

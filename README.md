@@ -1,111 +1,126 @@
-# EmbyMedia Operations
+# EmbyMedia V2
 
 English | [中文](README.zh.md)
 
-Private self-hosted media operations for Emby, CloudDrive2, 115, Hermes, and DeepSeek Harness.
+EmbyMedia V2 is a self-hosted Go and Vue operations system for 115, CloudDrive2, Emby, STRM files, persistent tasks, REST, OpenAPI, and MCP. The supported runtime is one Go binary with an embedded browser application; Node, Cordis, DSH, and PostgreSQL are not production dependencies.
 
-This repository extends [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) with an EmbyMedia business package, migration utilities, hardened Debian deployment files, a browser operations console, and a full MCP adapter for Weixin-driven Hermes operations.
+## Runtime
 
-<a id="run"></a>
+The Debian deployment runs the standalone binary as `embymedia-v2.service` on loopback port 3080. The same listener serves the Web UI, `/api/v1/*`, `/api/v1/openapi.json`, and Streamable HTTP MCP at `/mcp`. Optional legacy SSE listens on loopback port 3081, and `-mcp` serves the same registry over stdio.
 
-## Current deployment
+Caddy authenticates browser traffic. Requests to `/api/v1/*` or `/mcp` carrying `X-Agent-Token` bypass the browser login and are validated by the Go service. Stored token secrets are SHA-256 digests; plaintext is returned only once when the administrator creates a token.
 
-The supported deployment runs on Debian 13. Emby, CloudDrive2, PostgreSQL, the DSH Web application, the standalone Go/Vue operations service, the HTTP login service, Caddy, and the Hermes messaging gateway run on one host. Caddy terminates public forwarding and login; service listeners remain host-local or container-private deployment details rather than general public ingress.
-
-The repository does not contain production credentials. Runtime secrets live under `/etc/embymedia/secrets/` and service environment files under `/etc/embymedia/`.
+SQLite at `/srv/embymedia/data/embymedia.db` owns settings, managed accounts, schedules, task attempts, Agent tokens, and audits. CloudDrive2, Emby, and the login service remain external dependencies managed by the Compose stack.
 
 ## Capabilities
 
-- Inventory Emby libraries, items, STRM files, users, tasks, plans, and audit records.
-- Return exact item counts by Emby type, including `Movie`, `Series`, and `Episode`.
-- Inspect continuing-series status and aired missing episodes.
-- Search 115 resources, preserve protected-share credentials outside model-visible results, and inspect recursive leaf evidence.
-- Create canonical plans for scans, resource onboarding, series repair, metadata changes, user policy changes, cleanup, deletion, and undo.
-- Execute plans with write-mode enforcement, target revalidation, audit records, partial-state handling, and independent verification.
-- Operate the plan-and-verify workflow from DSH, or use Hermes over Weixin with the standalone Go MCP registry for its registered 115, CloudDrive2, Emby, task, and system operations.
+- Manage multiple 115 accounts without returning cookies; refresh credential, VIP-expiry, and storage-quota state; select a default account and fall back to another active account.
+- List, create, rename, move, and recycle 115 files and directories; inspect and save 115 shares; create share links; submit offline downloads; search the configured resource index.
+- Read CloudDrive2 system and mount state through its version-matched gRPC API, measure filesystem capacity with `statfs`, and unmount/mount configured mount points with an authorized API token.
+- Authenticate CloudDrive2 webhook events and debounce file changes into one persistent Emby refresh task.
+- List Emby libraries, inspect one exact item ID, refresh one library or all libraries, apply an explicit TMDB identity and images, and list missing-poster items.
+- Synchronize STRM files from a configured media tree without following output symlinks, and verify that every STRM target stays inside the media root and exists.
+- Execute validated background operations with durable attempts, progress, results, errors, logs, cancellation, and explicit reviewed retry. Interrupted effectful work fails instead of replaying automatically.
+- Expose the complete REST API through OpenAPI 3.1 and the same eighteen operational tools through stdio, Streamable HTTP, and legacy SSE MCP.
 
-## Hermes and MCP
+## Agent access
 
-Hermes v0.21 connects to the standalone Go service over Streamable HTTP at `http://127.0.0.1:3080/mcp`. Its `embymedia` registry discovers eighteen tools. Discovery proves protocol registration; each call can still fail because of upstream configuration, permissions, or an explicitly unavailable provider action.
+The browser control center is `/agent`. It performs a real MCP initialization, tool discovery, safe read calls, and an OpenAPI request. A discovered-only tool is visually distinct from a tool whose read call succeeded or failed.
+
+Hermes uses the loopback Streamable HTTP endpoint and a full-access Agent token:
 
 ```sh
-hermes mcp add embymedia --url http://127.0.0.1:3080/mcp
+hermes mcp add embymedia --url http://127.0.0.1:3080/mcp --auth header
 hermes mcp test embymedia
 ```
 
-The Go service serves MCP, the Web UI, and REST on port 3080. `/agents` is the browser console, not an MCP transport address. Caddy authenticates public access to port 3080; same-host Hermes uses loopback and does not depend on the unpublished legacy SSE listener on port 3081.
+When prompted, enter the one-time secret created at `/agent` as the API key / Bearer token. Hermes stores the secret outside `config.yaml` and sends `Authorization: Bearer`; the server accepts that header and `X-Agent-Token`. The release installs `deploy/hermes/skills/embymedia-v2-operator/SKILL.md`; this skill names only the standalone registry and rejects the removed DSH tool vocabulary.
 
-Example Weixin requests:
+Claude Desktop can launch the binary over stdio:
 
-```text
-列出 Emby 媒体库和路径。
-搜索名称中包含这部剧的 115 资源。
-刷新 Emby 媒体库。
-检查 CloudDrive2 挂载清单。
-查询这个后台任务的状态和错误。
+```json
+{
+  "mcpServers": {
+    "embymedia": {
+      "command": "/opt/embymedia-v2/current/bin/embymedia",
+      "args": ["-mcp", "-db", "/srv/embymedia/data/embymedia.db"]
+    }
+  }
+}
 ```
 
-MCP mutation tools execute their configured provider action directly and return upstream errors. Share-link generation, CloudDrive2 remount, and running-task cancellation report explicit unavailable errors instead of synthetic success. Use the DSH plan path when an operation requires canonical `plan -> execute -> verify` controls.
+OpenClaw uses the same Streamable HTTP MCP registry. Replace `<one-time-token>` with a secret created at `/agent`, keep the resulting user configuration private, and probe the live tool list:
+
+```sh
+openclaw mcp add embymedia --url http://gaotao.cc:3080/mcp --transport streamable-http --header 'X-Agent-Token: <one-time-token>'
+openclaw mcp probe embymedia
+```
+
+Oh My Pi reads the server from `.omp/mcp.json`; the header value resolves from the `EMBYMEDIA_AGENT_TOKEN` environment variable:
+
+```json
+{
+  "mcpServers": {
+    "embymedia": {
+      "type": "http",
+      "url": "http://gaotao.cc:3080/mcp",
+      "headers": { "X-Agent-Token": "EMBYMEDIA_AGENT_TOKEN" }
+    }
+  }
+}
+```
+
+The OpenAPI document remains available at `http://gaotao.cc:3080/api/v1/openapi.json` for clients with an OpenAPI importer. Public token-bearing Agent paths are forwarded directly to the fail-closed Go authorization middleware; headerless browser requests still use the login service.
 
 ## Repository layout
 
 ```text
-packages/embymedia/operations/
-packages/embymedia/preset/
-packages/embymedia/ui/
-apps/embymedia-migrate/
-apps/embymedia-control-helper/
-deploy/
-migration/
+cmd/server/                 binary assembly and embedded Vue assets
+internal/api/               REST, OpenAPI, browser/Agent authorization
+internal/mcp/               eighteen-tool MCP registry
+internal/service/           115, CloudDrive2, Emby, STRM, task, schedule, webhook logic
+internal/storage/           monotonic SQLite schema and queries
+web/                        Vue 3 browser application
+deploy/                     Compose dependencies, Caddy, systemd, backups, Hermes skill
 ```
 
-The repository contains two application paths. The DSH packages own the canonical planning, execution, and verification workflow. The standalone Go service owns its Vue console, REST API, SQLite state, and eighteen-tool MCP registry; the deployed Hermes configuration uses this Go registry rather than the DSH dispatcher.
+Legacy Harness source remains in the repository for historical development work but is absent from the supported V2 service graph, release installer, Caddy route, Hermes configuration, and backup/restore path.
 
-<a id="run-from-source"></a>
+<a id="run"></a><a id="run-from-source"></a>
 
 ## Development
 
-Prerequisites: Node.js 22.19 or newer, pnpm, and PostgreSQL for database-backed tests.
+Prerequisites: Go 1.26, Node.js 22.19 or newer, and pnpm 11.7.0. Node is needed only to build the embedded Vue assets.
 
 ```sh
-pnpm install
-pnpm exec tsc -b packages/embymedia/operations/tsconfig.json
-pnpm exec vitest run --root . packages/embymedia/operations/tests --no-file-parallelism
-pnpm --filter @embymedia/dsh-operations bundle
+pnpm install --frozen-lockfile --filter embymedia-web...
+pnpm --dir web build
+rm -rf cmd/server/dist && cp -R web/dist cmd/server/dist
+go test ./internal/... ./cmd/server
+go build -trimpath -o bin/embymedia ./cmd/server
 ```
 
-The MCP deployment package is self-contained:
-
-```sh
-cd deploy/hermes/embymedia-mcp
-npm ci --ignore-scripts
-node --check src/index.js
-```
+The application defaults to loopback ports 8080 and 8081 for development. Use `-host`, `-port`, `-mcp-host`, `-mcp-port`, and `-db` for explicit runtime addresses and state. `-check-db` performs only SQLite opening and migrations; it starts no workers or schedules.
 
 ## Deployment
 
-Deployment files assume `/opt/embymedia/current` points at the active release and `/srv/embymedia/data` owns persistent data. Review every file under `deploy/` before applying it to another host; network names, paths, UIDs, and storage layout are deployment-specific.
-
-After updating the operations Host:
+The host release root is `/opt/embymedia-v2/current`. Build `bin/embymedia-linux-amd64`, write its standard `sha256sum` file beside it as `bin/embymedia-linux-amd64.sha256`, then run:
 
 ```sh
-pnpm exec tsc -b packages/embymedia/operations/tsconfig.json
-pnpm --filter @embymedia/dsh-operations bundle
-sudo systemctl restart embymedia-dsh.service
+sudo deploy/scripts/install-release.sh "$PWD" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-Hermes runs its messaging gateway as a user systemd service and discovers `http://127.0.0.1:3080/mcp` from `~/.hermes/config.yaml`. Only one Hermes gateway may poll a given Weixin iLink bot account.
+The installer verifies the artifact, copies the deployment assets into an immutable release, performs the side-effect-free database check, persists the shared webhook secret, atomically switches `current`, installs the units and Hermes skill, starts the dependency stack and login service, enables the backup timer, starts V2, and rolls back the symlink if the loopback OpenAPI probe fails.
 
 ## Safety
 
-- Never commit `.env`, API keys, cookies, passwords, Weixin tokens, 115 access codes, or generated credential stores.
-- Keep MCP on loopback for same-host clients, require Caddy authentication for public port 3080, and block DSH `/internal/*` routes at every reverse proxy.
-- Keep the scheduler disabled unless its write-policy path is explicitly reviewed and enabled.
-- Treat `previewed`, `queued`, `running`, and `verifying` as non-terminal states; only verified `done` is success.
-- Preserve local encrypted backups and complete an isolated restore before destructive infrastructure changes.
+- Keep 115 cookies, Emby keys, CloudDrive tokens, webhook secrets, and Agent token plaintext out of the repository and logs.
+- File deletion returns 403 unless `dangerous_actions_enabled` is explicitly enabled; the Web UI also requires confirmation.
+- Tool discovery proves registration, not provider success. Report an operation as successful only from its non-error result, and report an asynchronous operation only after `status=completed`.
+- A service restart marks interrupted effectful tasks failed. Inspect provider state before creating an explicit retry.
+- CloudDrive container restarts can invalidate Emby's bind-mount view. Restart Emby after a CloudDrive container restart and verify `/media/.embymedia-health-canary` before serving playback.
+- Backups preserve the original service states, quiesce the V2 and dependency writers, and restore into an isolated path with `-check-db` before any production recovery.
 
-## Upstream and license
-
-DeepSeek Harness remains the upstream framework. Preserve its license and third-party notices when rebasing or redistributing this private derivative.
+## License
 
 [MIT](LICENSE) — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

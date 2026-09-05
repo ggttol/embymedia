@@ -37,7 +37,8 @@ const filteredFavorites = computed(() => {
 })
 
 const is115 = (item: any) => item.disk_type === '115'
-const selectedCount = computed(() => selectedIds.value.size)
+const selectedTargets = computed(() => filteredFavorites.value.filter(item => is115(item) && selectedIds.value.has(item.id)))
+const selectedCount = computed(() => selectedTargets.value.length)
 
 function toggleSelect(id: number) {
   const next = new Set(selectedIds.value)
@@ -48,7 +49,7 @@ function toggleSelect(id: number) {
 
 function selectAllVisible() {
   const next = new Set(selectedIds.value)
-  filteredFavorites.value.forEach(item => next.add(item.id))
+	filteredFavorites.value.filter(is115).forEach(item => next.add(item.id))
   selectedIds.value = next
 }
 
@@ -103,7 +104,7 @@ async function triggerSave(link: any) {
 }
 
 async function triggerBatchSave() {
-  const targets = filteredFavorites.value.filter(item => selectedIds.value.has(item.id))
+	const targets = selectedTargets.value
   if (targets.length === 0) return
   batchRunning.value = true
   batchMessage.value = null
@@ -247,7 +248,7 @@ onMounted(fetchCidMap)
                 {{ getDiskLabel(item.disk_type) }}
               </span>
               <RouterLink
-                :to="`/resource/${item.id}`"
+				:to="`/resources/${item.id}`"
                 class="text-sm font-medium text-text hover:text-accent truncate block"
               >
                 {{ item.title }}

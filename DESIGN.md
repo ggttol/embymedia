@@ -35,10 +35,10 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 
 ## Components
 - Signal spine: four labelled nodes with live service or protocol state.
-- Module rail: Dashboard, Resources, Favorites, Files, Tasks, Agents, and Settings.
-- Agent console: actual MCP `initialize` and `tools/list` checks, a server-discovered tool roster, and copyable Hermes configuration.
-- Configuration matrix: endpoint settings and write-only credential status/actions.
-- Destructive controls require explicit confirmation and report upstream errors.
+- Module rail: Dashboard, Resources, Favorites, Files, Tasks, Agent, and Settings.
+- Agent console: actual MCP `initialize`, `tools/list`, and safe read-tool calls; discovery-only, success, and failure are distinct states; Hermes setup requests `X-Agent-Token`.
+- Configuration matrix: endpoint, filesystem, webhook, destructive-action, and write-only credential settings.
+- Destructive controls require explicit confirmation, a server-side enable switch where applicable, and visible upstream errors.
 
 ## Composition
 Persistent module rail → signal spine/status header → module-specific continuous canvas → contextual action dock. Configuration uses a table/matrix rather than another card grid.

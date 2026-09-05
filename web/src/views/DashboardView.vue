@@ -8,21 +8,32 @@ const stats = ref({
   driveAccounts: null as number | null,
   embyLibraries: null as number | null,
   activeTasks: null as number | null,
+  todayUpdated: null as number | null,
+  mountedMounts: null as number | null,
+  totalMounts: null as number | null,
 })
+const loadErrors = ref<string[]>([])
 const trends = ref<string[]>([])
 const recentTasks = ref<any[]>([])
 const loading = ref(false)
 
 async function fetchHomeData() {
   loading.value = true
+  loadErrors.value = []
   try {
-    const [summaryResult, trendsResult, accountsResult, librariesResult, tasksResult] = await Promise.allSettled([
+    const [summaryResult, trendsResult, accountsResult, librariesResult, tasksResult, mountsResult] = await Promise.allSettled([
       fetch('/api/v1/home/summary'),
       fetch('/api/v1/trends'),
       fetch('/api/v1/accounts'),
       fetch('/api/v1/emby/libraries'),
-      fetch('/api/v1/tasks'),
+      fetch('/api/v1/async-tasks'),
+      fetch('/api/v1/mounts'),
     ])
+    const failures = [
+      ['资源摘要', summaryResult], ['搜索趋势', trendsResult], ['115 账号', accountsResult],
+      ['Emby 媒体库', librariesResult], ['后台任务', tasksResult], ['CloudDrive 挂载', mountsResult],
+    ].filter(([, result]: any[]) => result.status === 'rejected' || !result.value.ok).map(([name]) => String(name))
+    loadErrors.value = failures
     if (summaryResult.status === 'fulfilled' && summaryResult.value.ok) {
       const data = await summaryResult.value.json()
       const summary = data.summary?.summary ?? data.summary ?? {}
@@ -55,6 +66,12 @@ async function fetchHomeData() {
       stats.value.activeTasks = tasks.filter((task: any) => task.status === 'running').length
       recentTasks.value = tasks.slice(0, 4)
     }
+    if (mountsResult.status === 'fulfilled' && mountsResult.value.ok) {
+      const data = await mountsResult.value.json()
+      const mounts = Array.isArray(data.mounts) ? data.mounts : []
+      stats.value.totalMounts = mounts.length
+      stats.value.mountedMounts = mounts.filter((mount: any) => mount.status === 'mounted').length
+    }
   } catch (error) {
     console.error(error)
   } finally {
@@ -69,6 +86,8 @@ onMounted(fetchHomeData)
   <div class="space-y-8">
     <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-5 pb-7 border-b border-border">
       <div class="max-w-2xl">
+
+    <div v-if="loadErrors.length" class="p-4 border border-danger/30 bg-danger/5 text-sm text-danger">暂时无法读取：{{ loadErrors.join('、') }}。其他卡片仍显示已取得的实时数据。</div>
         <p class="text-[10px] font-mono font-bold tracking-[0.18em] text-annotation mb-2">SYSTEM DESK / LIVE DATA</p>
         <h1 class="font-serif text-3xl font-bold text-text">媒体系统运行台</h1>
         <p class="text-sm text-text-muted mt-2">汇总资源索引、115 账号、Emby 媒体库与后台任务的当前状态。</p>
@@ -109,7 +128,7 @@ onMounted(fetchHomeData)
           <HardDrive class="w-10 h-10 text-accent/20" />
         </div>
         <div class="flex items-center justify-between mt-6 pt-4 border-t border-border/50 text-xs font-mono">
-          <span class="text-text-muted">实时挂载 / 存储在线</span>
+          <span class="text-text-muted">挂载：{{ stats.mountedMounts === null ? '—' : `${stats.mountedMounts} / ${stats.totalMounts}` }}</span>
           <RouterLink to="/files" class="text-accent hover:underline flex items-center gap-1">管理文件 <ArrowRight class="w-3 h-3" /></RouterLink>
         </div>
       </article>

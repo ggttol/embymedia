@@ -42,6 +42,7 @@ worktrees/
 
 # EmbyMedia Go binary & SQLite storage
 embymedia
+/bin/
 *.db
 *.db-shm
 *.db-wal

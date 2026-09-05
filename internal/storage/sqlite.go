@@ -58,6 +58,8 @@ func (d *DB) migrate() error {
 		status TEXT DEFAULT 'active',
 		quota_used INTEGER DEFAULT 0,
 		quota_total INTEGER DEFAULT 0,
+		vip_level INTEGER DEFAULT 0,
+		vip_expires_at DATETIME,
 		created_at DATETIME,
 		updated_at DATETIME
 	);
@@ -90,13 +92,42 @@ func (d *DB) migrate() error {
 		updated_at DATETIME
 	);
 
+	CREATE TABLE IF NOT EXISTS async_tasks (
+		id TEXT PRIMARY KEY,
+		type TEXT NOT NULL,
+		payload TEXT NOT NULL DEFAULT '{}',
+		status TEXT NOT NULL,
+		progress REAL NOT NULL DEFAULT 0,
+		result TEXT,
+		error TEXT,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		max_attempts INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS task_runs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL REFERENCES async_tasks(id) ON DELETE CASCADE,
+		attempt INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		progress REAL NOT NULL DEFAULT 0,
+		logs TEXT NOT NULL DEFAULT '[]',
+		error TEXT,
+		started_at DATETIME NOT NULL,
+		completed_at DATETIME,
+		UNIQUE(task_id, attempt)
+	);
+	CREATE INDEX IF NOT EXISTS task_runs_task_id_idx ON task_runs(task_id, id);
+
 	CREATE TABLE IF NOT EXISTS agent_tokens (
 		id TEXT PRIMARY KEY,
 		token TEXT NOT NULL UNIQUE,
 		name TEXT NOT NULL,
 		role TEXT DEFAULT 'agent',
 		scopes TEXT,
-		rate_limit INTEGER DEFAULT 60,
+		rate_limit INTEGER DEFAULT 20,
+		enabled INTEGER NOT NULL DEFAULT 1,
 		last_used_at DATETIME,
 		created_at DATETIME
 	);
@@ -111,6 +142,22 @@ func (d *DB) migrate() error {
 		ip TEXT,
 		created_at DATETIME
 	);
+
+	CREATE TABLE IF NOT EXISTS agent_audit_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		caller TEXT NOT NULL,
+		token_id TEXT,
+		agent_name TEXT,
+		action TEXT NOT NULL,
+		target TEXT NOT NULL,
+		input TEXT,
+		output TEXT,
+		status TEXT NOT NULL,
+		latency_ms INTEGER NOT NULL DEFAULT 0,
+		ip TEXT,
+		created_at DATETIME NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS agent_audit_logs_created_at_idx ON agent_audit_logs(created_at DESC);
 
 	CREATE TABLE IF NOT EXISTS system_configs (
 		key TEXT PRIMARY KEY,
@@ -135,7 +182,59 @@ func (d *DB) migrate() error {
 	);
 	`
 
-	_, err := d.db.Exec(schema)
+	if _, err := d.db.Exec(schema); err != nil {
+		return err
+	}
+	for _, migration := range []struct{ table, column, definition string }{
+		{"agent_tokens", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"drive_accounts", "vip_level", "INTEGER NOT NULL DEFAULT 0"},
+		{"drive_accounts", "vip_expires_at", "DATETIME"},
+	} {
+		if err := d.ensureColumn(migration.table, migration.column, migration.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := d.db.Exec(`
+		UPDATE drive_accounts
+		SET cookie = CASE
+				WHEN TRIM(type) = '' THEN COALESCE(NULLIF((SELECT value FROM system_settings WHERE key = '115_cookie'), ''), cookie)
+				ELSE cookie
+			END,
+			type = CASE WHEN TRIM(type) = '' THEN '115' ELSE type END,
+			name = CASE WHEN TRIM(name) = '' THEN '默认账号' ELSE name END
+		WHERE TRIM(type) = '' OR TRIM(name) = ''
+	`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *DB) ensureColumn(table, column, definition string) error {
+	rows, err := d.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = d.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
 	return err
 }
 
@@ -144,7 +243,7 @@ func (d *DB) ListAccounts() ([]domain.DriveAccount, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	rows, err := d.db.Query(`SELECT id, type, name, cookie, token, is_default, status, quota_used, quota_total, created_at, updated_at FROM drive_accounts ORDER BY is_default DESC, created_at ASC`)
+	rows, err := d.db.Query(`SELECT id, type, name, cookie, token, is_default, status, quota_used, quota_total, vip_level, vip_expires_at, created_at, updated_at FROM drive_accounts ORDER BY is_default DESC, created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -153,12 +252,16 @@ func (d *DB) ListAccounts() ([]domain.DriveAccount, error) {
 	var res []domain.DriveAccount
 	for rows.Next() {
 		var a domain.DriveAccount
-		var isDef int
+		var isDefault int
+		var vipExpires sql.NullTime
 		var created, updated time.Time
-		if err := rows.Scan(&a.ID, &a.Type, &a.Name, &a.Cookie, &a.Token, &isDef, &a.Status, &a.QuotaUsed, &a.QuotaTotal, &created, &updated); err != nil {
+		if err := rows.Scan(&a.ID, &a.Type, &a.Name, &a.Cookie, &a.Token, &isDefault, &a.Status, &a.QuotaUsed, &a.QuotaTotal, &a.VIPLevel, &vipExpires, &created, &updated); err != nil {
 			return nil, err
 		}
-		a.IsDefault = isDef == 1
+		if vipExpires.Valid {
+			a.VIPExpiresAt = &vipExpires.Time
+		}
+		a.IsDefault = isDefault == 1
 		a.CreatedAt = created
 		a.UpdatedAt = updated
 		res = append(res, a)
@@ -166,26 +269,34 @@ func (d *DB) ListAccounts() ([]domain.DriveAccount, error) {
 	return res, nil
 }
 
-func (d *DB) SaveAccount(a *domain.DriveAccount) error {
+func (d *DB) SaveAccount(account *domain.DriveAccount) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
+	if account.ID == "" || account.Type == "" || account.Name == "" {
+		return fmt.Errorf("account id, type, and name are required")
+	}
 	now := time.Now()
-	if a.CreatedAt.IsZero() {
-		a.CreatedAt = now
+	if account.CreatedAt.IsZero() {
+		account.CreatedAt = now
 	}
-	a.UpdatedAt = now
-
-	isDef := 0
-	if a.IsDefault {
-		isDef = 1
-		// Clear other defaults
-		_, _ = d.db.Exec(`UPDATE drive_accounts SET is_default = 0 WHERE id != ?`, a.ID)
+	account.UpdatedAt = now
+	isDefault := 0
+	if account.IsDefault {
+		isDefault = 1
 	}
-
-	_, err := d.db.Exec(`
-		INSERT INTO drive_accounts (id, type, name, cookie, token, is_default, status, quota_used, quota_total, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if account.IsDefault {
+		if _, err := tx.Exec(`UPDATE drive_accounts SET is_default = 0 WHERE id != ?`, account.ID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO drive_accounts (id, type, name, cookie, token, is_default, status, quota_used, quota_total, vip_level, vip_expires_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			type = excluded.type,
 			name = excluded.name,
@@ -195,9 +306,13 @@ func (d *DB) SaveAccount(a *domain.DriveAccount) error {
 			status = excluded.status,
 			quota_used = excluded.quota_used,
 			quota_total = excluded.quota_total,
+			vip_level = excluded.vip_level,
+			vip_expires_at = excluded.vip_expires_at,
 			updated_at = excluded.updated_at
-	`, a.ID, a.Type, a.Name, a.Cookie, a.Token, isDef, a.Status, a.QuotaUsed, a.QuotaTotal, a.CreatedAt, a.UpdatedAt)
-	return err
+	`, account.ID, account.Type, account.Name, account.Cookie, account.Token, isDefault, account.Status, account.QuotaUsed, account.QuotaTotal, account.VIPLevel, account.VIPExpiresAt, account.CreatedAt, account.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DB) DeleteAccount(id string) error {
@@ -244,9 +359,10 @@ func (d *DB) ListTasks() ([]domain.ScheduledTask, error) {
 		if nextRun.Valid {
 			t.NextRunAt = &nextRun.Time
 		}
+		t.Enabled = t.Status != "paused"
 		res = append(res, t)
 	}
-	return res, nil
+	return res, rows.Err()
 }
 
 func (d *DB) SaveTask(t *domain.ScheduledTask) error {
@@ -310,28 +426,61 @@ func (d *DB) GetTask(id string) (*domain.ScheduledTask, error) {
 }
 
 // Async Tasks
-func (d *DB) CreateAsyncTask(t *domain.AsyncTask) error {
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAsyncTask(row rowScanner) (*domain.AsyncTask, error) {
+	var task domain.AsyncTask
+	var payload, result, errText sql.NullString
+	if err := row.Scan(
+		&task.ID, &task.Type, &payload, &task.Status, &task.Progress, &result, &errText,
+		&task.Attempts, &task.MaxAttempts, &task.CreatedAt, &task.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if payload.Valid && payload.String != "" {
+		if err := json.Unmarshal([]byte(payload.String), &task.Payload); err != nil {
+			return nil, fmt.Errorf("decode async task payload: %w", err)
+		}
+	}
+	if result.Valid {
+		task.Result = result.String
+	}
+	if errText.Valid {
+		task.Error = errText.String
+	}
+	return &task, nil
+}
+
+func (d *DB) CreateAsyncTask(task *domain.AsyncTask) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	var payloadStr string
-	if t.Payload != nil {
-		b, _ := json.Marshal(t.Payload)
-		payloadStr = string(b)
+	payload, err := json.Marshal(task.Payload)
+	if err != nil {
+		return fmt.Errorf("encode async task payload: %w", err)
 	}
-
-	_, err := d.db.Exec(`
-		INSERT INTO scheduled_tasks (id, type, name, cron_expr, status, progress, params, error, created_at, updated_at)
-		VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?)
-	`, t.ID, t.Type, t.Type, t.Status, t.Progress, payloadStr, t.Error, t.CreatedAt, time.Now())
+	if task.Status == "" {
+		task.Status = "pending"
+	}
+	if task.MaxAttempts <= 0 {
+		task.MaxAttempts = 1
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now()
+	}
+	task.UpdatedAt = task.CreatedAt
+	_, err = d.db.Exec(`
+		INSERT INTO async_tasks (id, type, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, task.ID, task.Type, string(payload), task.Status, task.Progress, task.Result, task.Error, task.Attempts, task.MaxAttempts, task.CreatedAt, task.UpdatedAt)
 	return err
 }
 
 func (d *DB) ListAsyncTasks(status string, limit int) ([]domain.AsyncTask, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-
-	query := `SELECT id, type, params, status, progress, error, created_at, updated_at FROM scheduled_tasks`
+	query := `SELECT id, type, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at FROM async_tasks`
 	var args []any
 	if status != "" {
 		query += ` WHERE status = ?`
@@ -339,122 +488,290 @@ func (d *DB) ListAsyncTasks(status string, limit int) ([]domain.AsyncTask, error
 	}
 	query += ` ORDER BY created_at DESC`
 	if limit > 0 {
-		query += fmt.Sprintf(` LIMIT %d`, limit)
+		query += ` LIMIT ?`
+		args = append(args, limit)
 	}
-
 	rows, err := d.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var res []domain.AsyncTask
+	result := make([]domain.AsyncTask, 0)
 	for rows.Next() {
-		var t domain.AsyncTask
-		var params, errStr sql.NullString
-		if err := rows.Scan(&t.ID, &t.Type, &params, &t.Status, &t.Progress, &errStr, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		task, err := scanAsyncTask(rows)
+		if err != nil {
 			return nil, err
 		}
-		if params.Valid && params.String != "" {
-			_ = json.Unmarshal([]byte(params.String), &t.Payload)
-		}
-		if errStr.Valid {
-			t.Error = errStr.String
-		}
-		res = append(res, t)
+		result = append(result, *task)
 	}
-	return res, nil
+	return result, rows.Err()
 }
 
 func (d *DB) GetAsyncTask(id string) (*domain.AsyncTask, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-
-	row := d.db.QueryRow(`
-		SELECT id, type, params, status, progress, error, created_at, updated_at
-		FROM scheduled_tasks WHERE id = ?
-	`, id)
-
-	var t domain.AsyncTask
-	var params, errStr sql.NullString
-	if err := row.Scan(&t.ID, &t.Type, &params, &t.Status, &t.Progress, &errStr, &t.CreatedAt, &t.UpdatedAt); err != nil {
-		return nil, err
-	}
-	if params.Valid && params.String != "" {
-		_ = json.Unmarshal([]byte(params.String), &t.Payload)
-	}
-	if errStr.Valid {
-		t.Error = errStr.String
-	}
-	return &t, nil
+	return scanAsyncTask(d.db.QueryRow(`
+		SELECT id, type, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at
+		FROM async_tasks WHERE id = ?
+	`, id))
 }
 
-func (d *DB) UpdateAsyncTaskStatus(id, status string, progress float64, errStr string) error {
+// BeginAsyncTask atomically claims a pending task and creates its execution record.
+func (d *DB) BeginAsyncTask(id string) (*domain.TaskRun, bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	tx, err := d.db.Begin()
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	result, err := tx.Exec(`
+		UPDATE async_tasks
+		SET status = 'running', progress = 0, result = '', error = '', attempts = attempts + 1, updated_at = ?
+		WHERE id = ? AND status = 'pending' AND attempts < max_attempts
+	`, now, id)
+	if err != nil {
+		return nil, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed == 0 {
+		return nil, false, err
+	}
+	var attempt int
+	if err := tx.QueryRow(`SELECT attempts FROM async_tasks WHERE id = ?`, id).Scan(&attempt); err != nil {
+		return nil, false, err
+	}
+	runResult, err := tx.Exec(`
+		INSERT INTO task_runs (task_id, attempt, status, progress, logs, started_at)
+		VALUES (?, ?, 'running', 0, '[]', ?)
+	`, id, attempt, now)
+	if err != nil {
+		return nil, false, err
+	}
+	runID, err := runResult.LastInsertId()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return &domain.TaskRun{ID: runID, TaskID: id, Attempt: attempt, Status: "running", Logs: []string{}, StartedAt: now}, true, nil
+}
 
-	_, err := d.db.Exec(`
-		UPDATE scheduled_tasks SET status = ?, progress = ?, error = ?, updated_at = ?
-		WHERE id = ?
-	`, status, progress, errStr, time.Now(), id)
+// UpdateAsyncTaskProgress persists progress for the task and its active run.
+func (d *DB) UpdateAsyncTaskProgress(id string, progress float64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE async_tasks SET progress = ?, updated_at = ? WHERE id = ? AND status = 'running'`, progress, time.Now(), id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE task_runs SET progress = ? WHERE id = (SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1)`, progress, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AppendTaskLog appends one durable message to the active task run.
+func (d *DB) AppendTaskLog(id, message string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var runID int64
+	var encoded string
+	if err := d.db.QueryRow(`SELECT id, logs FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1`, id).Scan(&runID, &encoded); err != nil {
+		return err
+	}
+	logs := make([]string, 0)
+	if err := json.Unmarshal([]byte(encoded), &logs); err != nil {
+		return fmt.Errorf("decode task logs: %w", err)
+	}
+	logs = append(logs, message)
+	data, err := json.Marshal(logs)
+	if err != nil {
+		return fmt.Errorf("encode task logs: %w", err)
+	}
+	_, err = d.db.Exec(`UPDATE task_runs SET logs = ? WHERE id = ?`, string(data), runID)
 	return err
+}
+
+// FinishAsyncTask atomically records one terminal result and its final log message.
+func (d *DB) FinishAsyncTask(id, status string, progress float64, resultText, errText, logMessage string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var runID int64
+	var encodedLogs string
+	if err := tx.QueryRow(`SELECT id, logs FROM task_runs WHERE task_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1`, id).Scan(&runID, &encodedLogs); err != nil {
+		return fmt.Errorf("task %s has no running execution record: %w", id, err)
+	}
+	logs := make([]string, 0)
+	if err := json.Unmarshal([]byte(encodedLogs), &logs); err != nil {
+		return fmt.Errorf("decode task logs: %w", err)
+	}
+	if logMessage != "" {
+		logs = append(logs, logMessage)
+	}
+	encodedLogsBytes, err := json.Marshal(logs)
+	if err != nil {
+		return fmt.Errorf("encode task logs: %w", err)
+	}
+	now := time.Now()
+	taskUpdate, err := tx.Exec(`
+		UPDATE async_tasks SET status = ?, progress = ?, result = ?, error = ?, updated_at = ?
+		WHERE id = ? AND status = 'running'
+	`, status, progress, resultText, errText, now, id)
+	if err != nil {
+		return err
+	}
+	changed, err := taskUpdate.RowsAffected()
+	if err != nil || changed != 1 {
+		return fmt.Errorf("task %s is no longer owned by the running worker", id)
+	}
+	runUpdate, err := tx.Exec(`
+		UPDATE task_runs SET status = ?, progress = ?, logs = ?, error = ?, completed_at = ?
+		WHERE id = ? AND status = 'running'
+	`, status, progress, string(encodedLogsBytes), errText, now, runID)
+	if err != nil {
+		return err
+	}
+	changed, err = runUpdate.RowsAffected()
+	if err != nil || changed != 1 {
+		return fmt.Errorf("task %s lost its running execution record", id)
+	}
+	return tx.Commit()
+}
+
+// CancelPendingAsyncTask cancels a task that has not started.
+func (d *DB) CancelPendingAsyncTask(id string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result, err := d.db.Exec(`UPDATE async_tasks SET status = 'cancelled', error = 'cancelled by operator', updated_at = ? WHERE id = ? AND status = 'pending'`, time.Now(), id)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed > 0, err
+}
+
+// RecoverInterruptedAsyncTasks fails running work without replaying possibly effectful operations.
+func (d *DB) RecoverInterruptedAsyncTasks() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	message := "service restarted while task was running; verify upstream state before retrying"
+	if _, err := tx.Exec(`UPDATE async_tasks SET status = 'failed', error = ?, updated_at = ? WHERE status = 'running'`, message, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE task_runs SET status = 'failed', error = ?, completed_at = ? WHERE status = 'running'`, message, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ListTaskRuns returns every execution attempt for a task in chronological order.
+func (d *DB) ListTaskRuns(taskID string) ([]domain.TaskRun, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.Query(`SELECT id, task_id, attempt, status, progress, logs, error, started_at, completed_at FROM task_runs WHERE task_id = ? ORDER BY attempt`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := make([]domain.TaskRun, 0)
+	for rows.Next() {
+		var run domain.TaskRun
+		var encoded string
+		var errText sql.NullString
+		var completed sql.NullTime
+		if err := rows.Scan(&run.ID, &run.TaskID, &run.Attempt, &run.Status, &run.Progress, &encoded, &errText, &run.StartedAt, &completed); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(encoded), &run.Logs); err != nil {
+			return nil, fmt.Errorf("decode task logs: %w", err)
+		}
+		if errText.Valid {
+			run.Error = errText.String
+		}
+		if completed.Valid {
+			run.CompletedAt = &completed.Time
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
 }
 
 // Agent Tokens
 func (d *DB) ListTokens() ([]domain.AgentToken, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-
-	rows, err := d.db.Query(`SELECT id, token, name, role, scopes, rate_limit, last_used_at, created_at FROM agent_tokens ORDER BY created_at DESC`)
+	rows, err := d.db.Query(`SELECT id, token, name, role, scopes, rate_limit, enabled, last_used_at, created_at FROM agent_tokens ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var res []domain.AgentToken
+	result := make([]domain.AgentToken, 0)
 	for rows.Next() {
-		var tok domain.AgentToken
+		var token domain.AgentToken
 		var scopes sql.NullString
+		var enabled int
 		var lastUsed sql.NullTime
-		if err := rows.Scan(&tok.ID, &tok.Token, &tok.Name, &tok.Role, &scopes, &tok.RateLimit, &lastUsed, &tok.CreatedAt); err != nil {
+		if err := rows.Scan(&token.ID, &token.Token, &token.Name, &token.Role, &scopes, &token.RateLimit, &enabled, &lastUsed, &token.CreatedAt); err != nil {
 			return nil, err
 		}
+		token.Enabled = enabled == 1
 		if lastUsed.Valid {
-			tok.LastUsedAt = &lastUsed.Time
+			token.LastUsedAt = &lastUsed.Time
 		}
 		if scopes.Valid && scopes.String != "" {
-			if err := json.Unmarshal([]byte(scopes.String), &tok.Scopes); err != nil {
+			if err := json.Unmarshal([]byte(scopes.String), &token.Scopes); err != nil {
 				return nil, fmt.Errorf("decode token scopes: %w", err)
 			}
 		}
-		res = append(res, tok)
+		result = append(result, token)
 	}
-	return res, nil
+	return result, rows.Err()
 }
 
-func (d *DB) SaveToken(tok *domain.AgentToken) error {
+func (d *DB) SaveToken(token *domain.AgentToken) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	if tok.CreatedAt.IsZero() {
-		tok.CreatedAt = time.Now()
+	if token.CreatedAt.IsZero() {
+		token.CreatedAt = time.Now()
 	}
-	scopes, err := json.Marshal(tok.Scopes)
+	scopes, err := json.Marshal(token.Scopes)
 	if err != nil {
 		return fmt.Errorf("encode token scopes: %w", err)
 	}
-
+	enabled := 0
+	if token.Enabled {
+		enabled = 1
+	}
 	_, err = d.db.Exec(`
-		INSERT INTO agent_tokens (id, token, name, role, scopes, rate_limit, last_used_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agent_tokens (id, token, name, role, scopes, rate_limit, enabled, last_used_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			token = excluded.token,
 			name = excluded.name,
 			role = excluded.role,
 			scopes = excluded.scopes,
 			rate_limit = excluded.rate_limit,
+			enabled = excluded.enabled,
 			last_used_at = excluded.last_used_at
-	`, tok.ID, tok.Token, tok.Name, tok.Role, string(scopes), tok.RateLimit, tok.LastUsedAt, tok.CreatedAt)
+	`, token.ID, token.Token, token.Name, token.Role, string(scopes), token.RateLimit, enabled, token.LastUsedAt, token.CreatedAt)
 	return err
 }
 
@@ -462,26 +779,27 @@ func (d *DB) SaveToken(tok *domain.AgentToken) error {
 func (d *DB) GetTokenByDigest(digest string) (*domain.AgentToken, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-
-	var tok domain.AgentToken
+	var token domain.AgentToken
 	var scopes sql.NullString
+	var enabled int
 	var lastUsed sql.NullTime
 	err := d.db.QueryRow(`
-		SELECT id, token, name, role, scopes, rate_limit, last_used_at, created_at
+		SELECT id, token, name, role, scopes, rate_limit, enabled, last_used_at, created_at
 		FROM agent_tokens WHERE token = ?
-	`, digest).Scan(&tok.ID, &tok.Token, &tok.Name, &tok.Role, &scopes, &tok.RateLimit, &lastUsed, &tok.CreatedAt)
+	`, digest).Scan(&token.ID, &token.Token, &token.Name, &token.Role, &scopes, &token.RateLimit, &enabled, &lastUsed, &token.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
+	token.Enabled = enabled == 1
 	if scopes.Valid && scopes.String != "" {
-		if err := json.Unmarshal([]byte(scopes.String), &tok.Scopes); err != nil {
+		if err := json.Unmarshal([]byte(scopes.String), &token.Scopes); err != nil {
 			return nil, fmt.Errorf("decode token scopes: %w", err)
 		}
 	}
 	if lastUsed.Valid {
-		tok.LastUsedAt = &lastUsed.Time
+		token.LastUsedAt = &lastUsed.Time
 	}
-	return &tok, nil
+	return &token, nil
 }
 
 // TouchToken records successful Agent token use.
@@ -492,62 +810,77 @@ func (d *DB) TouchToken(id string, usedAt time.Time) error {
 	return err
 }
 
-func (d *DB) DeleteToken(id string) error {
+func (d *DB) DeleteToken(id string) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, err := d.db.Exec(`DELETE FROM agent_tokens WHERE id = ?`, id)
-	return err
+	result, err := d.db.Exec(`DELETE FROM agent_tokens WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed > 0, err
 }
 
 // Audit Logs
-func (d *DB) AddAuditLog(log *domain.AuditLog) error {
+func (d *DB) AddAuditLog(logEntry *domain.AuditLog) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	if log.CreatedAt.IsZero() {
-		log.CreatedAt = time.Now()
+	if logEntry.CreatedAt.IsZero() {
+		logEntry.CreatedAt = time.Now()
 	}
-
-	_, err := d.db.Exec(`
-		INSERT INTO audit_logs (caller, token_id, action, target, details, ip, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, log.Caller, log.TokenID, log.Action, log.Target, log.Details, log.IP, log.CreatedAt)
+	result, err := d.db.Exec(`
+		INSERT INTO agent_audit_logs (caller, token_id, agent_name, action, target, input, output, status, latency_ms, ip, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, logEntry.Caller, logEntry.TokenID, logEntry.AgentName, logEntry.Action, logEntry.Target, logEntry.Input, logEntry.Output, logEntry.Status, logEntry.LatencyMS, logEntry.IP, logEntry.CreatedAt)
+	if err != nil {
+		return err
+	}
+	logEntry.ID, err = result.LastInsertId()
 	return err
 }
 
 func (d *DB) ListAuditLogs(limit int) ([]domain.AuditLog, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-
 	if limit <= 0 {
 		limit = 100
 	}
-
-	rows, err := d.db.Query(`SELECT id, caller, token_id, action, target, details, ip, created_at FROM audit_logs ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := d.db.Query(`
+		SELECT id, caller, token_id, agent_name, action, target, input, output, status, latency_ms, ip, created_at
+		FROM agent_audit_logs ORDER BY id DESC LIMIT ?
+	`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var res []domain.AuditLog
+	result := make([]domain.AuditLog, 0)
 	for rows.Next() {
-		var l domain.AuditLog
-		var tokenID, details, ip sql.NullString
-		if err := rows.Scan(&l.ID, &l.Caller, &tokenID, &l.Action, &l.Target, &details, &ip, &l.CreatedAt); err != nil {
+		var entry domain.AuditLog
+		var tokenID, agentName, input, output, ip sql.NullString
+		if err := rows.Scan(
+			&entry.ID, &entry.Caller, &tokenID, &agentName, &entry.Action, &entry.Target,
+			&input, &output, &entry.Status, &entry.LatencyMS, &ip, &entry.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		if tokenID.Valid {
-			l.TokenID = tokenID.String
+			entry.TokenID = tokenID.String
 		}
-		if details.Valid {
-			l.Details = details.String
+		if agentName.Valid {
+			entry.AgentName = agentName.String
+		}
+		if input.Valid {
+			entry.Input = input.String
+		}
+		if output.Valid {
+			entry.Output = output.String
 		}
 		if ip.Valid {
-			l.IP = ip.String
+			entry.IP = ip.String
 		}
-		res = append(res, l)
+		result = append(result, entry)
 	}
-	return res, nil
+	return result, rows.Err()
 }
 
 // Settings
@@ -597,6 +930,11 @@ func (d *DB) SetSetting(key, value string) error {
 
 // SetSettings atomically upserts deployment settings.
 func (d *DB) SetSettings(settings map[string]string) error {
+	return d.SetSettingsAndDefaultAccountCookie(settings, "")
+}
+
+// SetSettingsAndDefaultAccountCookie atomically updates settings and the managed default account credential.
+func (d *DB) SetSettingsAndDefaultAccountCookie(settings map[string]string, cookie string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -606,12 +944,29 @@ func (d *DB) SetSettings(settings map[string]string) error {
 	}
 	defer tx.Rollback()
 
+	now := time.Now()
 	for key, value := range settings {
 		if _, err := tx.Exec(`
 			INSERT INTO system_settings (key, value, updated_at)
 			VALUES (?, ?, ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-		`, key, value, time.Now()); err != nil {
+		`, key, value, now); err != nil {
+			return err
+		}
+	}
+	if cookie != "" {
+		if _, err := tx.Exec(`
+			UPDATE drive_accounts
+			SET cookie = ?,
+				type = CASE WHEN TRIM(type) = '' THEN '115' ELSE type END,
+				name = CASE WHEN TRIM(name) = '' THEN '默认账号' ELSE name END,
+				updated_at = ?
+			WHERE id = (
+				SELECT id FROM drive_accounts
+				ORDER BY is_default DESC, created_at ASC
+				LIMIT 1
+			)
+		`, cookie, now); err != nil {
 			return err
 		}
 	}

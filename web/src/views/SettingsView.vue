@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { Check, CircleAlert, FileCode, HardDrive, Loader2, Radio, RefreshCw, Save, Tv } from 'lucide-vue-next'
 
 const emptySettings: Record<string, string> = {
@@ -8,8 +9,16 @@ const emptySettings: Record<string, string> = {
   'emby_api_key': '',
   'clouddrive_url': '',
   'clouddrive_mount_path': '',
+  'clouddrive_api_token': '',
+  'clouddrive_source_path': '',
+  'clouddrive_webhook_secret': '',
+  'clouddrive_webhook_debounce_seconds': '5',
+  'media_root': '',
+  'strm_root': '',
+  'emby_media_prefix': '/media',
   'resource_api_url': '',
   'resource_api_token': '',
+  'dangerous_actions_enabled': 'false',
 }
 const settings = ref({ ...emptySettings })
 const configured = ref<Record<string, boolean>>({ c115: false, emby: false, clouddrive: false, resource: false })
@@ -68,20 +77,18 @@ async function fetchSettings() {
 
 async function checkComponent(key: string) {
   checking.value[key] = true
+  health.value = { ...health.value, [key]: { status: 'checking', message: '正在检查连接' } }
   try {
     const response = await fetch('/api/v1/settings/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ component: key }),
     })
-    if (response.ok) {
-      const data = await response.json()
-      if (data.health) {
-        health.value = { ...health.value, [key]: data.health }
-      }
-    }
-  } catch (e) {
-    console.error(e)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '连接检查失败')
+    health.value = { ...health.value, [key]: data.health ?? { status: 'error', message: '服务未返回检查结果' } }
+  } catch (error) {
+    health.value = { ...health.value, [key]: { status: 'error', message: error instanceof Error ? error.message : '连接检查失败' } }
   } finally {
     checking.value[key] = false
   }
@@ -117,7 +124,18 @@ watch(settings, () => {
   }
 }, { deep: true })
 
-onMounted(fetchSettings)
+function warnBeforeUnload(event: BeforeUnloadEvent) {
+  if (!dirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+onBeforeRouteLeave(() => !dirty.value || window.confirm('设置尚未保存，确认离开？'))
+onMounted(() => {
+  window.addEventListener('beforeunload', warnBeforeUnload)
+  void fetchSettings()
+})
+onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnload))
 </script>
 
 <template>
@@ -128,10 +146,10 @@ onMounted(fetchSettings)
         <h1 class="font-serif text-3xl font-bold text-text">系统设置</h1>
         <p class="text-sm text-text-muted mt-2">管理服务地址与凭据。秘密值读取时始终保持隐藏。</p>
       </div>
-      <div class="flex items-center gap-3 text-sm">
-        <span class="font-mono text-xs text-text-faint">{{ configuredCount }} / 4 已配置</span>
-        <span class="w-2 h-2 rounded-full" :class="configuredCount === 4 ? 'bg-ok' : 'bg-warn'"></span>
-      </div>
+		<div class="flex flex-wrap items-center justify-end gap-3 text-sm">
+			<span class="font-mono text-xs text-text-faint">{{ configuredCount }} / 4 已配置</span>
+			<span class="w-2 h-2 rounded-full" :class="configuredCount === 4 ? 'bg-ok' : 'bg-warn'"></span>
+		</div>
     </header>
 
     <div class="grid grid-cols-2 lg:grid-cols-4 border border-border bg-surface rounded-xl overflow-hidden">
@@ -169,7 +187,7 @@ onMounted(fetchSettings)
       </div>
     </div>
 
-    <form class="border border-border bg-surface rounded-xl overflow-hidden" @submit.prevent="saveSettings">
+	<form id="settings-form" class="border border-border bg-surface rounded-xl" @submit.prevent="saveSettings">
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
         <div>
           <div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h2 class="font-serif font-semibold text-lg">115 网盘</h2></div>
@@ -195,11 +213,18 @@ onMounted(fetchSettings)
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
         <div>
           <div class="flex items-center gap-2"><Radio class="w-4 h-4 text-accent" /><h2 class="font-serif font-semibold text-lg">CloudDrive2</h2></div>
-          <p class="mt-2 text-xs leading-5 text-text-faint">本地挂载服务地址与媒体文件挂载目录。</p>
+          <p class="mt-2 text-xs leading-5 text-text-faint">使用官方 gRPC API 读取和重新挂载；API Token 读取时不会返回明文。</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div><label for="clouddrive-url" class="block text-xs font-mono text-text-muted mb-2">接口地址</label><input id="clouddrive-url" v-model="settings['clouddrive_url']" type="url" placeholder="http://127.0.0.1:19798" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="mount-path" class="block text-xs font-mono text-text-muted mb-2">挂载目录</label><input id="mount-path" v-model="settings['clouddrive_mount_path']" type="text" placeholder="/Volumes/115" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="clouddrive-url" class="block text-xs font-mono text-text-muted mb-2">gRPC 地址</label><input id="clouddrive-url" v-model="settings['clouddrive_url']" type="url" placeholder="http://127.0.0.1:19798" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="clouddrive-token" class="block text-xs font-mono text-text-muted mb-2">API Token</label><input id="clouddrive-token" v-model="settings['clouddrive_api_token']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 CloudDrive2 API Token')" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="mount-path" class="block text-xs font-mono text-text-muted mb-2">本地挂载目录</label><input id="mount-path" v-model="settings['clouddrive_mount_path']" type="text" placeholder="/srv/clouddrive/CloudDrive" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="source-path" class="block text-xs font-mono text-text-muted mb-2">CloudDrive 源目录</label><input id="source-path" v-model="settings['clouddrive_source_path']" type="text" placeholder="115://Media" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="webhook-secret" class="block text-xs font-mono text-text-muted mb-2">Webhook Secret</label><input id="webhook-secret" v-model="settings['clouddrive_webhook_secret']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 Webhook Secret')" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="webhook-delay" class="block text-xs font-mono text-text-muted mb-2">防抖秒数</label><input id="webhook-delay" v-model="settings['clouddrive_webhook_debounce_seconds']" type="number" min="1" max="300" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="media-root" class="block text-xs font-mono text-text-muted mb-2">媒体源根目录</label><input id="media-root" v-model="settings['media_root']" type="text" placeholder="/srv/embymedia/data/clouddrive/CloudNAS/CloudDrive" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="strm-root" class="block text-xs font-mono text-text-muted mb-2">STRM 输出根目录</label><input id="strm-root" v-model="settings['strm_root']" type="text" placeholder="/srv/embymedia/data/strm" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="emby-media-prefix" class="block text-xs font-mono text-text-muted mb-2">Emby 媒体路径前缀</label><input id="emby-media-prefix" v-model="settings['emby_media_prefix']" type="text" placeholder="/media" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
         </div>
       </section>
 
@@ -214,7 +239,18 @@ onMounted(fetchSettings)
         </div>
       </section>
 
-      <footer class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-7 border-t border-border bg-bg-muted/45">
+      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-t border-border">
+        <div>
+          <div class="flex items-center gap-2"><CircleAlert class="w-4 h-4 text-annotation" /><h2 class="font-serif font-semibold text-lg">破坏性操作</h2></div>
+          <p class="mt-2 text-xs leading-5 text-text-faint">关闭时，文件删除 API 会以 403 拒绝，不会触达 115。</p>
+        </div>
+        <label class="inline-flex min-h-11 items-center gap-3 text-sm">
+          <input v-model="settings['dangerous_actions_enabled']" type="checkbox" true-value="true" false-value="false" class="accent-accent" />
+          <span>允许将 115 文件移入回收站</span>
+        </label>
+      </section>
+
+		<footer class="sticky bottom-0 z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-7 border-t border-border bg-bg-muted shadow-[0_-8px_24px_rgba(67,56,36,0.08)]">
         <div class="min-h-6 text-sm">
           <span v-if="saveState === 'saved'" class="inline-flex items-start gap-2 text-ok"><Check class="w-4 h-4 mt-0.5 shrink-0" />{{ feedback }}</span>
           <span v-else-if="saveState === 'error'" class="inline-flex items-start gap-2 text-danger"><CircleAlert class="w-4 h-4 mt-0.5 shrink-0" />{{ feedback }}</span>

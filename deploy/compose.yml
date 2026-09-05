@@ -1,25 +1,6 @@
 name: embymedia
 
 services:
-  postgres:
-    image: ${POSTGRES_IMAGE:?set digest-pinned POSTGRES_IMAGE}
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: embymedia
-      POSTGRES_USER: embymedia
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-    secrets: [postgres_password]
-    volumes:
-      - /srv/embymedia/data/postgres:/var/lib/postgresql/data
-    ports:
-      - 127.0.0.1:5432:5432
-    healthcheck:
-      test: [CMD-SHELL, pg_isready -U embymedia -d embymedia]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-    security_opt: [no-new-privileges:true]
-
   clouddrive2:
     image: ${CLOUDDRIVE_IMAGE:?set NAS inventory digest-pinned CLOUDDRIVE_IMAGE}
     restart: unless-stopped
@@ -92,26 +73,8 @@ services:
       retries: 30
     security_opt: [no-new-privileges:true]
 
-  embymedia:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    container_name: embymedia
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:8081:8081"
-    environment:
-      - RESOURCE_INDEX_URL=http://gaotao.cc:8100
-      - EMBYMEDIA_DB=/data/embymedia.db
-    volumes:
-      - /srv/embymedia/data:/data
-      - /srv/clouddrive:/clouddrive:ro
-    security_opt: [no-new-privileges:true]
 
 secrets:
-  postgres_password:
-    file: /etc/embymedia/secrets/postgres-password
   authelia_jwt_secret:
     file: /etc/embymedia/secrets/authelia-jwt-secret
   authelia_session_secret:

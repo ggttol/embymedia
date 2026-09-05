@@ -2,77 +2,137 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
 	"github.com/embymedia/embymedia/internal/storage"
+	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 )
 
+// CronManager persists schedules and submits their real operation to the task queue.
 type CronManager struct {
-	db     *storage.DB
-	cron   *cron.Cron
+	db       *storage.DB
+	queue    *TaskQueueService
+	cron     *cron.Cron
 	entryMap map[string]cron.EntryID
-	mu     sync.Mutex
+	mu       sync.Mutex
 }
 
-func NewCronManager(db *storage.DB) *CronManager {
-	return &CronManager{
-		db:       db,
-		cron:     cron.New(cron.WithSeconds()),
-		entryMap: make(map[string]cron.EntryID),
-	}
+// NewCronManager creates a stopped scheduler.
+func NewCronManager(db *storage.DB, queue *TaskQueueService) *CronManager {
+	return &CronManager{db: db, queue: queue, cron: cron.New(cron.WithSeconds(), cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger))), entryMap: make(map[string]cron.EntryID)}
 }
 
-func (cm *CronManager) Start(ctx context.Context) error {
-	cm.cron.Start()
-
+// Start restores enabled schedules and starts dispatching them.
+func (cm *CronManager) Start(_ context.Context) error {
 	tasks, err := cm.db.ListTasks()
 	if err != nil {
 		return err
 	}
-	for _, t := range tasks {
-		if t.Enabled && t.CronExpr != "" {
-			_ = cm.ScheduleTask(t)
+	for _, task := range tasks {
+		if task.Enabled && task.CronExpr != "" {
+			if err := cm.registerTask(task); err != nil {
+				return fmt.Errorf("restore schedule %s: %w", task.ID, err)
+			}
 		}
 	}
-
-	go func() {
-		<-ctx.Done()
-		cm.cron.Stop()
-	}()
+	cm.cron.Start()
 	return nil
 }
 
-func (cm *CronManager) ScheduleTask(task domain.ScheduledTask) error {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
+// Stop waits for running schedule callbacks to finish.
+func (cm *CronManager) Stop() {
+	<-cm.cron.Stop().Done()
+}
 
-	if entryID, exists := cm.entryMap[task.ID]; exists {
-		cm.cron.Remove(entryID)
-		delete(cm.entryMap, task.ID)
+func taskPayload(task domain.ScheduledTask) (map[string]any, error) {
+	payload := map[string]any{}
+	if task.Params != "" {
+		if err := json.Unmarshal([]byte(task.Params), &payload); err != nil {
+			return nil, fmt.Errorf("task params must be a JSON object: %w", err)
+		}
 	}
-
-	if !task.Enabled || task.CronExpr == "" {
-		return nil
+	if err := validateTask(task.Type, payload); err != nil {
+		return nil, err
 	}
+	return payload, nil
+}
 
-	entryID, err := cm.cron.AddFunc(task.CronExpr, func() {
+func (cm *CronManager) registerTask(task domain.ScheduledTask) error {
+	payload, err := taskPayload(task)
+	if err != nil {
+		return err
+	}
+	var entryID cron.EntryID
+	entryID, err = cm.cron.AddFunc(task.CronExpr, func() {
 		now := time.Now()
 		task.LastRunAt = &now
-		task.Status = "running"
-		_ = cm.db.SaveTask(&task)
-		// Execute task logic here...
-		time.Sleep(100 * time.Millisecond)
-		task.Status = "idle"
-		_ = cm.db.SaveTask(&task)
+		queued, enqueueErr := cm.queue.Enqueue(task.Type, payload)
+		if enqueueErr != nil {
+			task.Status = "failed"
+			task.Error = enqueueErr.Error()
+		} else {
+			task.Status = "idle"
+			task.Error = ""
+			task.Result = queued.ID
+		}
+		next := cm.cron.Entry(entryID).Next
+		task.NextRunAt = &next
+		if err := cm.db.SaveTask(&task); err != nil {
+			return
+		}
 	})
 	if err != nil {
 		return fmt.Errorf("invalid cron expression: %w", err)
 	}
-
 	cm.entryMap[task.ID] = entryID
+	next := cm.cron.Entry(entryID).Next
+	task.NextRunAt = &next
+	if err := cm.db.SaveTask(&task); err != nil {
+		cm.cron.Remove(entryID)
+		delete(cm.entryMap, task.ID)
+		return err
+	}
 	return nil
+}
+
+// ScheduleTask validates, persists, and activates a scheduled task.
+func (cm *CronManager) ScheduleTask(task *domain.ScheduledTask) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if task.ID == "" {
+		task.ID = uuid.NewString()
+	}
+	if task.Name == "" {
+		return fmt.Errorf("task name is required")
+	}
+	if _, err := taskPayload(*task); err != nil {
+		return err
+	}
+	if task.Enabled {
+		parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+		if _, err := parser.Parse(task.CronExpr); err != nil {
+			return fmt.Errorf("invalid cron expression: %w", err)
+		}
+	}
+	if entryID, exists := cm.entryMap[task.ID]; exists {
+		cm.cron.Remove(entryID)
+		delete(cm.entryMap, task.ID)
+	}
+	if task.Enabled {
+		if task.CronExpr == "" {
+			return fmt.Errorf("cron expression is required for enabled task")
+		}
+		task.Status = "idle"
+	} else {
+		task.Status = "paused"
+	}
+	if !task.Enabled {
+		return cm.db.SaveTask(task)
+	}
+	return cm.registerTask(*task)
 }

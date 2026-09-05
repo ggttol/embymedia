@@ -30,11 +30,13 @@ const auditLogs = ref<any[]>([])
 const showCreateModal = ref(false)
 const tokenName = ref('')
 const selectedScopes = ref<string[]>(['read'])
+const tokenRateLimit = ref(20)
 const creationMessage = ref('')
 const createdTokenSecret = ref<string | null>(null)
 const copiedKey = ref('')
 const checkedAt = ref('')
 const discoveredTools = ref<string[]>([])
+const toolExecution = ref<Record<string, 'ok' | 'error'>>({})
 const mcpProbe = ref<Probe>({ state: 'checking', detail: '等待检测' })
 const openAPIProbe = ref<Probe>({ state: 'checking', detail: '等待检测' })
 
@@ -45,24 +47,24 @@ const mcpTools = [
   ['c115_move', '移动文件或目录'],
   ['c115_rename', '重命名文件或目录'],
   ['c115_mkdir', '在指定目录下创建文件夹'],
-  ['c115_get_share_link', '当前提供方未实现分享链接生成'],
-  ['cd2_mount_status', '读取 CloudDrive2 挂载清单'],
-  ['cd2_remount', '当前提供方未实现重新挂载'],
+  ['c115_get_share_link', '创建文件或目录的 115 分享链接'],
+  ['cd2_mount_status', '读取并验证 CloudDrive2 挂载清单'],
+  ['cd2_remount', '停止播放并明确确认后通过 gRPC 重新挂载'],
   ['emby_refresh_library', '触发 Emby 媒体库扫描'],
   ['emby_get_libraries', '读取 Emby 媒体库列表'],
-  ['emby_inspect_item', '检查媒体条目元数据与图片'],
-  ['task_submit', '提交 sync_library 后台任务'],
-  ['task_query', '查询任务状态与进度'],
-  ['task_cancel', '当前任务队列不支持运行时取消'],
-  ['task_get_logs', '读取持久化任务状态与错误'],
-  ['system_get_config', '读取系统设置与目录映射'],
-  ['system_health', '检查本地存储与挂载配置'],
+  ['emby_inspect_item', '按 ID 精确检查元数据与图片'],
+  ['task_submit', '提交受支持的真实后台任务'],
+  ['task_query', '查询任务状态、进度与结果'],
+  ['task_cancel', '取消等待中或执行中的任务'],
+  ['task_get_logs', '读取持久化执行记录与日志'],
+  ['system_get_config', '读取脱敏系统设置与目录映射'],
+  ['system_health', '检查依赖服务与实际挂载状态'],
 ] as const
 
 const mcpEndpoint = computed(() => `${window.location.origin}/mcp`)
 const localMcpEndpoint = 'http://127.0.0.1:3080/mcp'
 const openApiEndpoint = computed(() => `${window.location.origin}/api/v1/openapi.json`)
-const hermesCommands = `hermes mcp add embymedia --url ${localMcpEndpoint}
+const hermesCommands = `hermes mcp add embymedia --url ${localMcpEndpoint} --auth header
 hermes mcp test embymedia`
 const allToolsAvailable = computed(() =>
   discoveredTools.value.length === mcpTools.length
@@ -138,12 +140,20 @@ async function probeMCP() {
     }, sessionId)
     if (listed.result?.error) throw new Error(listed.result.error.message)
     discoveredTools.value = (listed.result?.result?.tools ?? []).map((tool: any) => tool.name)
+    const smokeTools = ['system_get_config', 'system_health', 'emby_get_libraries', 'cd2_mount_status']
+    const checks = await Promise.all(smokeTools.map(async (name, index) => {
+      const called = await postMCP({ jsonrpc: '2.0', id: 10 + index, method: 'tools/call', params: { name, arguments: {} } }, sessionId)
+      const failed = Boolean(called.result?.error) || !called.result?.result || called.result.result.isError === true
+      return [name, failed ? 'error' : 'ok'] as const
+    }))
+    toolExecution.value = Object.fromEntries(checks)
     mcpProbe.value = {
-      state: discoveredTools.value.length === mcpTools.length ? 'online' : 'error',
-      detail: `协议握手成功 · 发现 ${discoveredTools.value.length} 个工具`,
+      state: allToolsAvailable.value ? 'online' : 'error',
+      detail: `协议握手成功 · 发现 ${discoveredTools.value.length} 个工具 · 实际调用 ${Object.values(toolExecution.value).filter((state) => state === 'ok').length} 项`,
     }
   } catch (error) {
     discoveredTools.value = []
+    toolExecution.value = {}
     mcpProbe.value = {
       state: 'error',
       detail: error instanceof Error ? error.message : 'MCP 连接失败',
@@ -173,7 +183,6 @@ async function runDiagnostics() {
   await Promise.all([probeMCP(), probeOpenAPI()])
   checkedAt.value = new Date().toLocaleTimeString()
 }
-
 async function createToken() {
   if (!tokenName.value.trim() || selectedScopes.value.length === 0) return
   creationMessage.value = ''
@@ -181,7 +190,7 @@ async function createToken() {
     const response = await fetch('/api/v1/tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: tokenName.value.trim(), permissions: selectedScopes.value }),
+	  body: JSON.stringify({ name: tokenName.value.trim(), permissions: selectedScopes.value, rate_limit: tokenRateLimit.value }),
     })
     const data = await response.json()
     if (!response.ok) {
@@ -191,6 +200,7 @@ async function createToken() {
     createdTokenSecret.value = data.token
     creationMessage.value = '令牌已创建。明文只显示一次，请立即复制保存。'
     tokenName.value = ''
+	  tokenRateLimit.value = 20
     await Promise.all([fetchTokens(), fetchAuditLogs()])
   } catch {
     creationMessage.value = '无法连接服务，请稍后重试。'
@@ -226,7 +236,7 @@ onMounted(() => {
       <div class="max-w-3xl">
         <p class="text-[10px] font-mono font-bold tracking-[0.18em] text-annotation mb-2">AGENT GATEWAY / LIVE HANDSHAKE</p>
         <h1 class="font-serif text-3xl font-bold text-text">Agent 接入控制台</h1>
-        <p class="text-sm text-text-muted mt-2">现场检测 MCP 与 OpenAPI，给 Debian 上的 Hermes 提供可直接执行的接入命令。</p>
+		<p class="text-sm text-text-muted mt-2">现场检测 MCP 与 OpenAPI；Hermes 会提示输入 API key / Bearer token，请使用本页签发的令牌。</p>
       </div>
       <div class="flex flex-col sm:flex-row gap-2">
         <button
@@ -254,7 +264,7 @@ onMounted(() => {
             </div>
             <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono" :class="allToolsAvailable ? 'border-ok/30 bg-ok/10 text-ok' : 'border-danger/30 bg-danger/10 text-danger'">
               <span class="w-2 h-2 rounded-full" :class="allToolsAvailable ? 'bg-ok' : 'bg-danger'"></span>
-              {{ allToolsAvailable ? '链路可用' : '等待完整握手' }}
+              {{ allToolsAvailable ? '协议目录完整' : '工具目录不完整' }}
             </span>
           </div>
 
@@ -340,12 +350,12 @@ onMounted(() => {
         <div><p class="text-[10px] font-mono text-text-faint tracking-[0.14em]">SERVER-DISCOVERED CATALOG</p><h2 class="mt-1 font-serif font-semibold text-xl text-text">工具目录</h2></div>
         <span class="font-mono text-xs" :class="allToolsAvailable ? 'text-ok' : 'text-danger'">{{ discoveredTools.length }} / {{ mcpTools.length }}</span>
       </div>
-      <p class="mb-4 text-xs leading-5 text-text-faint">绿点仅表示协议已发现；具体操作仍由上游配置与服务实现决定。</p>
+      <p class="mb-4 text-xs leading-5 text-text-faint">绿点表示已完成一次真实只读调用；红点表示调用返回错误；空心点仅表示协议已发现。写操作由各自的参数校验、权限与上游结果决定。</p>
       <ol class="grid grid-cols-1 lg:grid-cols-2 border-t border-border">
         <li v-for="(tool, index) in mcpTools" :key="tool[0]" class="grid grid-cols-[2.25rem_minmax(0,1fr)_auto] gap-3 py-4 border-b border-border lg:odd:pr-6 lg:even:pl-6">
           <span class="font-mono text-xs text-annotation">{{ String(index + 1).padStart(2, '0') }}</span>
           <div class="min-w-0"><code class="text-xs font-semibold text-accent break-all">{{ tool[0] }}</code><p class="mt-1 text-sm text-text-muted">{{ tool[1] }}</p></div>
-          <span class="mt-1 w-2 h-2 rounded-full" :class="discoveredTools.includes(tool[0]) ? 'bg-ok' : 'bg-border'" :aria-label="discoveredTools.includes(tool[0]) ? '已发现' : '未发现'"></span>
+          <span class="mt-1 w-2 h-2 rounded-full border" :class="toolExecution[tool[0]] === 'ok' ? 'bg-ok border-ok' : toolExecution[tool[0]] === 'error' ? 'bg-danger border-danger' : discoveredTools.includes(tool[0]) ? 'border-accent' : 'border-border'" :aria-label="toolExecution[tool[0]] === 'ok' ? '调用成功' : toolExecution[tool[0]] === 'error' ? '调用失败' : discoveredTools.includes(tool[0]) ? '已发现但未调用' : '未发现'"></span>
         </li>
       </ol>
     </section>
@@ -383,6 +393,7 @@ onMounted(() => {
         <div v-if="createdTokenSecret" class="space-y-2"><label class="block text-xs font-mono text-text-muted">令牌明文</label><div class="flex gap-2"><input readonly :value="createdTokenSecret" class="min-w-0 flex-1 px-3 py-2 border border-border bg-bg text-xs font-mono" /><button type="button" class="px-3 border border-accent bg-accent text-accent-contrast" @click="copyText('token', createdTokenSecret)">复制</button></div></div>
         <template v-if="!creationMessage">
           <div><label for="token-name" class="block text-xs font-mono text-text-muted mb-2">名称</label><input id="token-name" v-model="tokenName" type="text" placeholder="例如：Debian Hermes" class="w-full min-h-11 px-3 border border-border bg-bg text-sm focus:border-accent" /></div>
+          <div><label for="token-rate" class="block text-xs font-mono text-text-muted mb-2">每分钟请求上限</label><input id="token-rate" v-model.number="tokenRateLimit" type="number" min="1" max="600" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono" /></div>
           <fieldset><legend class="block text-xs font-mono text-text-muted mb-2">权限</legend><label class="inline-flex min-h-11 items-center gap-2"><input v-model="selectedScopes" type="checkbox" value="read" />读取</label><label class="ml-5 inline-flex min-h-11 items-center gap-2"><input v-model="selectedScopes" type="checkbox" value="write" />写入</label></fieldset>
         </template>
         <div class="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2"><button type="button" class="min-h-11 px-4 border border-border text-sm" @click="closeModal">关闭</button><button v-if="!creationMessage" type="button" class="min-h-11 px-4 bg-accent text-accent-contrast text-sm disabled:opacity-50" :disabled="!tokenName.trim() || selectedScopes.length === 0" @click="createToken">创建令牌</button></div>

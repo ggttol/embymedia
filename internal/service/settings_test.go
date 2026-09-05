@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	"github.com/embymedia/embymedia/internal/domain"
 	"github.com/embymedia/embymedia/internal/storage"
 )
 
@@ -14,6 +15,9 @@ func TestSettingsStateRedactsAndPreservesSecrets(t *testing.T) {
 	defer db.Close()
 
 	settings := NewSettingsService(db)
+	if err := db.SaveAccount(&domain.DriveAccount{ID: "default", Type: "115", Name: "默认账号", Cookie: "old-cookie", IsDefault: true}); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
 	if err := settings.Update(map[string]string{
 		"115_cookie":            "secret-cookie",
 		"emby_url":              "http://emby.local",
@@ -23,6 +27,10 @@ func TestSettingsStateRedactsAndPreservesSecrets(t *testing.T) {
 		"resource_api_url":      "http://resources.local",
 	}); err != nil {
 		t.Fatalf("save settings: %v", err)
+	}
+	accounts, err := db.ListAccounts()
+	if err != nil || len(accounts) != 1 || accounts[0].Cookie != "secret-cookie" {
+		t.Fatalf("default account credential not synchronized: %+v, err=%v", accounts, err)
 	}
 
 	state, err := settings.State()
@@ -47,5 +55,29 @@ func TestSettingsStateRedactsAndPreservesSecrets(t *testing.T) {
 	}
 	if cookie != "secret-cookie" {
 		t.Fatalf("empty secret update replaced stored value: %q", cookie)
+	}
+}
+
+func TestSettingsStateOmitsUnknownPersistedKeys(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	if err := db.SetSetting("emby_server_url", "http://legacy-emby.local"); err != nil {
+		t.Fatalf("seed unknown setting: %v", err)
+	}
+
+	settings := NewSettingsService(db)
+	state, err := settings.State()
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if _, present := state.Values["emby_server_url"]; present {
+		t.Fatal("state returned an unknown persisted setting")
+	}
+	state.Values["115_cookie"] = "new-cookie"
+	if err := settings.Update(state.Values); err != nil {
+		t.Fatalf("save returned settings: %v", err)
 	}
 }

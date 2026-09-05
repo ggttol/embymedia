@@ -26,6 +26,7 @@ const resource = ref<any>(null)
 const copied = ref(false)
 const importing = ref(false)
 const importResult = ref<string | null>(null)
+const loadError = ref('')
 
 const cidMap = ref<Record<string, string>>({})
 const defaultCid = ref('0')
@@ -33,14 +34,14 @@ const savedCidKey = 'embymedia_default_target_cid'
 
 async function fetchDetail() {
   loading.value = true
+  loadError.value = ''
   try {
     const res = await fetch(`/api/v1/links/${linkId}`)
-    if (res.ok) {
-      const data = await res.json()
-      resource.value = data.data
-    }
-  } catch (e) {
-    console.error(e)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || data.message || '资源不存在')
+    resource.value = data.data
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : '读取资源失败'
   } finally {
     loading.value = false
   }
@@ -106,8 +107,8 @@ onMounted(async () => {
         @click="router.back()"
         class="flex items-center gap-1 text-xs font-mono text-text-muted hover:text-text transition-colors"
       >
-        <ArrowLeft class="w-4 h-4" />
-        <span>返回检索</span>
+		<ArrowLeft class="w-4 h-4" />
+		<span>返回</span>
       </button>
       <span class="text-text-faint">/</span>
       <span class="text-xs font-mono text-text-faint">资源档案 #{{ linkId }}</span>
@@ -118,6 +119,8 @@ onMounted(async () => {
       <Loader2 class="w-6 h-6 animate-spin text-accent mx-auto mb-2" />
       <div class="text-xs font-mono text-text-muted">正在加载档案详情...</div>
     </div>
+
+    <div v-else-if="loadError" class="p-8 rounded-xl border border-danger/30 bg-surface text-center text-danger">{{ loadError }}</div>
 
     <!-- Main Detail Card -->
     <div v-else-if="resource" class="space-y-6">

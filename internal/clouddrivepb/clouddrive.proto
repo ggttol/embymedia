@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package clouddrive;
+
+option go_package = "github.com/embymedia/embymedia/internal/clouddrivepb";
+
+import "google/protobuf/empty.proto";
+
+service CloudDriveFileSrv {
+  rpc GetSystemInfo(google.protobuf.Empty) returns (CloudDriveSystemInfo);
+  rpc GetRuntimeInfo(google.protobuf.Empty) returns (RuntimeInfo);
+  rpc GetMountPoints(google.protobuf.Empty) returns (GetMountPointsResult);
+  rpc Mount(MountPointRequest) returns (MountPointResult);
+  rpc Unmount(MountPointRequest) returns (MountPointResult);
+}
+
+message CloudDriveSystemInfo {
+  bool is_login = 1;
+  string user_name = 2;
+  bool system_ready = 3;
+  optional string system_message = 4;
+  optional bool has_error = 5;
+  DevicePowerType device_power_type = 6;
+}
+
+enum DevicePowerType {
+  DESKTOP = 0;
+  SLOW_STORAGE = 1;
+  BATTERY = 2;
+}
+
+message RuntimeInfo {
+  string product_name = 1;
+  string product_version = 2;
+  string cloud_api_version = 3;
+  string os_info = 4;
+}
+
+message MountPoint {
+  string mount_point = 1;
+  string source_dir = 2;
+  bool local_mount = 3;
+  bool read_only = 4;
+  bool auto_mount = 5;
+  uint32 uid = 6;
+  uint32 gid = 7;
+  string permissions = 8;
+  bool is_mounted = 9;
+  string fail_reason = 10;
+  string name = 11;
+}
+
+message MountPointRequest {
+  string mount_point = 1;
+}
+
+message GetMountPointsResult {
+  repeated MountPoint mount_points = 1;
+}
+
+message MountPointResult {
+  bool success = 1;
+  string fail_reason = 2;
+}

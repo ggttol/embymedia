@@ -6,17 +6,19 @@ import (
 
 // DriveAccount represents a cloud drive account (115, aliyun, etc.)
 type DriveAccount struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"` // "115", "aliyun", "quark"
-	Name       string    `json:"name"`
-	Cookie     string    `json:"cookie,omitempty"`
-	Token      string    `json:"token,omitempty"`
-	IsDefault  bool      `json:"is_default"`
-	Status     string    `json:"status"` // "active", "expired", "error"
-	QuotaUsed  int64     `json:"quota_used"`
-	QuotaTotal int64     `json:"quota_total"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID           string     `json:"id"`
+	Type         string     `json:"type"` // "115", "aliyun", "quark"
+	Name         string     `json:"name"`
+	Cookie       string     `json:"-"`
+	Token        string     `json:"-"`
+	IsDefault    bool       `json:"is_default"`
+	Status       string     `json:"status"` // "active", "expired", "error"
+	QuotaUsed    int64      `json:"quota_used"`
+	QuotaTotal   int64      `json:"quota_total"`
+	VIPLevel     int        `json:"vip_level"`
+	VIPExpiresAt *time.Time `json:"vip_expires_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // DriveFile represents a remote file or folder in 115 or other drives
@@ -44,13 +46,17 @@ type OfflineTask struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// CloudDriveMount represents a CloudDrive2 mount point status
+// CloudDriveMount reports one configured CloudDrive2 mount and live filesystem capacity.
 type CloudDriveMount struct {
+	Name       string    `json:"name,omitempty"`
 	MountPath  string    `json:"mount_path"`
-	RemotePath string    `json:"remote_path"`
-	Status     string    `json:"status"` // "mounted", "unmounted", "error"
+	RemotePath string    `json:"remote_path,omitempty"`
+	Status     string    `json:"status"`
+	ReadOnly   *bool     `json:"read_only,omitempty"`
+	AutoMount  *bool     `json:"auto_mount,omitempty"`
 	TotalSpace int64     `json:"total_space"`
 	FreeSpace  int64     `json:"free_space"`
+	Error      string    `json:"error,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
@@ -60,7 +66,6 @@ type EmbyLibrary struct {
 	Name       string   `json:"name"`
 	Collection string   `json:"collection_type"` // "movies", "tvshows"
 	Locations  []string `json:"locations"`
-	ItemCount  int      `json:"item_count"`
 }
 
 // EmbyMediaItem represents a movie or episode in Emby
@@ -140,16 +145,32 @@ type ScheduledTask struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
-// AsyncTask represents an asynchronous job executed in background
+// TaskRun records one execution attempt and its observable log messages.
+type TaskRun struct {
+	ID          int64      `json:"id"`
+	TaskID      string     `json:"task_id"`
+	Attempt     int        `json:"attempt"`
+	Status      string     `json:"status"`
+	Progress    float64    `json:"progress"`
+	Logs        []string   `json:"logs"`
+	Error       string     `json:"error,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+// AsyncTask represents an asynchronous job executed by the persistent queue.
 type AsyncTask struct {
-	ID        string         `json:"id"`
-	Type      string         `json:"type"`
-	Payload   map[string]any `json:"payload,omitempty"`
-	Status    string         `json:"status"` // "pending", "running", "completed", "failed"
-	Progress  float64        `json:"progress"`
-	Error     string         `json:"error,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	ID          string         `json:"id"`
+	Type        string         `json:"type"`
+	Payload     map[string]any `json:"payload,omitempty"`
+	Status      string         `json:"status"`
+	Progress    float64        `json:"progress"`
+	Result      string         `json:"result,omitempty"`
+	Error       string         `json:"error,omitempty"`
+	Attempts    int            `json:"attempts"`
+	MaxAttempts int            `json:"max_attempts"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
 }
 
 // AgentToken represents an authentication token for AI Agent access
@@ -160,18 +181,24 @@ type AgentToken struct {
 	Role       string     `json:"role"` // "admin", "agent", "readonly"
 	Scopes     []string   `json:"scopes"`
 	RateLimit  int        `json:"rate_limit"` // requests per min
+	Enabled    bool       `json:"enabled"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
 // AuditLog represents an action log for compliance and agent tracing
+// AuditLog records one UI or Agent operation without storing secret values.
 type AuditLog struct {
 	ID        int64     `json:"id"`
-	Caller    string    `json:"caller"` // "ui", "agent", "mcp"
+	Caller    string    `json:"caller"`
 	TokenID   string    `json:"token_id,omitempty"`
+	AgentName string    `json:"agent_name,omitempty"`
 	Action    string    `json:"action"`
 	Target    string    `json:"target"`
-	Details   string    `json:"details,omitempty"`
+	Input     string    `json:"input,omitempty"`
+	Output    string    `json:"output,omitempty"`
+	Status    string    `json:"status"`
+	LatencyMS int64     `json:"latency_ms"`
 	IP        string    `json:"ip,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }

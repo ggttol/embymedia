@@ -1,0 +1,40 @@
+[Unit]
+Description=EmbyMedia V2 standalone service
+Wants=network-online.target
+Requires=embymedia-stack.service
+After=network-online.target embymedia-stack.service
+RequiresMountsFor=/srv/embymedia/data
+
+[Service]
+Type=simple
+User=embymedia
+Group=embymedia
+WorkingDirectory=/srv/embymedia/data
+EnvironmentFile=-/etc/embymedia/v2.env
+ExecStart=/opt/embymedia-v2/current/bin/embymedia -host 127.0.0.1 -port 3080 -mcp-host 127.0.0.1 -mcp-port 3081 -db /srv/embymedia/data/embymedia.db
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/embymedia/data
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

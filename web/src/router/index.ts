@@ -42,7 +42,7 @@ const router = createRouter({
       component: TasksView,
     },
     {
-      path: '/agents',
+	  path: '/agent',
       name: 'agents',
       component: AgentsView,
     },
@@ -50,6 +50,10 @@ const router = createRouter({
       path: '/settings',
       name: 'settings',
       component: SettingsView,
+    },
+    {
+      path: '/:pathMatch(.*)*',
+      redirect: '/',
     },
   ],
 })

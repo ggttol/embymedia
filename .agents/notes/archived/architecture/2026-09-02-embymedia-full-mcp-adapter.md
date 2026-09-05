@@ -1,6 +1,7 @@
 # Agent Note: EmbyMedia tools keep one application path across DSH and MCP
 
 Status: implemented
+Archived: 2026-09-05
 
 English | [中文](2026-09-02-embymedia-full-mcp-adapter.zh.md)
 

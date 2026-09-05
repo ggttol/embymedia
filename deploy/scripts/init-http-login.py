@@ -42,7 +42,6 @@ def main() -> None:
     temporary.write_text(json.dumps(config, indent=2) + '\n')
     os.chmod(temporary, 0o640)
     os.replace(temporary, output)
-    password_path.unlink(missing_ok=True)
     print(json.dumps({'output': str(output), 'username': args.username, 'sessionDays': 30}))
 
 

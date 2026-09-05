@@ -34,8 +34,10 @@ const hasMore = ref(false)
 const copiedId = ref<number | null>(null)
 const importingId = ref<number | null>(null)
 const importMessage = ref<{ id: number; text: string; ok: boolean } | null>(null)
+const searchError = ref('')
 
 const cidMap = ref<Record<string, string>>({})
+let searchGeneration = 0
 const defaultCid = ref('0')
 const savedCidKey = 'embymedia_default_target_cid'
 
@@ -44,6 +46,8 @@ async function doSearch(resetPage = true) {
     offset.value = 0
   }
   loading.value = true
+  searchError.value = ''
+  const generation = ++searchGeneration
   try {
     const params = new URLSearchParams()
     if (keyword.value) params.set('q', keyword.value)
@@ -54,31 +58,42 @@ async function doSearch(resetPage = true) {
     params.set('limit', String(limit))
 
     const res = await fetch(`/search?${params.toString()}`)
-    if (res.ok) {
+
+    if (!res.ok) {
       const data = await res.json()
-      if (resetPage) {
-        results.value = data.links || []
-      } else {
-        results.value.push(...(data.links || []))
-      }
-      totalHits.value = data.total || results.value.length
-      hasMore.value = data.has_more ?? false
+      throw new Error(data.error || '资源检索失败')
     }
-  } catch (e) {
-    console.error(e)
+    const data = await res.json()
+    if (generation !== searchGeneration) return false
+    if (resetPage) {
+      results.value = data.links || []
+    } else {
+      results.value.push(...(data.links || []))
+    }
+    totalHits.value = data.total || results.value.length
+    hasMore.value = data.has_more ?? false
+    return true
+  } catch (error) {
+    searchError.value = error instanceof Error ? error.message : '资源检索失败'
+    return false
   } finally {
-    loading.value = false
+    if (generation === searchGeneration) loading.value = false
   }
 }
 
-function handleSearchSubmit() {
-  router.push({
-    path: '/resources',
-    query: {
-      ...(keyword.value ? { q: keyword.value } : {}),
-    }
-  })
-  doSearch(true)
+async function handleSearchSubmit() {
+  const nextQuery = keyword.value || ''
+  if ((route.query.q as string || '') === nextQuery && Object.keys(route.query).length <= (nextQuery ? 1 : 0)) {
+    await doSearch(true)
+    return
+  }
+  await router.push({ path: '/resources', query: nextQuery ? { q: nextQuery } : {} })
+}
+
+async function loadMore() {
+  const previousOffset = offset.value
+  offset.value += limit
+  if (!await doSearch(false)) offset.value = previousOffset
 }
 
 function copyToClipboard(text: string, id: number) {
@@ -154,6 +169,7 @@ onMounted(async () => {
           <Search class="w-5 h-5 absolute left-4 text-text-faint" />
           <input
             v-model="keyword"
+            data-global-search-input
             type="text"
             placeholder="搜索 115 网盘公开分享资源（电影、剧集、动漫、纪录片、4K原盘）..."
             class="w-full pl-12 pr-28 py-3.5 rounded-lg border border-border bg-bg text-text placeholder:text-text-faint focus:outline-none focus:border-accent text-sm font-sans"
@@ -198,6 +214,7 @@ onMounted(async () => {
           <span>正在检索索引库...</span>
         </div>
       </div>
+      <div v-if="searchError" class="p-4 rounded-lg border border-danger/30 bg-danger/5 text-sm text-danger">{{ searchError }}</div>
 
       <!-- Empty State -->
       <div
@@ -239,7 +256,7 @@ onMounted(async () => {
 
               <!-- Title link to detail view -->
               <RouterLink
-                :to="`/resource/${item.id}`"
+				:to="`/resources/${item.id}`"
                 class="font-medium text-sm text-text hover:text-accent transition-colors truncate block"
               >
                 {{ item.title }}
@@ -307,7 +324,7 @@ onMounted(async () => {
 
             <!-- View detail button -->
             <RouterLink
-              :to="`/resource/${item.id}`"
+			  :to="`/resources/${item.id}`"
               class="p-2 rounded-lg border border-border hover:border-text-muted bg-bg text-text-muted hover:text-text transition-colors"
             >
               <ExternalLink class="w-3.5 h-3.5" />
@@ -319,7 +336,7 @@ onMounted(async () => {
       <!-- Load more button -->
       <div v-if="hasMore" class="text-center pt-4">
         <button
-          @click="offset += limit; doSearch(false)"
+		  @click="loadMore"
           :disabled="loading"
           class="px-6 py-2.5 rounded-lg border border-border bg-surface hover:bg-bg-muted text-xs font-mono text-text transition-colors"
         >

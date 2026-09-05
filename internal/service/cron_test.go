@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -9,45 +12,68 @@ import (
 	"github.com/embymedia/embymedia/internal/storage"
 )
 
-func TestCronManager(t *testing.T) {
+func TestCronManagerQueuesRealOperation(t *testing.T) {
+	var refreshes atomic.Int32
+	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == "/Library/Refresh" {
+			refreshes.Add(1)
+			response.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(response, request)
+	}))
+	defer embyServer.Close()
 	db, err := storage.Open(":memory:")
 	if err != nil {
-		t.Fatalf("failed to open storage: %v", err)
+		t.Fatalf("open storage: %v", err)
 	}
-
-	cm := NewCronManager(db)
+	defer db.Close()
+	if err := db.SetSetting("emby_url", embyServer.URL); err != nil {
+		t.Fatalf("set Emby URL: %v", err)
+	}
+	drive := NewDriveService(db, "http://127.0.0.1:8100", "")
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	if err := cm.Start(ctx); err != nil {
-		t.Fatalf("failed to start cron manager: %v", err)
+	if err := queue.Start(ctx); err != nil {
+		t.Fatalf("start queue: %v", err)
 	}
-
-	task := domain.ScheduledTask{
-		ID:        "test-task",
-		Name:      "Test Task",
-		Type:      "cleanup",
-		CronExpr:  "*/1 * * * * *", // every second
-		Enabled:   true,
-		Status:    "idle",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+	defer queue.Stop()
+	manager := NewCronManager(db, queue)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatalf("start scheduler: %v", err)
 	}
-	if err := db.SaveTask(&task); err != nil {
-		t.Fatalf("failed to create task: %v", err)
+	defer manager.Stop()
+	task := domain.ScheduledTask{Name: "Refresh Emby", Type: "emby_refresh", CronExpr: "*/1 * * * * *", Enabled: true, Params: `{}`}
+	if err := manager.ScheduleTask(&task); err != nil {
+		t.Fatalf("schedule task: %v", err)
 	}
-
-	if err := cm.ScheduleTask(task); err != nil {
-		t.Fatalf("failed to schedule task: %v", err)
+	deadline := time.Now().Add(4 * time.Second)
+	for refreshes.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
 	}
+	if refreshes.Load() == 0 {
+		t.Fatal("scheduled task did not call the Emby provider")
+	}
+	stored, err := db.GetTask(task.ID)
+	if err != nil || stored.LastRunAt == nil || stored.Result == "" {
+		t.Fatalf("scheduled task did not persist its queued run: %+v, err=%v", stored, err)
+	}
+}
 
-	time.Sleep(1200 * time.Millisecond)
-
-	updated, err := db.GetTask("test-task")
+func TestCronManagerRejectsInvalidScheduleWithoutPersisting(t *testing.T) {
+	db, err := storage.Open(":memory:")
 	if err != nil {
-		t.Fatalf("failed to get task: %v", err)
+		t.Fatalf("open storage: %v", err)
 	}
-	if updated.LastRunAt == nil {
-		t.Logf("task has not run yet, which is acceptable in fast unit tests")
+	defer db.Close()
+	queue := NewTaskQueueService(db, NewDriveService(db, "", ""), NewEmbyService(db))
+	manager := NewCronManager(db, queue)
+	task := domain.ScheduledTask{ID: "invalid", Name: "Invalid", Type: "emby_refresh", CronExpr: "not cron", Enabled: true, Params: `{}`}
+	if err := manager.ScheduleTask(&task); err == nil {
+		t.Fatal("invalid cron expression was accepted")
+	}
+	if _, err := db.GetTask(task.ID); err == nil {
+		t.Fatal("invalid enabled schedule was persisted")
 	}
 }

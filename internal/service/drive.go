@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
@@ -23,7 +22,6 @@ type DriveService struct {
 	client        *http.Client
 	resourceURL   string
 	resourceToken string
-	mu            sync.RWMutex
 }
 
 func NewDriveService(db *storage.DB, resourceURL, resourceToken string) *DriveService {
@@ -40,110 +38,196 @@ func NewDriveService(db *storage.DB, resourceURL, resourceToken string) *DriveSe
 	}
 }
 
+func decodeProviderJSON(response *http.Response, operation string, target any) error {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("%s returned HTTP %d", operation, response.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(target); err != nil {
+		return fmt.Errorf("decode %s response: %w", operation, err)
+	}
+	return nil
+}
+
 // GetDefaultAccount returns the default 115 account or first available
 func (s *DriveService) GetDefaultAccount() (*domain.DriveAccount, error) {
-	accs, err := s.db.ListAccounts()
+	accounts, err := s.db.ListAccounts()
 	if err != nil {
 		return nil, err
 	}
-	if len(accs) == 0 {
+	if len(accounts) == 0 {
 		cookie, _ := s.db.GetSetting("115_cookie")
-		if cookie != "" {
-			now := time.Now()
-			fallback := domain.DriveAccount{
-				ID:        "default",
-				Name:      "默认账号",
-				Cookie:    cookie,
-				Status:    "active",
-				IsDefault: true,
-				CreatedAt: now,
-				UpdatedAt: now,
+		if cookie == "" {
+			return nil, errors.New("no drive accounts configured")
+		}
+		now := time.Now()
+		fallback := domain.DriveAccount{ID: "default", Type: "115", Name: "默认账号", Cookie: cookie, Status: "active", IsDefault: true, CreatedAt: now, UpdatedAt: now}
+		if err := s.db.SaveAccount(&fallback); err != nil {
+			return nil, err
+		}
+		return &fallback, nil
+	}
+	for index := range accounts {
+		if accounts[index].IsDefault && accounts[index].Status == "active" {
+			return &accounts[index], nil
+		}
+	}
+	for index := range accounts {
+		if accounts[index].Status == "active" {
+			return &accounts[index], nil
+		}
+	}
+	for index := range accounts {
+		if accounts[index].IsDefault {
+			return &accounts[index], nil
+		}
+	}
+	return &accounts[0], nil
+}
+
+// CheckAccounts refreshes credential, VIP, and storage state for every managed 115 account.
+func (s *DriveService) CheckAccounts(ctx context.Context) ([]domain.DriveAccount, error) {
+	accounts, err := s.db.ListAccounts()
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) == 0 {
+		if cookie, _ := s.db.GetSetting("115_cookie"); cookie != "" {
+			account, err := s.GetDefaultAccount()
+			if err != nil {
+				return nil, err
 			}
-			_ = s.db.SaveAccount(&fallback)
-			return &fallback, nil
-		}
-		return nil, errors.New("no drive accounts configured")
-	}
-	for i := range accs {
-		if accs[i].IsDefault {
-			s.syncAccountCookie(&accs[i])
-			return &accs[i], nil
+			accounts = []domain.DriveAccount{*account}
 		}
 	}
-	s.syncAccountCookie(&accs[0])
-	return &accs[0], nil
+	for index := range accounts {
+		account := &accounts[index]
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://webapi.115.com/files/index_info", nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Cookie", account.Cookie)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+		resp, requestErr := s.client.Do(req)
+		if requestErr != nil {
+			account.Status = "error"
+		} else {
+			var raw struct {
+				State bool   `json:"state"`
+				Error string `json:"error"`
+				Data  struct {
+					VIP       int   `json:"vip"`
+					Expire    int64 `json:"expire"`
+					SpaceInfo struct {
+						Total struct {
+							Size int64 `json:"size"`
+						} `json:"all_total"`
+						Used struct {
+							Size int64 `json:"size"`
+						} `json:"all_use"`
+					} `json:"space_info"`
+				} `json:"data"`
+			}
+			decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&raw)
+			resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 || decodeErr != nil || !raw.State {
+				account.Status = "error"
+			} else {
+				account.Status = "active"
+				account.VIPLevel = raw.Data.VIP
+				account.QuotaTotal = raw.Data.SpaceInfo.Total.Size
+				account.QuotaUsed = raw.Data.SpaceInfo.Used.Size
+				if raw.Data.Expire > 0 {
+					expires := time.Unix(raw.Data.Expire, 0)
+					account.VIPExpiresAt = &expires
+					if expires.Before(time.Now()) {
+						account.Status = "expired"
+					}
+				}
+			}
+		}
+		if err := s.db.SaveAccount(account); err != nil {
+			return nil, err
+		}
+	}
+	return accounts, nil
 }
 
-// syncAccountCookie keeps the stored account credential in step with the
-// settings-center cookie, which is the value the operator actually updates.
-func (s *DriveService) syncAccountCookie(acc *domain.DriveAccount) {
-	if acc == nil {
-		return
+func (s *DriveService) resourceConfig() (string, string) {
+	baseURL, _ := s.db.GetSetting("resource_api_url")
+	if baseURL == "" {
+		baseURL = s.resourceURL
 	}
-	cookie, _ := s.db.GetSetting("115_cookie")
-	if cookie == "" || cookie == acc.Cookie {
-		return
+	token, _ := s.db.GetSetting("resource_api_token")
+	if token == "" {
+		token = s.resourceToken
 	}
-	acc.Cookie = cookie
-	acc.UpdatedAt = time.Now()
-	_ = s.db.SaveAccount(acc)
+	return strings.TrimRight(baseURL, "/"), token
 }
 
-// ListFiles lists files in a directory for a given account
-func (s *DriveService) ListFiles(accountID string, cid string, offset, limit int) ([]domain.DriveFile, int64, error) {
-	acc, err := s.getAccount(accountID)
+// ListFiles lists files in a directory for a given account.
+func (s *DriveService) ListFiles(accountID, cid string, offset, limit int) ([]domain.DriveFile, int64, error) {
+	return s.listFiles(context.Background(), accountID, cid, offset, limit)
+}
+
+func (s *DriveService) listFiles(ctx context.Context, accountID, cid string, offset, limit int) ([]domain.DriveFile, int64, error) {
+	account, err := s.getAccount(accountID)
 	if err != nil {
 		return nil, 0, err
 	}
-
 	if cid == "" {
 		cid = "0"
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-
-	reqURL := fmt.Sprintf("https://webapi.115.com/files?aid=1&cid=%s&o=user_ptime&asc=0&offset=%d&show_dir=1&limit=%d&code=&scid=&snap=0&natsort=1&record_open_time=1&source=&format=json", cid, offset, limit)
-	req, err := http.NewRequest("GET", reqURL, nil)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	reqURL := fmt.Sprintf("https://webapi.115.com/files?aid=1&cid=%s&o=user_ptime&asc=0&offset=%d&show_dir=1&limit=%d&code=&scid=&snap=0&natsort=1&record_open_time=1&source=&format=json", url.QueryEscape(cid), offset, limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, 0, err
 	}
-
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-	req.Header.Set("Cookie", acc.Cookie)
-
+	req.Header.Set("Cookie", account.Cookie)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("115 files request: %w", err)
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, 0, fmt.Errorf("115 files returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, 0, err
 	}
-
 	var raw struct {
-		State bool `json:"state"`
-		Count int64 `json:"count"`
+		State bool   `json:"state"`
+		Error string `json:"error"`
+		Count int64  `json:"count"`
 		Data  []struct {
-			Fid   any    `json:"fid"`
-			Cid   any    `json:"cid"`
-			Pid   any    `json:"pid"`
-			Name  string `json:"n"`
-			Size  any    `json:"s"`
-			Pc    string `json:"pc"`
-			Sha1  string `json:"sha"`
-			T     string `json:"t"`
-			Te    string `json:"te"`
+			Fid  any    `json:"fid"`
+			Cid  any    `json:"cid"`
+			Pid  any    `json:"pid"`
+			Name string `json:"n"`
+			Size any    `json:"s"`
+			Pc   string `json:"pc"`
+			Sha1 string `json:"sha"`
+			T    string `json:"t"`
+			Te   string `json:"te"`
 		} `json:"data"`
 	}
-
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, 0, fmt.Errorf("parse 115 files: %w", err)
 	}
-
-	var files []domain.DriveFile
+	if !raw.State {
+		return nil, 0, fmt.Errorf("115 files rejected: %s", raw.Error)
+	}
+	files := make([]domain.DriveFile, 0, len(raw.Data))
 	for _, item := range raw.Data {
 		fileID := fmt.Sprintf("%v", item.Fid)
 		isFolder := false
@@ -151,58 +235,62 @@ func (s *DriveService) ListFiles(accountID string, cid string, offset, limit int
 			fileID = fmt.Sprintf("%v", item.Cid)
 			isFolder = true
 		}
-
 		var size int64
-		switch v := item.Size.(type) {
+		switch value := item.Size.(type) {
 		case float64:
-			size = int64(v)
+			size = int64(value)
 		case string:
-			size, _ = strconv.ParseInt(v, 10, 64)
+			size, _ = strconv.ParseInt(value, 10, 64)
 		}
-
-		// Use "te" (time edited) or "t" (time) for UpdatedTime
-		unixTimeStr := item.Te
-		if unixTimeStr == "" {
-			unixTimeStr = item.T
+		updatedValue := item.Te
+		if updatedValue == "" {
+			updatedValue = item.T
 		}
-		var updatedTime time.Time
-		if unixTimeStr != "" {
-			if timestamp, err := strconv.ParseInt(unixTimeStr, 10, 64); err == nil {
-				updatedTime = time.Unix(timestamp, 0)
-			}
+		var updatedAt time.Time
+		if timestamp, err := strconv.ParseInt(updatedValue, 10, 64); err == nil {
+			updatedAt = time.Unix(timestamp, 0)
 		}
-
 		files = append(files, domain.DriveFile{
-			FileID:      fileID,
-			ParentID:    fmt.Sprintf("%v", item.Pid),
-			Name:        item.Name,
-			Size:        size,
-			PickCode:    item.Pc,
-			Sha1:        item.Sha1,
-			IsFolder:    isFolder,
-			UpdatedTime: updatedTime,
+			FileID: fileID, ParentID: fmt.Sprintf("%v", item.Pid), Name: item.Name, Size: size,
+			PickCode: item.Pc, Sha1: item.Sha1, IsFolder: isFolder, UpdatedTime: updatedAt,
 		})
 	}
-
 	return files, raw.Count, nil
 }
 
-// AddOfflineTask submits a magnet / ed2k / http url to 115 offline download
-func (s *DriveService) AddOfflineTask(accountID string, urlStr string, targetCid string) (string, error) {
+// AddOfflineTask submits a magnet, ed2k, or HTTP URL to 115 offline download.
+func (s *DriveService) AddOfflineTask(accountID, urlStr, targetCID string) (string, error) {
+	return s.AddOfflineTaskCtx(context.Background(), accountID, urlStr, targetCID)
+}
+
+// ValidateOfflineURL accepts only provider-supported offline download schemes.
+func ValidateOfflineURL(rawURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (parsed.Scheme != "magnet" && parsed.Scheme != "ed2k" && parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "sha1") {
+		return fmt.Errorf("offline URL must use magnet, ed2k, http, https, or sha1")
+	}
+	return nil
+}
+
+// AddOfflineTaskCtx submits one cancellable 115 offline-download request.
+func (s *DriveService) AddOfflineTaskCtx(ctx context.Context, accountID, urlStr, targetCID string) (string, error) {
+	if err := ValidateOfflineURL(urlStr); err != nil {
+		return "", err
+	}
 	acc, err := s.getAccount(accountID)
 	if err != nil {
 		return "", err
 	}
 
-	if targetCid == "" {
-		targetCid = "0"
+	if targetCID == "" {
+		targetCID = "0"
 	}
 
 	form := url.Values{}
 	form.Set("url", urlStr)
-	form.Set("wp_path_id", targetCid)
+	form.Set("wp_path_id", targetCID)
 
-	req, err := http.NewRequest("POST", "https://115.com/web/lixian/?ct=lixian&ac=add_task_url", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://115.com/web/lixian/?ct=lixian&ac=add_task_url", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
@@ -217,11 +305,6 @@ func (s *DriveService) AddOfflineTask(accountID string, urlStr string, targetCid
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
 	var raw struct {
 		State    bool   `json:"state"`
 		ErrNo    int    `json:"errno"`
@@ -230,13 +313,15 @@ func (s *DriveService) AddOfflineTask(accountID string, urlStr string, targetCid
 		Name     string `json:"name"`
 		URL      string `json:"url"`
 	}
-
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return "", fmt.Errorf("parse offline resp: %w", err)
+	if err := decodeProviderJSON(resp, "115 offline task", &raw); err != nil {
+		return "", err
 	}
 
 	if !raw.State {
 		return "", fmt.Errorf("115 error %d: %s", raw.ErrNo, raw.ErrorMsg)
+	}
+	if strings.TrimSpace(raw.InfoHash) == "" {
+		return "", fmt.Errorf("115 offline task response did not contain a task ID")
 	}
 
 	return raw.InfoHash, nil
@@ -262,14 +347,18 @@ func (s *DriveService) ListOfflineTasks(accountID string) ([]domain.OfflineTask,
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("115 offline list returned HTTP %d", resp.StatusCode)
+	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, err
 	}
 
 	var raw struct {
-		State bool `json:"state"`
+		State bool   `json:"state"`
+		Error string `json:"error"`
 		Tasks []struct {
 			InfoHash string  `json:"info_hash"`
 			Name     string  `json:"name"`
@@ -284,31 +373,38 @@ func (s *DriveService) ListOfflineTasks(accountID string) ([]domain.OfflineTask,
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
 	}
-
-	var res []domain.OfflineTask
-	for _, t := range raw.Tasks {
-		res = append(res, domain.OfflineTask{
-			InfoHash:  t.InfoHash,
-			Name:      t.Name,
-			Size:      t.Size,
-			Status:    t.Status,
-			Percent:   t.Percent,
-			URL:       t.URL,
-			AccountID: acc.ID,
-			FileID:    t.FileID,
-			CreatedAt: time.Now(),
-		})
+	if !raw.State {
+		return nil, fmt.Errorf("115 offline list rejected: %s", raw.Error)
 	}
 
-	return res, nil
+	result := make([]domain.OfflineTask, 0, len(raw.Tasks))
+	for _, task := range raw.Tasks {
+		result = append(result, domain.OfflineTask{
+			InfoHash: task.InfoHash, Name: task.Name, Size: task.Size, Status: task.Status,
+			Percent: task.Percent, URL: task.URL, AccountID: acc.ID, FileID: task.FileID, CreatedAt: time.Now(),
+		})
+	}
+	return result, nil
 }
+
+// PartialBatchError reports provider work accepted before a later batch item failed.
+type PartialBatchError struct {
+	CompletedIDs []string
+	Err          error
+}
+
+func (e *PartialBatchError) Error() string {
+	return fmt.Sprintf("%d offline task(s) accepted before failure: %v", len(e.CompletedIDs), e.Err)
+}
+
+func (e *PartialBatchError) Unwrap() error { return e.Err }
 
 // ShareEntry is one entry inside a share snapshot.
 type ShareEntry struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Size      int64  `json:"size,omitempty"`
-	IsDir     bool   `json:"is_dir"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Size  int64  `json:"size,omitempty"`
+	IsDir bool   `json:"is_dir"`
 }
 
 var shareURLPattern = regexp.MustCompile(`115(?:cdn)?\.com/s/([A-Za-z0-9]+)`)
@@ -323,7 +419,7 @@ func ParseShareCode(rawURL, password string) (string, string, error) {
 	}
 	if code == "" {
 		trimmed := strings.TrimSpace(rawURL)
-		if regexp.MustCompile(`^[A-Za-z0-9_-]{4,128}$`).MatchString(trimmed) {
+		if regexp.MustCompile(`^[A-Za-z0-9]{4,128}$`).MatchString(trimmed) {
 			code = trimmed
 		}
 	}
@@ -344,67 +440,96 @@ func ParseShareCode(rawURL, password string) (string, string, error) {
 	return code, receive, nil
 }
 
-func (s *DriveService) snapshotShareEntries(acc *domain.DriveAccount, shareCode, receiveCode, cid string) (string, []ShareEntry, error) {
-	reqURL := fmt.Sprintf("https://webapi.115.com/share/snap?share_code=%s&receive_code=%s&cid=%s&offset=0&limit=1150", url.QueryEscape(shareCode), url.QueryEscape(receiveCode), url.QueryEscape(cid))
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return "", nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
-	req.Header.Set("Referer", "https://115.com/")
-	req.Header.Set("Cookie", acc.Cookie)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", nil, fmt.Errorf("115 分享预检请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", nil, err
-	}
-	var raw struct {
-		State bool   `json:"state"`
-		Error string `json:"error"`
-		Data  struct {
-			ShareInfo struct {
-				ShareTitle string `json:"share_title"`
-				FileName   string `json:"file_name"`
-			} `json:"shareinfo"`
-			List []struct {
-				Fid any    `json:"fid"`
-				Cid any    `json:"cid"`
-				N   string `json:"n"`
-				S   int64  `json:"s"`
-			} `json:"list"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return "", nil, fmt.Errorf("115 分享预检响应解析失败: %w", err)
-	}
-	if !raw.State {
-		return "", nil, fmt.Errorf("115 分享预检被拒绝: %s", raw.Error)
-	}
-	title := raw.Data.ShareInfo.ShareTitle
-	if title == "" {
-		title = raw.Data.ShareInfo.FileName
-	}
-	files := make([]ShareEntry, 0, len(raw.Data.List))
-	for _, item := range raw.Data.List {
-		fid := fmt.Sprintf("%v", item.Fid)
-		cidStr := fmt.Sprintf("%v", item.Cid)
-		isDir := fid == "" || fid == "<nil>"
-		id := fid
-		if isDir {
-			id = cidStr
+func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain.DriveAccount, shareCode, receiveCode, cid string) (string, []ShareEntry, error) {
+	const pageSize = 1000
+	const maxEntries = 50000
+	entries := make([]ShareEntry, 0)
+	seen := make(map[string]struct{})
+	title := ""
+	for offset := 0; ; {
+		reqURL := fmt.Sprintf("https://webapi.115.com/share/snap?share_code=%s&receive_code=%s&cid=%s&offset=%d&limit=%d", url.QueryEscape(shareCode), url.QueryEscape(receiveCode), url.QueryEscape(cid), offset, pageSize)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return "", nil, err
 		}
-		if id == "" || id == "<nil>" {
-			continue
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+		req.Header.Set("Referer", "https://115.com/")
+		req.Header.Set("Cookie", account.Cookie)
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return "", nil, fmt.Errorf("115 分享预检请求失败: %w", err)
 		}
-		files = append(files, ShareEntry{ID: id, Name: item.N, Size: item.S, IsDir: isDir})
+		var raw struct {
+			State bool   `json:"state"`
+			Error string `json:"error"`
+			Count int    `json:"count"`
+			Data  struct {
+				Count     int `json:"count"`
+				ShareInfo struct {
+					ShareTitle string `json:"share_title"`
+					FileName   string `json:"file_name"`
+				} `json:"shareinfo"`
+				List []struct {
+					Fid any    `json:"fid"`
+					Cid any    `json:"cid"`
+					N   string `json:"n"`
+					S   int64  `json:"s"`
+				} `json:"list"`
+			} `json:"data"`
+		}
+		decodeErr := decodeProviderJSON(resp, "115 share snapshot", &raw)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return "", nil, decodeErr
+		}
+		if !raw.State {
+			return "", nil, fmt.Errorf("115 分享预检被拒绝: %s", raw.Error)
+		}
+		if title == "" {
+			title = raw.Data.ShareInfo.ShareTitle
+			if title == "" {
+				title = raw.Data.ShareInfo.FileName
+			}
+		}
+		for _, item := range raw.Data.List {
+			fid := strings.TrimSpace(fmt.Sprint(item.Fid))
+			folderID := strings.TrimSpace(fmt.Sprint(item.Cid))
+			isDirectory := fid == "" || fid == "<nil>"
+			id := fid
+			if isDirectory {
+				id = folderID
+			}
+			if id == "" || id == "<nil>" {
+				continue
+			}
+			if _, duplicate := seen[id]; duplicate {
+				continue
+			}
+			seen[id] = struct{}{}
+			entries = append(entries, ShareEntry{ID: id, Name: item.N, Size: item.S, IsDir: isDirectory})
+			if len(entries) > maxEntries {
+				return "", nil, fmt.Errorf("115 share contains more than %d top-level entries", maxEntries)
+			}
+		}
+		total := raw.Data.Count
+		if total == 0 {
+			total = raw.Count
+		}
+		if total > maxEntries {
+			return "", nil, fmt.Errorf("115 share contains %d top-level entries; maximum is %d", total, maxEntries)
+		}
+		if total > 0 && len(entries) >= total {
+			break
+		}
+		if len(raw.Data.List) < pageSize {
+			if total > 0 && len(entries) < total {
+				return "", nil, fmt.Errorf("115 share snapshot ended at %d of %d entries", len(entries), total)
+			}
+			break
+		}
+		offset += len(raw.Data.List)
 	}
-	return title, files, nil
+	return title, entries, nil
 }
 
 // SnapshotShare lists the top-level contents of a 115 share link.
@@ -417,11 +542,16 @@ func (s *DriveService) SnapshotShare(accountID, rawURL, password string) (string
 	if err != nil {
 		return "", nil, err
 	}
-	return s.snapshotShareEntries(acc, code, receive, "0")
+	return s.snapshotShareEntries(context.Background(), acc, code, receive, "0")
 }
 
 // SaveShare transfers all top-level files of a 115 share into targetCid.
 func (s *DriveService) SaveShare(accountID, rawURL, password, targetCid string) (int, string, error) {
+	return s.SaveShareCtx(context.Background(), accountID, rawURL, password, targetCid)
+}
+
+// SaveShareCtx transfers all top-level files with cancellation.
+func (s *DriveService) SaveShareCtx(ctx context.Context, accountID, rawURL, password, targetCid string) (int, string, error) {
 	acc, err := s.getAccount(accountID)
 	if err != nil {
 		return 0, "", err
@@ -433,7 +563,7 @@ func (s *DriveService) SaveShare(accountID, rawURL, password, targetCid string) 
 	if err != nil {
 		return 0, "", err
 	}
-	title, files, err := s.snapshotShareEntries(acc, code, receive, "0")
+	title, files, err := s.snapshotShareEntries(ctx, acc, code, receive, "0")
 	if err != nil {
 		return 0, "", err
 	}
@@ -457,7 +587,7 @@ func (s *DriveService) SaveShare(accountID, rawURL, password, targetCid string) 
 	form.Set("cid", targetCid)
 	form.Set("user_id", uid)
 
-	req, err := http.NewRequest("POST", "https://webapi.115.com/share/receive", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://webapi.115.com/share/receive", strings.NewReader(form.Encode()))
 	if err != nil {
 		return 0, "", err
 	}
@@ -471,19 +601,14 @@ func (s *DriveService) SaveShare(accountID, rawURL, password, targetCid string) 
 		return 0, title, fmt.Errorf("115 转存请求失败: %w", err)
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, title, err
-	}
 	var raw struct {
 		State  bool   `json:"state"`
 		Error  string `json:"error"`
 		ErrNo  int    `json:"errno"`
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return 0, title, fmt.Errorf("115 转存响应解析失败: %w", err)
+	if err := decodeProviderJSON(resp, "115 share receive", &raw); err != nil {
+		return 0, title, err
 	}
 	if !raw.State {
 		msg := raw.Error
@@ -498,167 +623,268 @@ func (s *DriveService) SaveShare(accountID, rawURL, password, targetCid string) 
 	return len(ids), title, nil
 }
 
-// MakeDir creates a new directory in 115
-func (s *DriveService) MakeDir(accountID string, pid string, name string) (string, error) {
+// ShareLink is a newly generated 115 share URL and its extraction code.
+type ShareLink struct {
+	URL         string `json:"url"`
+	ShareCode   string `json:"share_code"`
+	ReceiveCode string `json:"receive_code,omitempty"`
+}
+
+// GenerateShareLink creates a 115 share for one file or directory.
+func (s *DriveService) GenerateShareLink(ctx context.Context, accountID, fileID string) (ShareLink, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return ShareLink{}, fmt.Errorf("file ID is required")
+	}
 	acc, err := s.getAccount(accountID)
 	if err != nil {
-		return "", err
+		return ShareLink{}, err
 	}
+	form := url.Values{
+		"file_ids":    {fileID},
+		"is_asc":      {"1"},
+		"order":       {"file_name"},
+		"ignore_warn": {"1"},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://webapi.115.com/share/send", strings.NewReader(form.Encode()))
+	if err != nil {
+		return ShareLink{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+	req.Header.Set("Referer", "https://115.com/")
+	req.Header.Set("Cookie", acc.Cookie)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return ShareLink{}, fmt.Errorf("create 115 share: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return ShareLink{}, fmt.Errorf("read 115 share response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ShareLink{}, fmt.Errorf("create 115 share returned HTTP %d", resp.StatusCode)
+	}
+	var raw struct {
+		State       bool   `json:"state"`
+		Error       string `json:"error"`
+		Message     string `json:"message"`
+		ShareCode   string `json:"share_code"`
+		ReceiveCode string `json:"receive_code"`
+		Data        struct {
+			ShareCode   string `json:"share_code"`
+			ReceiveCode string `json:"receive_code"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ShareLink{}, fmt.Errorf("decode 115 share response: %w", err)
+	}
+	if !raw.State {
+		message := raw.Error
+		if message == "" {
+			message = raw.Message
+		}
+		if message == "" {
+			message = "request rejected"
+		}
+		return ShareLink{}, fmt.Errorf("create 115 share: %s", message)
+	}
+	shareCode := raw.Data.ShareCode
+	if shareCode == "" {
+		shareCode = raw.ShareCode
+	}
+	receiveCode := raw.Data.ReceiveCode
+	if receiveCode == "" {
+		receiveCode = raw.ReceiveCode
+	}
+	if shareCode == "" {
+		return ShareLink{}, fmt.Errorf("create 115 share: response did not contain a share code")
+	}
+	shareURL := "https://115.com/s/" + url.PathEscape(shareCode)
+	if receiveCode != "" {
+		shareURL += "?password=" + url.QueryEscape(receiveCode)
+	}
+	return ShareLink{URL: shareURL, ShareCode: shareCode, ReceiveCode: receiveCode}, nil
+}
 
-	form := url.Values{}
-	form.Set("pid", pid)
-	form.Set("cname", name)
+// MakeDir creates a new directory in 115.
+func (s *DriveService) MakeDir(accountID, pid, name string) (string, error) {
+	return s.makeDir(context.Background(), accountID, pid, name)
+}
 
-	req, err := http.NewRequest("POST", "https://webapi.115.com/files/add", strings.NewReader(form.Encode()))
+func (s *DriveService) makeDir(ctx context.Context, accountID, pid, name string) (string, error) {
+	name = strings.TrimSpace(name)
+	pid = strings.TrimSpace(pid)
+	if name == "" {
+		return "", fmt.Errorf("directory name is required")
+	}
+	if pid == "" {
+		pid = "0"
+	}
+	account, err := s.getAccount(accountID)
 	if err != nil {
 		return "", err
 	}
-
+	form := url.Values{"pid": {pid}, "cname": {name}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://webapi.115.com/files/add", strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	req.Header.Set("Cookie", acc.Cookie)
-
+	req.Header.Set("Cookie", account.Cookie)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
 	var raw struct {
 		State bool   `json:"state"`
 		Cid   any    `json:"cid"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := decodeProviderJSON(resp, "115 mkdir", &raw); err != nil {
 		return "", err
 	}
 	if !raw.State {
 		return "", fmt.Errorf("mkdir error: %s", raw.Error)
 	}
-
-	return fmt.Sprintf("%v", raw.Cid), nil
+	cid := strings.TrimSpace(fmt.Sprint(raw.Cid))
+	if cid == "" || cid == "<nil>" {
+		return "", fmt.Errorf("115 mkdir response did not contain a CID")
+	}
+	return cid, nil
 }
 
-// Rename renames a file or directory in 115
-func (s *DriveService) Rename(accountID string, fileID string, newName string) error {
-	acc, err := s.getAccount(accountID)
+// Rename renames a file or directory in 115.
+func (s *DriveService) Rename(accountID, fileID, newName string) error {
+	return s.rename(context.Background(), accountID, fileID, newName)
+}
+
+func (s *DriveService) rename(ctx context.Context, accountID, fileID, newName string) error {
+	fileID = strings.TrimSpace(fileID)
+	newName = strings.TrimSpace(newName)
+	if fileID == "" || newName == "" {
+		return fmt.Errorf("file ID and new name are required")
+	}
+	account, err := s.getAccount(accountID)
 	if err != nil {
 		return err
 	}
-
-	form := url.Values{}
-	form.Set("fid", fileID)
-	form.Set("file_name", newName)
-
-	req, err := http.NewRequest("POST", "https://webapi.115.com/files/edit", strings.NewReader(form.Encode()))
+	form := url.Values{"fid": {fileID}, "file_name": {newName}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://webapi.115.com/files/edit", strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
-
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	req.Header.Set("Cookie", acc.Cookie)
-
+	req.Header.Set("Cookie", account.Cookie)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
 	var raw struct {
 		State bool   `json:"state"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := decodeProviderJSON(resp, "115 rename", &raw); err != nil {
 		return err
 	}
 	if !raw.State {
 		return fmt.Errorf("rename error: %s", raw.Error)
 	}
-
 	return nil
 }
 
-// Move moves files or folders into a target folder
-func (s *DriveService) Move(accountID string, fileIDs []string, targetPid string) error {
-	acc, err := s.getAccount(accountID)
+// Move moves files or folders into a target folder.
+func (s *DriveService) Move(accountID string, fileIDs []string, targetPID string) error {
+	return s.move(context.Background(), accountID, fileIDs, targetPID)
+}
+
+func (s *DriveService) move(ctx context.Context, accountID string, fileIDs []string, targetPID string) error {
+	targetPID = strings.TrimSpace(targetPID)
+	if targetPID == "" || len(fileIDs) == 0 {
+		return fmt.Errorf("file IDs and target CID are required")
+	}
+	account, err := s.getAccount(accountID)
 	if err != nil {
 		return err
 	}
-
-	form := url.Values{}
-	form.Set("pid", targetPid)
-	for i, fid := range fileIDs {
-		form.Set(fmt.Sprintf("fid[%d]", i), fid)
+	form := url.Values{"pid": {targetPID}}
+	for index, fileID := range fileIDs {
+		fileID = strings.TrimSpace(fileID)
+		if fileID == "" {
+			return fmt.Errorf("file IDs must not be empty")
+		}
+		form.Set(fmt.Sprintf("fid[%d]", index), fileID)
 	}
-
-	req, err := http.NewRequest("POST", "https://webapi.115.com/files/move", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://webapi.115.com/files/move", strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
-
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	req.Header.Set("Cookie", acc.Cookie)
-
+	req.Header.Set("Cookie", account.Cookie)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
 	var raw struct {
 		State bool   `json:"state"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := decodeProviderJSON(resp, "115 move", &raw); err != nil {
 		return err
 	}
 	if !raw.State {
 		return fmt.Errorf("move error: %s", raw.Error)
 	}
-
 	return nil
 }
 
-// Delete removes files or folders in 115
+// Delete removes files or folders in 115.
 func (s *DriveService) Delete(accountID string, fileIDs []string) error {
-	acc, err := s.getAccount(accountID)
+	return s.DeleteCtx(context.Background(), accountID, fileIDs)
+}
+
+// DeleteCtx removes files or folders with cancellation.
+func (s *DriveService) DeleteCtx(ctx context.Context, accountID string, fileIDs []string) error {
+	if len(fileIDs) == 0 {
+		return fmt.Errorf("file IDs are required")
+	}
+	account, err := s.getAccount(accountID)
 	if err != nil {
 		return err
 	}
-
 	form := url.Values{}
-	for i, fid := range fileIDs {
-		form.Set(fmt.Sprintf("fid[%d]", i), fid)
+	for index, fileID := range fileIDs {
+		fileID = strings.TrimSpace(fileID)
+		if fileID == "" {
+			return fmt.Errorf("file IDs must not be empty")
+		}
+		form.Set(fmt.Sprintf("fid[%d]", index), fileID)
 	}
-
-	req, err := http.NewRequest("POST", "https://webapi.115.com/rb/delete", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://webapi.115.com/rb/delete", strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
-
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-	req.Header.Set("Cookie", acc.Cookie)
-
+	req.Header.Set("Cookie", account.Cookie)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
 	var raw struct {
 		State bool   `json:"state"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := decodeProviderJSON(resp, "115 delete", &raw); err != nil {
 		return err
 	}
 	if !raw.State {
 		return fmt.Errorf("delete error: %s", raw.Error)
 	}
-
 	return nil
 }
 
@@ -672,149 +898,126 @@ func (s *DriveService) getAccount(id string) (*domain.DriveAccount, error) {
 	}
 	for i := range accs {
 		if accs[i].ID == id {
-			s.syncAccountCookie(&accs[i])
 			return &accs[i], nil
 		}
 	}
-	return s.GetDefaultAccount()
+	return nil, fmt.Errorf("115 account %s was not found", id)
 }
 
 // Resource indexing integration
-func (s *DriveService) GetHomeSummary() (map[string]any, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/home/summary", s.resourceURL), nil)
+func (s *DriveService) resourceGet(path string, params url.Values) (map[string]any, error) {
+	return s.resourceGetCtx(context.Background(), path, params)
+}
+
+func (s *DriveService) resourceGetCtx(ctx context.Context, path string, params url.Values) (map[string]any, error) {
+	baseURL, token := s.resourceConfig()
+	endpoint := baseURL + path
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	if s.resourceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.resourceToken)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	var res map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("resource API %s returned HTTP %d", path, resp.StatusCode)
+	}
+	var result map[string]any
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&result); err != nil {
 		return nil, err
 	}
-	return res, nil
+	message := fmt.Sprint(result["message"])
+	if message == "<nil>" || message == "" {
+		message = fmt.Sprint(result["error"])
+	}
+	if code, present := result["code"]; present && fmt.Sprint(code) != "0" {
+		return nil, fmt.Errorf("resource API %s returned code %v: %s", path, code, message)
+	}
+	if success, present := result["success"].(bool); present && !success {
+		return nil, fmt.Errorf("resource API %s rejected request: %s", path, message)
+	}
+	if state, present := result["state"].(bool); present && !state {
+		return nil, fmt.Errorf("resource API %s rejected request: %s", path, message)
+	}
+	return result, nil
+}
+
+func (s *DriveService) GetHomeSummary() (map[string]any, error) {
+	return s.resourceGet("/api/v1/home/summary", nil)
 }
 
 func (s *DriveService) GetSources() (map[string]any, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/sources", s.resourceURL), nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var res map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return s.resourceGet("/api/v1/sources", nil)
 }
 
 func (s *DriveService) GetTrends() (map[string]any, error) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/trends", s.resourceURL), nil)
+	result, err := s.resourceGet("/api/v1/trends", nil)
 	if err != nil {
 		return nil, err
 	}
-	if s.resourceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.resourceToken)
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var res map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, err
-	}
-	// If the upstream returned wrapped {"code": 0, "data": {"trends": [...]}}
-	if data, ok := res["data"].(map[string]any); ok {
+	if data, ok := result["data"].(map[string]any); ok {
 		return data, nil
 	}
-	return res, nil
+	return result, nil
 }
 
 func (s *DriveService) SearchResources(params url.Values) (map[string]any, error) {
-	reqURL := fmt.Sprintf("%s/search?%s", s.resourceURL, params.Encode())
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if s.resourceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.resourceToken)
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var res map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return s.SearchResourcesCtx(context.Background(), params)
+}
+
+// SearchResourcesCtx searches the resource index with cancellation.
+func (s *DriveService) SearchResourcesCtx(ctx context.Context, params url.Values) (map[string]any, error) {
+	return s.resourceGetCtx(ctx, "/search", params)
 }
 
 func (s *DriveService) GetLink(id string) (map[string]any, error) {
-	reqURL := fmt.Sprintf("%s/api/v1/links/%s", s.resourceURL, id)
-	req, err := http.NewRequest("GET", reqURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	if s.resourceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.resourceToken)
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var res map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return s.resourceGet("/api/v1/links/"+url.PathEscape(id), nil)
 }
 
-
 func (s *DriveService) AddOfflineTasks(ctx context.Context, accountID string, urls []string, targetCID string) ([]string, error) {
-	var ids []string
-	for _, u := range urls {
-		id, err := s.AddOfflineTask(accountID, u, targetCID)
+	ids := make([]string, 0, len(urls))
+	for _, rawURL := range urls {
+		id, err := s.AddOfflineTaskCtx(ctx, accountID, rawURL, targetCID)
 		if err != nil {
-			return ids, err
+			return ids, &PartialBatchError{CompletedIDs: append([]string(nil), ids...), Err: err}
 		}
 		ids = append(ids, id)
 	}
 	return ids, nil
 }
+
 func (s *DriveService) Mkdir(accountID, pid, name string) (string, error) {
 	return s.MakeDir(accountID, pid, name)
 }
 
 func (s *DriveService) ListFilesCtx(ctx context.Context, accountID, cid string) ([]domain.DriveFile, error) {
-	files, _, err := s.ListFiles(accountID, cid, 0, 200)
+	files, _, err := s.listFiles(ctx, accountID, cid, 0, 200)
 	return files, err
 }
 
+// ListFilesPageCtx returns one bounded 115 directory page and provider total.
+func (s *DriveService) ListFilesPageCtx(ctx context.Context, accountID, cid string, offset, limit int) ([]domain.DriveFile, int64, error) {
+	return s.listFiles(ctx, accountID, cid, offset, limit)
+}
+
 func (s *DriveService) MkdirCtx(ctx context.Context, accountID, pid, name string) (string, error) {
-	return s.MakeDir(accountID, pid, name)
+	return s.makeDir(ctx, accountID, pid, name)
 }
 
 func (s *DriveService) RenameCtx(ctx context.Context, accountID, fileID, newName string) error {
-	return s.Rename(accountID, fileID, newName)
+	return s.rename(ctx, accountID, fileID, newName)
 }
 
 func (s *DriveService) MoveCtx(ctx context.Context, accountID string, fileIDs []string, targetCID string) error {
-	return s.Move(accountID, fileIDs, targetCID)
+	return s.move(ctx, accountID, fileIDs, targetCID)
 }
 
 func (s *DriveService) ImportLink(accountID, linkID string, targetCid string) (string, error) {

@@ -1,9 +1,13 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,9 +15,21 @@ import (
 )
 
 var secretSettingKeys = map[string]struct{}{
-	"115_cookie":          {},
-	"emby_api_key":        {},
-	"resource_api_token":  {},
+	"115_cookie":                {},
+	"emby_api_key":              {},
+	"resource_api_token":        {},
+	"clouddrive_api_token":      {},
+	"clouddrive_webhook_secret": {},
+}
+
+var allowedSettingKeys = map[string]struct{}{
+	"115_cookie": {}, "c115_cid_map": {},
+	"emby_url": {}, "emby_api_key": {},
+	"media_root": {}, "strm_root": {}, "emby_media_prefix": {},
+	"clouddrive_url": {}, "clouddrive_api_token": {}, "clouddrive_mount_path": {}, "clouddrive_source_path": {},
+	"clouddrive_webhook_secret": {}, "clouddrive_webhook_debounce_seconds": {},
+	"resource_api_url": {}, "resource_api_token": {},
+	"dangerous_actions_enabled": {},
 }
 
 type monitoredComponent struct {
@@ -23,8 +39,12 @@ type monitoredComponent struct {
 
 var monitoredComponents = []monitoredComponent{
 	{id: "c115", isConfigured: func(s map[string]string) bool { return strings.TrimSpace(s["115_cookie"]) != "" }},
-	{id: "emby", isConfigured: func(s map[string]string) bool { return strings.TrimSpace(s["emby_url"]) != "" && strings.TrimSpace(s["emby_api_key"]) != "" }},
-	{id: "clouddrive", isConfigured: func(s map[string]string) bool { return strings.TrimSpace(s["clouddrive_url"]) != "" && strings.TrimSpace(s["clouddrive_mount_path"]) != "" }},
+	{id: "emby", isConfigured: func(s map[string]string) bool {
+		return strings.TrimSpace(s["emby_url"]) != "" && strings.TrimSpace(s["emby_api_key"]) != ""
+	}},
+	{id: "clouddrive", isConfigured: func(s map[string]string) bool {
+		return strings.TrimSpace(s["clouddrive_url"]) != "" && strings.TrimSpace(s["clouddrive_mount_path"]) != ""
+	}},
 	{id: "resource", isConfigured: func(s map[string]string) bool { return strings.TrimSpace(s["resource_api_url"]) != "" }},
 }
 
@@ -52,6 +72,7 @@ type SettingsState struct {
 	Configured map[string]bool          `json:"configured"`
 	Health     map[string]ServiceHealth `json:"health"`
 }
+
 // SettingsService persists deployment settings without returning stored secrets.
 type SettingsService struct {
 	db *storage.DB
@@ -60,6 +81,7 @@ type SettingsService struct {
 func NewSettingsService(db *storage.DB) *SettingsService {
 	return &SettingsService{db: db}
 }
+
 // CheckAvailability tests the live connection to a specified component
 func (s *SettingsService) CheckAvailability(component string) ServiceHealth {
 	start := time.Now()
@@ -72,17 +94,13 @@ func (s *SettingsService) CheckAvailability(component string) ServiceHealth {
 			baseURL, _ = s.db.GetConfig("emby_url")
 		}
 		if baseURL == "" {
-			baseURL = "http://127.0.0.1:8096"
+			return ServiceHealth{Status: "unconfigured", Message: "未配置 Emby URL"}
 		}
-		apiKey, _ := s.db.GetSetting("emby_api_key")
+		apiKey, _ := s.db.GetConfig("emby_api_key")
 		if apiKey == "" {
-			apiKey, _ = s.db.GetConfig("emby_api_key")
+			return ServiceHealth{Status: "unconfigured", Message: "未配置 Emby API Key"}
 		}
-
-		url := fmt.Sprintf("%s/System/Info/Public", strings.TrimRight(baseURL, "/"))
-		if apiKey != "" {
-			url = fmt.Sprintf("%s/System/Info?api_key=%s", strings.TrimRight(baseURL, "/"), apiKey)
-		}
+		url := fmt.Sprintf("%s/System/Info?api_key=%s", strings.TrimRight(baseURL, "/"), apiKey)
 		resp, err := client.Get(url)
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
@@ -97,7 +115,7 @@ func (s *SettingsService) CheckAvailability(component string) ServiceHealth {
 	case "resource":
 		url, _ := s.db.GetSetting("resource_api_url")
 		if url == "" {
-			url = "http://127.0.0.1:8100"
+			return ServiceHealth{Status: "unconfigured", Message: "未配置资源 API URL"}
 		}
 		token, _ := s.db.GetSetting("resource_api_token")
 		req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/home/summary", strings.TrimRight(url, "/")), nil)
@@ -119,50 +137,46 @@ func (s *SettingsService) CheckAvailability(component string) ServiceHealth {
 		return ServiceHealth{Status: "error", Message: fmt.Sprintf("资源 API 响应 HTTP %d", resp.StatusCode), Latency: latency}
 
 	case "clouddrive":
-		url, _ := s.db.GetSetting("clouddrive_url")
-		if url == "" {
-			url = "http://127.0.0.1:19798"
+		cloudURL, _ := s.db.GetConfig("clouddrive_url")
+		mountPath, _ := s.db.GetSetting("clouddrive_mount_path")
+		if cloudURL == "" || mountPath == "" {
+			return ServiceHealth{Status: "unconfigured", Message: "未配置 CloudDrive2 URL 或挂载目录"}
 		}
-		resp, err := client.Get(url)
+		health, err := NewCloudDriveService(s.db).Health(context.Background())
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
-			return ServiceHealth{Status: "error", Message: "无法连接 CloudDrive 服务: " + err.Error(), Latency: latency}
+			return ServiceHealth{Status: "error", Message: "CloudDrive2 gRPC 检查失败: " + err.Error(), Latency: latency}
 		}
-		defer resp.Body.Close()
-		return ServiceHealth{Status: "ok", Message: "CloudDrive2 服务在线，响应正常", Latency: latency}
-
+		if !health.SystemReady || health.Message != "" {
+			message := health.Message
+			if message == "" {
+				message = "CloudDrive2 尚未就绪"
+			}
+			return ServiceHealth{Status: "error", Message: message, Latency: latency}
+		}
+		return ServiceHealth{Status: "ok", Message: "CloudDrive2 gRPC 服务在线", Latency: latency, Details: health.ProductVersion}
 	case "c115":
-		cookie, _ := s.db.GetSetting("115_cookie")
-		if cookie == "" {
-			return ServiceHealth{Status: "unconfigured", Message: "未配置 115 Cookie"}
-		}
-		req, err := http.NewRequest("GET", "https://webapi.115.com/files/index_info", nil)
-		if err != nil {
-			return ServiceHealth{Status: "error", Message: err.Error()}
-		}
-		req.Header.Set("Cookie", cookie)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
-		resp, err := client.Do(req)
+		accounts, err := NewDriveService(s.db, "", "").CheckAccounts(context.Background())
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
-			return ServiceHealth{Status: "error", Message: "请求 115 失败: " + err.Error(), Latency: latency}
-		}
-		defer resp.Body.Close()
-		var result struct {
-			State bool   `json:"state"`
-			Error string `json:"error"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
-			if result.State {
-				return ServiceHealth{Status: "ok", Message: "115 可访问，Cookie 有效", Latency: latency}
+			if strings.Contains(err.Error(), "no drive accounts configured") {
+				return ServiceHealth{Status: "unconfigured", Message: "未配置 115 账号", Latency: latency}
 			}
-			msg := result.Error
-			if msg == "" {
-				msg = "115 凭据已失效，需更新"
-			}
-			return ServiceHealth{Status: "error", Message: msg, Latency: latency}
+			return ServiceHealth{Status: "error", Message: "115 账号检查失败: " + err.Error(), Latency: latency}
 		}
-		return ServiceHealth{Status: "ok", Message: "115 响应正常", Latency: latency}
+		if len(accounts) == 0 {
+			return ServiceHealth{Status: "unconfigured", Message: "未配置 115 账号", Latency: latency}
+		}
+		healthy := 0
+		for _, account := range accounts {
+			if account.Status == "active" {
+				healthy++
+			}
+		}
+		if healthy == 0 {
+			return ServiceHealth{Status: "error", Message: "所有 115 账号均不可用", Latency: latency}
+		}
+		return ServiceHealth{Status: "ok", Message: fmt.Sprintf("115 账号可用 %d / %d", healthy, len(accounts)), Latency: latency}
 
 	default:
 		return ServiceHealth{Status: "error", Message: "未知组件"}
@@ -182,6 +196,11 @@ func (s *SettingsService) State() (SettingsState, error) {
 	if err != nil {
 		return SettingsState{}, err
 	}
+	for key := range stored {
+		if _, allowed := allowedSettingKeys[key]; !allowed {
+			delete(stored, key)
+		}
+	}
 	configured := make(map[string]bool, len(monitoredComponents))
 	for _, c := range monitoredComponents {
 		configured[c.id] = c.isConfigured(stored)
@@ -192,16 +211,45 @@ func (s *SettingsService) State() (SettingsState, error) {
 		Health:     s.CheckAll(),
 	}, nil
 }
-// Update atomically persists settings; empty secret fields preserve stored values.
+
+// Update atomically persists validated settings; empty secret fields preserve stored values.
 func (s *SettingsService) Update(values map[string]string) error {
 	filtered := make(map[string]string, len(values))
-	for key, value := range values {
-		if _, secret := secretSettingKeys[key]; secret && strings.TrimSpace(value) == "" {
+	for key, rawValue := range values {
+		if _, allowed := allowedSettingKeys[key]; !allowed {
+			return fmt.Errorf("unknown setting %q", key)
+		}
+		value := strings.TrimSpace(rawValue)
+		if _, secret := secretSettingKeys[key]; secret && value == "" {
 			continue
 		}
-		filtered[key] = strings.TrimSpace(value)
+		if strings.HasSuffix(key, "_url") && value != "" {
+			parsed, err := url.Parse(value)
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return fmt.Errorf("%s must be an HTTP or HTTPS URL", key)
+			}
+		}
+		if (key == "clouddrive_mount_path" || key == "media_root" || key == "strm_root" || key == "emby_media_prefix") && value != "" && !filepath.IsAbs(value) {
+			return fmt.Errorf("%s must be an absolute path", key)
+		}
+		if key == "dangerous_actions_enabled" && value != "true" && value != "false" {
+			return fmt.Errorf("dangerous_actions_enabled must be true or false")
+		}
+		if key == "clouddrive_webhook_debounce_seconds" && value != "" {
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds < 1 || seconds > 300 {
+				return fmt.Errorf("clouddrive_webhook_debounce_seconds must be between 1 and 300")
+			}
+		}
+		if key == "c115_cid_map" && value != "" {
+			var cidMap map[string]string
+			if err := json.Unmarshal([]byte(value), &cidMap); err != nil {
+				return fmt.Errorf("c115_cid_map must be a JSON object: %w", err)
+			}
+		}
+		filtered[key] = value
 	}
-	return s.db.SetSettings(filtered)
+	return s.db.SetSettingsAndDefaultAccountCookie(filtered, filtered["115_cookie"])
 }
 
 // Get returns one stored setting for internal service consumers.
