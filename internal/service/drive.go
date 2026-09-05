@@ -135,6 +135,7 @@ func (s *DriveService) ListFiles(accountID string, cid string, offset, limit int
 			Pc    string `json:"pc"`
 			Sha1  string `json:"sha"`
 			T     string `json:"t"`
+			Te    string `json:"te"`
 		} `json:"data"`
 	}
 
@@ -159,14 +160,27 @@ func (s *DriveService) ListFiles(accountID string, cid string, offset, limit int
 			size, _ = strconv.ParseInt(v, 10, 64)
 		}
 
+		// Use "te" (time edited) or "t" (time) for UpdatedTime
+		unixTimeStr := item.Te
+		if unixTimeStr == "" {
+			unixTimeStr = item.T
+		}
+		var updatedTime time.Time
+		if unixTimeStr != "" {
+			if timestamp, err := strconv.ParseInt(unixTimeStr, 10, 64); err == nil {
+				updatedTime = time.Unix(timestamp, 0)
+			}
+		}
+
 		files = append(files, domain.DriveFile{
-			FileID:   fileID,
-			ParentID: fmt.Sprintf("%v", item.Pid),
-			Name:     item.Name,
-			Size:     size,
-			PickCode: item.Pc,
-			Sha1:     item.Sha1,
-			IsFolder: isFolder,
+			FileID:      fileID,
+			ParentID:    fmt.Sprintf("%v", item.Pid),
+			Name:        item.Name,
+			Size:        size,
+			PickCode:    item.Pc,
+			Sha1:        item.Sha1,
+			IsFolder:    isFolder,
+			UpdatedTime: updatedTime,
 		})
 	}
 
