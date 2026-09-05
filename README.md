@@ -25,7 +25,7 @@ SQLite at `/srv/embymedia/data/embymedia.db` owns settings, managed accounts, sc
 
 ## Browser workflows
 
-Resource search preserves filters, loaded pages, and scroll position when returning from a detail page. Search, details, and favorites share the transfer destination; an unavailable saved directory blocks transfer until another destination is selected. Favorites support removal undo. File dialogs identify the account and destination, retain failed input, and support keyboard focus containment. Task failures keep logs and reviewed retry together. Clipboard failure opens a manual-copy dialog instead of reporting success.
+Resource search preserves filters, loaded pages, and scroll position when returning from a detail page. Search, details, and favorites share the transfer destination; an unavailable saved directory blocks transfer until another destination is selected. Favorites support removal undo. The 115 file browser saves a pasted share link into the displayed account and directory, retains the link and extraction code after an error, and refreshes the directory after success. File dialogs identify the account and destination, retain failed input, and support keyboard focus containment. Task failures keep logs and reviewed retry together. Clipboard failure opens a manual-copy dialog instead of reporting success.
 
 ## Agent access
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Folder, File, HardDrive, FolderPlus, RefreshCw, Trash2, Edit2, Loader2, Users, FolderInput, UserMinus, UserPlus } from 'lucide-vue-next'
+import { Folder, File, HardDrive, FolderPlus, RefreshCw, Trash2, Edit2, Loader2, Users, FolderInput, UserMinus, UserPlus, Link2 } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
 type DriveFile = { file_id?: string; cid?: string; name: string; is_folder: boolean; size?: number; updated_time?: string }
@@ -32,11 +32,15 @@ const showAccountModal = ref(false)
 const newAccount = ref({ name: '', cookie: '', is_default: false })
 const accountError = ref('')
 const accountBusy = ref(false)
+const showShareModal = ref(false)
+const shareForm = ref({ url: '', password: '' })
+const shareError = ref('')
+const shareBusy = ref(false)
 const operation = ref<FileOperation | null>(null)
 const operationError = ref('')
 const operationBusy = ref(false)
 const renameValue = ref('')
-const busy = computed(() => loading.value || accountsLoading.value || accountBusy.value || folderBusy.value || operationBusy.value)
+const busy = computed(() => loading.value || accountsLoading.value || accountBusy.value || folderBusy.value || shareBusy.value || operationBusy.value)
 const accountName = computed(() => accounts.value.find(account => account.id === currentAccountId.value)?.name || '未选择账号')
 const directoryName = computed(() => breadcrumbs.value.map(item => item.name).join(' / '))
 const moveTargetName = computed(() => moveTargetCid.value === '0' ? '根目录' : Object.entries(cidMap.value).find(([, cid]) => cid === moveTargetCid.value)?.[0] || moveTargetCid.value)
@@ -255,6 +259,47 @@ async function createFolder() {
   }
 }
 
+function openShareTransfer() {
+  shareError.value = ''
+  showShareModal.value = true
+}
+
+async function saveSharedContent() {
+  if (shareBusy.value) return
+  const url = shareForm.value.url.trim()
+  if (!url) {
+    shareError.value = '请填写 115 分享链接。'
+    return
+  }
+  shareBusy.value = true
+  shareError.value = ''
+  success.value = ''
+  try {
+    const response = await fetch('/api/v1/files/save_share', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: currentAccountId.value,
+        target_cid: currentCid.value,
+        url,
+        ...(shareForm.value.password.trim() ? { password: shareForm.value.password.trim() } : {}),
+      }),
+    })
+    await requireOk(response, '转存分享失败')
+    const result = await response.json()
+    const title = typeof result.title === 'string' && result.title.trim() ? `「${result.title.trim()}」` : '该分享'
+    const count = Number.isInteger(result.count) ? `${result.count} 个项目` : '分享内容'
+    success.value = `已将 ${title} 中的 ${count} 转存到「${accountName.value} / ${directoryName.value}」。`
+    shareForm.value = { url: '', password: '' }
+    showShareModal.value = false
+    await fetchFiles()
+  } catch (error) {
+    shareError.value = errorMessage(error)
+  } finally {
+    shareBusy.value = false
+  }
+}
+
 onMounted(() => {
   reloadAccounts()
   fetchCidMap()
@@ -266,7 +311,7 @@ onMounted(() => {
     <header class="space-y-4 pb-6 border-b border-border">
       <div>
         <h1 class="font-serif text-2xl font-bold text-text">115 网盘文件管理</h1>
-        <p class="text-sm text-text-muted mt-1">切换账号浏览目录，选择文件进行移动、重命名或删除。</p>
+        <p class="text-sm text-text-muted mt-1">切换账号浏览目录，将分享链接转存到当前目录，或选择文件进行移动、重命名和删除。</p>
       </div>
       <div class="flex flex-wrap items-center gap-3">
         <div class="flex items-center gap-2 rounded-lg border border-border bg-surface px-3 min-w-0 max-w-full">
@@ -282,6 +327,7 @@ onMounted(() => {
         <button type="button" :disabled="busy" class="file-button" @click="accountError = ''; showAccountModal = true"><UserPlus class="w-4 h-4" aria-hidden="true" />添加账号</button>
         <button v-if="currentAccountId && !accountsError" type="button" :disabled="busy" class="file-button text-danger" @click="deleteCurrentAccount"><UserMinus class="w-4 h-4" aria-hidden="true" />移除账号</button>
         <button type="button" :disabled="busy || !currentAccountId || !!accountsError || !!filesError" class="file-button" @click="folderError = ''; showNewFolderModal = true"><FolderPlus class="w-4 h-4" aria-hidden="true" />新建文件夹</button>
+        <button type="button" :disabled="busy || !currentAccountId || !!accountsError || !!filesError" class="file-button text-accent border-accent/40" @click="openShareTransfer"><Link2 class="w-4 h-4" aria-hidden="true" />转存分享</button>
         <button type="button" :disabled="busy || !currentAccountId || !!accountsError" class="file-button" @click="fetchFiles"><RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" aria-hidden="true" />刷新目录</button>
       </div>
       <p v-if="accountSuccess" role="status" class="text-sm text-accent break-words">{{ accountSuccess }}</p>
@@ -334,7 +380,7 @@ onMounted(() => {
       </div>
       <div v-else-if="!files.length" class="p-8 text-center space-y-2">
         <h2 class="text-lg font-semibold">此文件夹为空</h2>
-        <p class="text-sm text-text-muted">可新建文件夹，或切换到其他目录。</p>
+        <p class="text-sm text-text-muted">可将 115 分享转存到这里、新建文件夹，或切换到其他目录。</p>
       </div>
       <template v-else>
         <div class="flex items-center justify-between gap-3 px-4 border-b border-border">
@@ -376,6 +422,30 @@ onMounted(() => {
       </div>
       <p v-if="moveTargetCid === currentCid" class="text-sm text-text-muted">请选择与当前目录不同的移动目标。</p>
     </section>
+
+    <UiDialog v-if="showShareModal" title="转存 115 分享" :busy="shareBusy" @close="showShareModal = false">
+      <form class="space-y-4" @submit.prevent="saveSharedContent">
+        <div class="rounded-lg border border-border bg-bg p-4">
+          <p class="text-xs text-text-muted">转存位置</p>
+          <p class="mt-1 text-sm font-semibold break-words">{{ accountName }} / {{ directoryName }}</p>
+          <p class="mt-1 text-xs text-text-faint break-all">目录 CID：{{ currentCid }}</p>
+        </div>
+        <div>
+          <label for="share-transfer-url" class="block mb-2 text-sm">115 分享链接</label>
+          <input id="share-transfer-url" v-model="shareForm.url" :disabled="shareBusy" type="text" inputmode="url" autocomplete="off" required autofocus placeholder="https://115.com/s/..." class="w-full rounded-lg border border-border bg-bg px-3 text-sm" :aria-invalid="!!shareError" :aria-describedby="shareError ? 'share-transfer-error' : 'share-transfer-help'" />
+          <p id="share-transfer-help" class="mt-2 text-xs text-text-muted">支持 115.com 与 115cdn.com 分享链接。链接已包含提取码时，下方可以留空。</p>
+        </div>
+        <div>
+          <label for="share-transfer-password" class="block mb-2 text-sm">提取码（可选）</label>
+          <input id="share-transfer-password" v-model="shareForm.password" :disabled="shareBusy" type="text" autocomplete="off" maxlength="128" class="w-full rounded-lg border border-border bg-bg px-3 text-sm font-mono" />
+        </div>
+        <p v-if="shareError" id="share-transfer-error" role="alert" class="text-sm text-danger break-words">转存失败：{{ shareError }}</p>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button type="button" :disabled="shareBusy" class="file-button" @click="showShareModal = false">取消</button>
+          <button type="submit" :disabled="shareBusy || !shareForm.url.trim()" class="file-button bg-accent text-accent-contrast"><Loader2 v-if="shareBusy" class="w-4 h-4 animate-spin" aria-hidden="true" />{{ shareBusy ? '正在转存…' : '转存到当前目录' }}</button>
+        </div>
+      </form>
+    </UiDialog>
 
     <UiDialog v-if="showNewFolderModal" title="新建文件夹" :busy="folderBusy" @close="showNewFolderModal = false">
       <form class="space-y-4" @submit.prevent="createFolder">
