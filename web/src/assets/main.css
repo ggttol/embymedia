@@ -220,17 +220,29 @@ summary:focus-visible {
   text-align: center;
 }
 
-.session-panel {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 20px;
+.rail-footer {
+  margin: 0 16px 16px;
+  padding-top: 12px;
   border-top: 1px solid var(--border);
-  background: var(--surface);
 }
 
-.session-panel > svg,
+.session-panel {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.session-panel > svg {
+  width: 32px;
+  height: 32px;
+  padding: 7px;
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .session-panel a svg {
   width: 16px;
   height: 16px;
@@ -245,25 +257,27 @@ summary:focus-visible {
 }
 
 .session-panel strong {
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .session-panel small {
   color: var(--text-faint);
-  font-size: 12px;
+  margin-top: 1px;
+  font-size: 10px;
 }
 
 .session-panel a {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   place-items: center;
-  border: 1px solid var(--border);
+  border-radius: 6px;
   color: var(--text-secondary);
 }
 
 .session-panel a:hover {
-  border-color: var(--annotation);
+  background: var(--accent-soft);
   color: var(--annotation);
 }
 
@@ -292,10 +306,13 @@ summary:focus-visible {
 
 .service-indicator {
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) 44px;
+  grid-template-columns: 6px minmax(0, 1fr) 36px;
   align-items: start;
-  gap: 10px;
-  padding: 16px 12px;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.session-panel + .service-indicator {
   border-top: 1px solid var(--border);
 }
 
@@ -305,14 +322,18 @@ summary:focus-visible {
 }
 
 .service-indicator strong {
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .service-indicator small {
   margin-top: 3px;
   color: var(--text-faint);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -329,6 +350,9 @@ summary:focus-visible {
 .status-refresh { display: grid; width: 44px; height: 44px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-secondary); background: var(--surface); }
 .status-refresh svg { width: 16px; height: 16px; }
 .status-refresh:disabled { opacity: .5; cursor: wait; }
+.rail-footer .status-dot { width: 6px; height: 6px; margin-top: 5px; }
+.rail-footer .status-refresh { width: 36px; height: 36px; border: 0; border-radius: 6px; background: transparent; }
+.rail-footer .status-refresh:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
 .more-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .more-nav a { display: flex; min-height: 56px; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 14px; }
 .more-nav a.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }

@@ -137,6 +137,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
         </RouterLink>
       </nav>
 
+      <div class="rail-footer">
 		<div v-if="currentUser" class="session-panel">
 			<UserRound aria-hidden="true" />
 			<span><strong>{{ currentUser.username }}</strong><small>{{ currentUser.role === 'admin' ? '管理员' : '操作员' }}</small></span>
@@ -150,6 +151,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
           <small v-if="checkedAt">检测于 {{ checkedAt }}</small>
         </span>
         <button type="button" class="status-refresh" aria-label="重新检测核心服务" :disabled="checkingCore" @click="probeCore"><RefreshCw aria-hidden="true" :class="{ 'animate-spin': checkingCore }" /></button>
+      </div>
       </div>
     </aside>
 
