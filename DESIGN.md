@@ -38,10 +38,12 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - Module rail: Dashboard, Resources, Favorites, Files, Tasks, Agent, and Settings.
 - Agent console: actual MCP `initialize`, `tools/list`, and safe read-tool calls; discovery-only, success, and failure are distinct states; Hermes setup requests `X-Agent-Token`.
 - Configuration matrix: endpoint, filesystem, webhook, destructive-action, and write-only credential settings.
+- Authentication entry: a Warm Paper access ledger with a single credential form, explicit private-system context, and no decorative dashboard metrics.
+- User administration: a restrained roster table with role, access state, password-reset, and removal actions; destructive changes use explicit confirmation.
 - Destructive controls require explicit confirmation, a server-side enable switch where applicable, and visible upstream errors.
 
 ## Composition
-Persistent module rail → signal spine/status header → module-specific continuous canvas → contextual action dock. Configuration uses a table/matrix rather than another card grid.
+Persistent module rail → signal spine/status header → module-specific continuous canvas → contextual action dock. Authentication uses a split access-ledger composition; configuration and user administration use continuous bordered rows rather than interchangeable card grids.
 
 ## Motion
 Status pulse and 180ms control transitions only. No scroll reveal. Reduced motion removes pulses/transitions while preserving state.

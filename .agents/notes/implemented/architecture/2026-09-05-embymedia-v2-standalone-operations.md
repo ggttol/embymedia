@@ -18,6 +18,8 @@ The persistent task queue accepts only its published task types: Emby refresh an
 
 REST and MCP share token authentication, read/write scopes, per-token rate buckets, last-use updates, and secret-redacted audit records. The file-delete route also requires the persisted destructive-action switch. OpenAPI lists every registered API operation with unique operation IDs and request schemas. CloudDrive webhook delivery uses its own secret and debounces file changes into one real Emby refresh task.
 
+The loopback login service owns browser users, password hashes, signed sessions, and the administrator-only user API. Administrators and operators share media-operation access; only administrators can create, disable, reset, or delete browser users. Password changes rotate the user's session version, and the service keeps at least one enabled administrator. Caddy exposes only the login API and forwards the authenticated username and role to the application.
+
 ## Alternatives considered
 
 **Keep DSH as the production dispatcher.** Rejected because the V2 deployment would retain Node, Cordis, a second tool vocabulary, and a failing service beside the standalone binary.

@@ -30,6 +30,7 @@ install -o root -g root -m 0644 "$repo"/deploy/systemd/*.service "$repo"/deploy/
 install -o embymedia -g embymedia -m 0750 -d \
   /srv/embymedia \
   /srv/embymedia/data \
+  /srv/embymedia/data/auth \
   /srv/embymedia/data/emby \
   /srv/embymedia/data/emby/config \
   /srv/embymedia/data/clouddrive \

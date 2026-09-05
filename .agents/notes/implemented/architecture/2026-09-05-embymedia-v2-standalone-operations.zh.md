@@ -18,6 +18,8 @@ Provider 工具执行真实 provider 操作。115 client 使用选定账号凭�
 
 REST 与 MCP 共享 token 身份验证、读写 scope、逐 token 限流桶、最近使用时间更新与 secret-redacted 审计记录。文件删除路由还要求持久化的破坏性操作开关。OpenAPI 通过唯一 operation ID 与请求 schema 列出每个已注册 API 操作。CloudDrive webhook 使用独立 secret 验证投递，并把文件变动防抖为一个真实 Emby 刷新任务。
 
+Loopback 登录服务负责浏览器用户、密码 hash、签名 session 与仅管理员可用的用户 API。管理员与操作员都能使用媒体运维功能；只有管理员能创建、停用、重置或删除浏览器用户。密码变更会轮换该用户的 session version，且服务始终保留至少一个启用的管理员。Caddy 只暴露登录 API，并把已验证的用户名与角色转发给应用。
+
 ## Alternatives considered
 
 **保留 DSH 作为生产 dispatcher。** 不采用，因为 V2 部署会保留 Node、Cordis、第二套工具词汇，以及独立二进制旁一个持续失败的服务。

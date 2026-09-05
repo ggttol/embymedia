@@ -56,11 +56,17 @@ chown root:embymedia "$secrets/authelia-users.yml"
 chmod 0640 "$secrets/authelia-users.yml"
 install -o root -g root -m 0640 "$secrets/authelia-users.yml" /etc/embymedia/authelia/users_database.yml
 
-if [ ! -s /etc/embymedia/http-login.json ]; then
-  python3 "$script_dir/init-http-login.py" --password-file "$secrets/admin-bootstrap-password"
+login_config=/srv/embymedia/data/auth/http-login.json
+install -o embymedia -g embymedia -m 0700 -d /srv/embymedia/data/auth
+if [ ! -s "$login_config" ]; then
+  if [ -s /etc/embymedia/http-login.json ]; then
+    install -o embymedia -g embymedia -m 0600 /etc/embymedia/http-login.json "$login_config"
+  else
+    python3 "$script_dir/init-http-login.py" --password-file "$secrets/admin-bootstrap-password" --output "$login_config"
+  fi
 fi
-chown root:embymedia /etc/embymedia/http-login.json
-chmod 0640 /etc/embymedia/http-login.json
+chown embymedia:embymedia "$login_config"
+chmod 0600 "$login_config"
 
 webhook_secret=$(cat "$secrets/clouddrive-webhook-secret")
 install -o 1026 -g 100 -m 0755 -d /srv/embymedia/data/clouddrive/config/webhooks

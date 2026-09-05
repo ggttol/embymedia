@@ -7,6 +7,7 @@ import FilesView from '../views/FilesView.vue'
 import TasksView from '../views/TasksView.vue'
 import AgentsView from '../views/AgentsView.vue'
 import SettingsView from '../views/SettingsView.vue'
+import UsersView from '../views/UsersView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -51,6 +52,11 @@ const router = createRouter({
       name: 'settings',
       component: SettingsView,
     },
+	{
+		path: '/users',
+		name: 'users',
+		component: UsersView,
+	},
     {
       path: '/:pathMatch(.*)*',
       redirect: '/',

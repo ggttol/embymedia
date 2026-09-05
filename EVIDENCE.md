@@ -17,5 +17,7 @@
 | Streamable HTTP, stdio, and legacy SSE transports answer their protocol entry paths | real local binary probes | verified | Legacy SSE remains loopback-only |
 | OpenAPI contains every registered API route with unique operation IDs | route-coverage test and Redocly validation | verified | State the observed path count only after final build |
 | Automatic TMDB candidate selection is safe | no deterministic disambiguation source | false | Require explicit TMDB ID; do not claim automatic matching |
+| Browser user administration preserves password secrecy and invalidates versioned sessions after password changes | Login state unit tests, HTTP lifecycle smoke, and deployed administrator API exercise | verified | “管理员可管理浏览器用户”；do not claim operators have restricted media operations |
+| Login, protected-route redirect, user roster, and logout work at desktop and mobile widths | Browser smoke through the local authentication proxy plus deployed login and protected-route checks | verified | “登录与退出流程可用” |
 
 No third-party logo, customer, price, performance guarantee, successful playback observation, or unsupported capability may be added.

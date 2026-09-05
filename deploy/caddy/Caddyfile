@@ -32,7 +32,7 @@ http://gaotao.cc {
 	}
 
 
-		@login path /login /logout
+		@login path /login /logout /auth/*
 		handle @login {
 			reverse_proxy 127.0.0.1:9092 {
 				header_up -X-Forwarded-For
@@ -43,7 +43,7 @@ http://gaotao.cc {
 		handle {
 			forward_auth 127.0.0.1:9092 {
 				uri /auth/check
-				copy_headers Remote-User
+				copy_headers Remote-User Remote-Role
 			}
 			header {
 				Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"

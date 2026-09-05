@@ -1,10 +1,10 @@
 # PRODUCT.md
 
 ## Product
-EmbyMedia is a self-hosted, single-administrator operations system for Emby, CloudDrive2, 115 resources, STRM generation, metadata, tasks, audit, REST, and MCP. The V2 application runs as one Go binary with an embedded Vue interface.
+EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 115 resources, STRM generation, metadata, tasks, audit, REST, and MCP. The V2 application runs as one Go binary with an embedded Vue interface and a separate loopback login service.
 
 ## Audience and primary task
-- Primary user: administrator `gaotao`.
+- Primary users: the system administrator and explicitly created media operators.
 - Primary task: understand media-system state, inspect libraries/resources/tasks, configure upstream services, and execute bounded provider operations with explicit errors and durable audit records.
 
 ## Allowed visible capabilities
@@ -16,12 +16,13 @@ EmbyMedia is a self-hosted, single-administrator operations system for Emby, Clo
 - Credential configured/writable status without revealing stored values.
 - Agent integration through authenticated Streamable HTTP MCP, loopback legacy SSE, stdio MCP, and OpenAPI 3.1.
 - Supported writes: bounded 115 and Emby operations, CloudDrive gRPC remount, settings, scheduled tasks, and Agent token management.
+- Session-backed user administration: create users, enable or disable access, reset passwords, assign administrator or operator status, and terminate the current browser session.
 
 ## Constraints and non-goals
 - The public Web endpoint uses a login proxy; public Agent calls use `X-Agent-Token`, while same-host Hermes also uses a token on the loopback MCP address.
-- Never display stored secret values; Agent token plaintext appears only in the creation response.
+- Never display stored password material or secret values; Agent token plaintext appears only in the creation response.
+- Administrators and operators can use media operations; only administrators can manage browser users.
 - Tool discovery is not execution evidence; the UI distinguishes discovery from successful or failed read calls.
-- No multi-user RBAC claim.
 - Provider operations fail with their actual configuration, authorization, transport, or response error; no synthetic success or empty fallback.
 
 ## Missing facts

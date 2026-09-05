@@ -217,6 +217,76 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.session-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.session-panel > svg,
+.session-panel a svg {
+  width: 16px;
+  height: 16px;
+}
+
+.session-panel strong,
+.session-panel small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-panel strong {
+  font-size: 12px;
+}
+
+.session-panel small {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.session-panel a {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.session-panel a:hover {
+  border-color: var(--annotation);
+  color: var(--annotation);
+}
+
+.mobile-session {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.mobile-session a {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.mobile-session a svg {
+  width: 16px;
+  height: 16px;
+}
+
 .service-indicator {
   display: flex;
   align-items: flex-start;

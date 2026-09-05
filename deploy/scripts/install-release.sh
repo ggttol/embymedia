@@ -29,6 +29,16 @@ systemctl stop embymedia-v2.service 2>/dev/null || true
 systemctl disable --now embymedia-dsh.service embymedia-control-helper.service 2>/dev/null || true
 "$release/bin/embymedia" -check-db -db "$database"
 "$release/bin/embymedia" -bootstrap-webhook-secret-file /etc/embymedia/secrets/clouddrive-webhook-secret -db "$database"
+login_config=/srv/embymedia/data/auth/http-login.json
+install -o embymedia -g embymedia -m 0700 -d /srv/embymedia/data/auth
+if [ ! -s "$login_config" ]; then
+  if [ -s /etc/embymedia/http-login.json ]; then
+    install -o embymedia -g embymedia -m 0600 /etc/embymedia/http-login.json "$login_config"
+  else
+    /usr/bin/python3 "$release/deploy/scripts/init-http-login.py" --password-file /etc/embymedia/secrets/admin-bootstrap-password --output "$login_config"
+    chown embymedia:embymedia "$login_config"
+  fi
+fi
 previous=$(readlink -f /opt/embymedia-v2/current 2>/dev/null || true)
 ln -sfn "$release" /opt/embymedia-v2/current.next
 mv -Tf /opt/embymedia-v2/current.next /opt/embymedia-v2/current
@@ -40,15 +50,17 @@ install -o gaotao -g gaotao -m 0755 -d /home/gaotao/.hermes/skills/embymedia-v2-
 install -o gaotao -g gaotao -m 0644 "$skill_source" /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md
 
 systemctl daemon-reload
-systemctl enable --now embymedia-stack.service embymedia-http-login.service embymedia-backup.timer
-systemctl restart embymedia-http-login.service
-if ! systemctl enable --now embymedia-v2.service || ! systemctl restart embymedia-v2.service; then
+systemctl enable --now embymedia-stack.service embymedia-backup.timer
+if ! systemctl enable --now embymedia-http-login.service embymedia-v2.service \
+  || ! systemctl restart embymedia-http-login.service \
+  || ! systemctl restart embymedia-v2.service; then
   ready=false
 else
   ready=false
   attempts=0
   while [ "$attempts" -lt 30 ]; do
-    if curl -fsS --max-time 2 -H 'Remote-User: release-probe' http://127.0.0.1:3080/api/v1/openapi.json >/dev/null; then
+    if curl -fsS --max-time 2 http://127.0.0.1:9092/health >/dev/null \
+      && curl -fsS --max-time 2 -H 'Remote-User: release-probe' http://127.0.0.1:3080/api/v1/openapi.json >/dev/null; then
       ready=true
       break
     fi
@@ -59,10 +71,11 @@ fi
 if [ "$ready" != true ]; then
   if [ -n "$previous" ] && [ -x "$previous/bin/embymedia" ]; then
     ln -sfn "$previous" /opt/embymedia-v2/current
+    systemctl restart embymedia-http-login.service || true
     systemctl restart embymedia-v2.service || true
   else
     rm -f /opt/embymedia-v2/current
-    systemctl stop embymedia-v2.service || true
+    systemctl stop embymedia-http-login.service embymedia-v2.service || true
   fi
   exit 1
 fi
