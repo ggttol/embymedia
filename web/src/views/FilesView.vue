@@ -130,8 +130,9 @@ async function fetchFiles() {
 }
 
 function enterFolder(file: any) {
-  currentCid.value = file.cid
-  breadcrumbs.value.push({ cid: file.cid, name: file.name })
+  const fileId = file.file_id || file.cid
+  currentCid.value = fileId
+  breadcrumbs.value.push({ cid: fileId, name: file.name })
   fetchFiles()
 }
 
