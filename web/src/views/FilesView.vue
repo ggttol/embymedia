@@ -15,6 +15,7 @@ import {
 const currentCid = ref('0')
 const cidMap = ref<Record<string, string>>({})
 const actionError = ref('')
+const selectedFiles = ref<Set<string>>(new Set())
 
 async function fetchCidMap() {
   try {
@@ -35,6 +36,58 @@ function jumpToCid(name: string, cid: string) {
     { cid, name }
   ]
   fetchFiles()
+}
+
+
+function toggleSelection(fileId: string) {
+  if (selectedFiles.value.has(fileId)) {
+    selectedFiles.value.delete(fileId)
+  } else {
+    selectedFiles.value.add(fileId)
+  }
+}
+
+function toggleAll(e: Event) {
+  const checked = (e.target as HTMLInputElement).checked
+  if (checked) {
+    files.value.forEach((f: any) => selectedFiles.value.add(f.file_id || f.cid))
+  } else {
+    selectedFiles.value.clear()
+  }
+}
+
+function isSelected(fileId: string) {
+  return selectedFiles.value.has(fileId)
+}
+
+async function batchDelete() {
+  if (selectedFiles.value.size === 0) return
+  if (!confirm(`确认批量删除选中的 ${selectedFiles.value.size} 个项目？此操作会移入回收站。`)) return
+
+  loading.value = true
+  actionError.value = ''
+  try {
+    const fileIds = Array.from(selectedFiles.value)
+    const res = await fetch(`/api/v1/files/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: currentAccountId.value,
+        file_ids: fileIds
+      })
+    })
+    if (res.ok) {
+      selectedFiles.value.clear()
+      fetchFiles()
+    } else {
+      const data = await res.json()
+      actionError.value = data.error || '批量删除失败'
+    }
+  } catch (error: any) {
+    actionError.value = error.message
+  } finally {
+    loading.value = false
+  }
 }
 
 async function deleteFile(file: any) {
@@ -207,6 +260,17 @@ onMounted(async () => {
           <span>新建文件夹</span>
         </button>
 
+        <!-- Batch Action: only show if files selected -->
+        <button
+          v-if="selectedFiles.size > 0"
+          @click="batchDelete"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-danger/30 hover:border-danger text-danger bg-danger/5 transition-colors text-xs font-mono"
+        >
+          <Trash2 class="w-3.5 h-3.5" />
+          <span>批量删除 ({{ selectedFiles.size }})</span>
+        </button>
+
+
         <button
           @click="fetchFiles"
           :disabled="loading"
@@ -267,6 +331,14 @@ onMounted(async () => {
       <table v-else class="w-full text-left text-xs font-mono">
         <thead class="border-b border-border bg-bg-muted/50 text-text-muted uppercase tracking-wider">
           <tr>
+            <th class="py-3 px-5 w-12">
+              <input
+                type="checkbox"
+                :checked="files.length > 0 && selectedFiles.size === files.length"
+                @change="toggleAll"
+                class="rounded border-border text-accent focus:ring-accent accent-accent bg-bg"
+              />
+            </th>
             <th class="py-3 px-5">名称</th>
             <th class="py-3 px-4 w-32">大小</th>
             <th class="py-3 px-4 w-44">修改日期</th>
@@ -277,8 +349,17 @@ onMounted(async () => {
           <tr
             v-for="file in files"
             :key="file.file_id || file.cid"
-            class="hover:bg-bg-muted/30 transition-colors group"
+            class="transition-colors group"
+            :class="isSelected(file.file_id || file.cid) ? 'bg-accent-soft/30' : 'hover:bg-bg-muted/30'"
           >
+            <td class="py-3 px-5 w-12" @click.stop>
+              <input
+                type="checkbox"
+                :checked="isSelected(file.file_id || file.cid)"
+                @change="toggleSelection(file.file_id || file.cid)"
+                class="rounded border-border text-accent focus:ring-accent accent-accent bg-bg"
+              />
+            </td>
             <td class="py-3 px-5 flex items-center gap-3">
               <Folder v-if="file.is_folder" class="w-4 h-4 text-accent shrink-0" />
               <File v-else class="w-4 h-4 text-text-faint shrink-0" />
