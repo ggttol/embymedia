@@ -67,7 +67,7 @@ func TestStreamableMCPEnforcesSharedAgentPolicyAndAudits(t *testing.T) {
 	emby := service.NewEmbyService(db)
 	queue := service.NewTaskQueueService(db, drive, emby)
 	authorizer := security.NewAgentAuthorizer(db)
-	mcpServer := NewMCPServer(db, drive, emby, service.NewCloudDriveService(db), queue, authorizer, false)
+	mcpServer := NewMCPServer(db, drive, emby, service.NewCloudDriveService(db), queue, service.NewCronManager(db, queue), authorizer, false)
 	httpServer := httptest.NewServer(mcpserver.NewStreamableHTTPServer(mcpServer.Server()))
 	defer httpServer.Close()
 

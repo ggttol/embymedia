@@ -33,6 +33,31 @@ type DriveFile struct {
 	UpdatedTime time.Time `json:"updated_time"`
 }
 
+// DestructiveTarget identifies one user-reviewed remote object.
+type DestructiveTarget struct {
+	FileID   string `json:"file_id"`
+	Name     string `json:"name"`
+	IsFolder bool   `json:"is_folder"`
+	Size     int64  `json:"size"`
+}
+
+// DestructiveApproval binds one user decision to exact remote objects and a short lifetime.
+type DestructiveApproval struct {
+	ID          string              `json:"id"`
+	Action      string              `json:"action"`
+	AccountID   string              `json:"account_id"`
+	ParentCID   string              `json:"parent_cid"`
+	Targets     []DestructiveTarget `json:"targets"`
+	Status      string              `json:"status"`
+	RequestedBy string              `json:"requested_by"`
+	ApprovedBy  string              `json:"approved_by,omitempty"`
+	Error       string              `json:"error,omitempty"`
+	ExpiresAt   time.Time           `json:"expires_at"`
+	CreatedAt   time.Time           `json:"created_at"`
+	DecidedAt   *time.Time          `json:"decided_at,omitempty"`
+	ExecutedAt  *time.Time          `json:"executed_at,omitempty"`
+}
+
 // OfflineTask represents an offline download task (magnet, ed2k, http)
 type OfflineTask struct {
 	InfoHash  string    `json:"info_hash"`

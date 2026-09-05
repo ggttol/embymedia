@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
 import base64
 import hashlib
@@ -24,6 +26,30 @@ MAX_FAILURES = 5
 PASSWORD_ITERATIONS = 600_000
 USERNAME_PATTERN = re.compile(r'[A-Za-z0-9._-]{3,64}')
 ROLES = {'admin', 'operator'}
+
+LOGIN_SCRIPT = '''(() => {
+  const password = document.getElementById('password');
+  const toggle = document.getElementById('password-toggle');
+  const capsLock = document.getElementById('caps-lock');
+  toggle.addEventListener('click', () => {
+    const visible = password.type === 'password';
+    password.type = visible ? 'text' : 'password';
+    toggle.setAttribute('aria-pressed', String(visible));
+    toggle.textContent = visible ? '隐藏密码' : '显示密码';
+  });
+  toggle.hidden = false;
+  const updateCapsLock = (event) => {
+    if (typeof event.getModifierState === 'function') {
+      capsLock.textContent = event.getModifierState('CapsLock') ? '大写锁定已开启' : '';
+    }
+  };
+  password.addEventListener('keydown', updateCapsLock);
+  password.addEventListener('keyup', updateCapsLock);
+  password.addEventListener('blur', () => { capsLock.textContent = ''; });
+  const error = document.getElementById('login-error');
+  if (error) error.focus();
+})();'''
+LOGIN_SCRIPT_HASH = base64.b64encode(hashlib.sha256(LOGIN_SCRIPT.encode()).digest()).decode()
 
 
 def b64encode(value: bytes) -> str:
@@ -102,7 +128,7 @@ class LoginState:
                 'createdAt': timestamp,
                 'updatedAt': timestamp,
             })
-            self._persist_locked()
+            self._persist_locked(self.users)
         if not any(bool(user['enabled']) and user['role'] == 'admin' for user in self.users.values()):
             raise ValueError('at least one enabled administrator is required')
 
@@ -126,16 +152,16 @@ class LoginState:
             'updatedAt': str(raw_user.get('updatedAt') or timestamp),
         }
 
-    def _persist_locked(self) -> None:
+    def _persist_locked(self, users: dict[str, dict[str, object]]) -> None:
         config = {
             'version': 2,
             'sessionSecret': b64encode(self.session_secret),
             'sessionDays': self.session_days,
             'authority': self.authority,
             'legacySessionExpiresAt': self.legacy_session_expires_at,
-            'users': [self.users[name] for name in sorted(self.users)],
+            'users': [users[name] for name in sorted(users)],
         }
-        compatibility_admin = next(user for user in self.users.values() if bool(user['enabled']) and user['role'] == 'admin')
+        compatibility_admin = next(user for user in users.values() if bool(user['enabled']) and user['role'] == 'admin')
         config.update({
             'username': compatibility_admin['username'],
             'passwordSalt': compatibility_admin['passwordSalt'],
@@ -147,28 +173,32 @@ class LoginState:
         os.chmod(temporary, 0o600)
         os.replace(temporary, self.path)
 
-    def verify_password(self, username: str, password: str) -> bool:
+    def authenticate(self, username: str, password: str) -> tuple[str, int] | None:
+        """Issue a session only while the verified credentials remain enabled and current."""
         with self.lock:
             user = self.users.get(username)
             if user is None or not bool(user['enabled']):
-                return False
+                return None
             salt = b64decode(str(user['passwordSalt']))
-            expected = b64decode(str(user['passwordHash']))
+            password_hash = str(user['passwordHash'])
+            expected = b64decode(password_hash)
             iterations = int(user['iterations'])
-        actual = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations)
-        return hmac.compare_digest(actual, expected)
-
-    def session_value(self, username: str) -> tuple[str, int]:
-        with self.lock:
-            user = self.users[username]
             session_version = str(user['sessionVersion'])
-            role = str(user['role'])
-        now = int(time.time())
-        expires = now + self.session_days * 86400
-        payload = {'v': 2, 'u': username, 'r': role, 'sv': session_version, 'iat': now, 'exp': expires}
-        body = b64encode(json.dumps(payload, separators=(',', ':')).encode())
-        signature = b64encode(hmac.new(self.session_secret, body.encode(), hashlib.sha256).digest())
-        return f'{body}.{signature}', expires
+        actual = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations)
+        if not hmac.compare_digest(actual, expected):
+            return None
+        with self.lock:
+            user = self.users.get(username)
+            if (user is None or not bool(user['enabled'])
+                    or user['sessionVersion'] != session_version
+                    or user['passwordHash'] != password_hash):
+                return None
+            now = int(time.time())
+            expires = now + self.session_days * 86400
+            payload = {'v': 2, 'u': username, 'r': str(user['role']), 'sv': session_version, 'iat': now, 'exp': expires}
+            body = b64encode(json.dumps(payload, separators=(',', ':')).encode())
+            signature = b64encode(hmac.new(self.session_secret, body.encode(), hashlib.sha256).digest())
+            return f'{body}.{signature}', expires
 
     def session_user(self, value: str | None) -> dict[str, object] | None:
         if value is None:
@@ -223,7 +253,7 @@ class LoginState:
                 **password_fields(password),
             }
             self.users[username] = user
-            self._persist_locked()
+            self._persist_locked(self.users)
             return public_user(user)
 
     def update_user(self, actor: str, username: str, updates: dict[str, object]) -> dict[str, object]:
@@ -248,16 +278,17 @@ class LoginState:
                 raise ValueError('系统必须保留至少一个启用的管理员。')
             password = updates.get('password')
             changed = role != user['role'] or enabled != user['enabled']
-            user['role'] = role
-            user['enabled'] = enabled
+            candidate = {**user, 'role': role, 'enabled': enabled}
             if password is not None and str(password):
-                user.update(password_fields(str(password)))
+                candidate.update(password_fields(str(password)))
                 changed = True
             if changed:
-                user['sessionVersion'] = b64encode(secrets.token_bytes(18))
-                user['updatedAt'] = now_text()
-                self._persist_locked()
-            return public_user(user)
+                candidate['sessionVersion'] = b64encode(secrets.token_bytes(18))
+                candidate['updatedAt'] = now_text()
+                users = {**self.users, username: candidate}
+                self._persist_locked(users)
+                self.users = users
+            return public_user(candidate)
 
     def delete_user(self, actor: str, username: str) -> None:
         with self.lock:
@@ -271,7 +302,7 @@ class LoginState:
                 if enabled_admins <= 1:
                     raise ValueError('系统必须保留至少一个启用的管理员。')
             del self.users[username]
-            self._persist_locked()
+            self._persist_locked(self.users)
 
     def client_key(self, handler: BaseHTTPRequestHandler) -> str:
         real_ip = handler.headers.get('X-Real-IP', '').strip()
@@ -316,14 +347,17 @@ class LoginHandler(BaseHTTPRequestHandler):
             return value
         return '/'
 
-    def send_headers(self, status: int, content_type: str = 'text/html; charset=utf-8') -> None:
+    def send_headers(self, status: int, content_type: str = 'text/html; charset=utf-8', *, login_page: bool = False) -> None:
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Cache-Control', 'no-store')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
-        self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+        policy = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        if login_page:
+            policy += f"; script-src 'sha256-{LOGIN_SCRIPT_HASH}'"
+        self.send_header('Content-Security-Policy', policy)
 
     def send_json(self, status: int, value: object) -> None:
         body = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()
@@ -334,7 +368,7 @@ class LoginHandler(BaseHTTPRequestHandler):
 
     def render_login(self, rd: str, message: str = '', status: int = HTTPStatus.OK) -> None:
         csrf = secrets.token_urlsafe(24)
-        message_markup = f'<p class="error" role="alert">{html.escape(message)}</p>' if message else ''
+        message_markup = f'<p id="login-error" class="error" role="alert" tabindex="-1" autofocus>{html.escape(message)}</p>' if message else ''
         page = '''<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -343,9 +377,59 @@ class LoginHandler(BaseHTTPRequestHandler):
 <meta name="theme-color" content="#ebe5d6">
 <title>登录 · EmbyMedia</title>
 <style>
-:root{--paper:#ebe5d6;--surface:#f8f5eb;--ink:#1d241f;--muted:#596158;--line:#c9c0ac;--forest:#164b38;--red:#a6432f;--soft:#e2ddcf}*{box-sizing:border-box}html{min-width:320px;background:var(--paper)}body{margin:0;min-height:100vh;color:var(--ink);font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:linear-gradient(rgba(29,36,31,.025) 1px,transparent 1px),var(--paper);background-size:100% 32px}.shell{width:min(1120px,calc(100% - 32px));min-height:100vh;margin:auto;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(360px,.85fr);align-items:stretch}.context{padding:clamp(44px,8vw,108px) clamp(28px,7vw,88px) 56px 0;display:flex;flex-direction:column;justify-content:space-between}.brand{display:flex;align-items:center;gap:14px}.mark{display:grid;width:48px;height:58px;place-items:center;background:var(--forest);color:#fff;font:700 15px Georgia,serif;box-shadow:6px 6px 0 rgba(22,75,56,.13)}.brand strong{display:block;font:700 22px Georgia,"Songti SC",serif}.brand small,.eyebrow{font:700 10px "SFMono-Regular",Consolas,monospace;letter-spacing:.17em;color:var(--red)}.statement{max-width:630px;margin:64px 0}.statement h1{margin:0;font:700 clamp(46px,7vw,86px)/.98 Georgia,"Songti SC",serif;letter-spacing:-.055em}.statement h1 span{color:var(--red)}.statement p{max-width:560px;margin:24px 0 0;font-size:16px;line-height:1.9;color:var(--muted)}.ledger{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--ink);border-bottom:1px solid var(--line)}.ledger div{min-height:96px;padding:18px 16px;border-right:1px solid var(--line)}.ledger div:last-child{border:0}.ledger strong{display:block;font:700 13px Georgia,"Songti SC",serif}.ledger span{display:block;margin-top:9px;font-size:12px;line-height:1.6;color:var(--muted)}.panel{min-height:100vh;padding:clamp(32px,7vw,88px) clamp(24px,5vw,60px);display:flex;align-items:center;border-left:1px solid var(--line);background:rgba(248,245,235,.78)}.card{width:100%;padding:clamp(26px,4vw,42px);border:1px solid var(--line);background:var(--surface);box-shadow:0 20px 60px rgba(67,56,36,.08)}.card .step{font:700 10px "SFMono-Regular",Consolas,monospace;letter-spacing:.16em;color:var(--red)}h2{margin:12px 0 8px;font:700 31px Georgia,"Songti SC",serif}.intro{margin:0 0 28px;color:var(--muted);font-size:14px;line-height:1.7}.error{margin:0 0 20px;padding:12px 14px;border-left:3px solid var(--red);background:#f2e2dc;color:#7d2f22;font-size:13px}label{display:block;margin:16px 0 8px;font-size:13px;font-weight:600}input{width:100%;min-height:48px;padding:0 14px;border:1px solid var(--line);border-radius:0;background:#fffdf6;color:var(--ink);font:inherit}input:focus{outline:2px solid var(--red);outline-offset:2px;border-color:var(--forest)}button{width:100%;min-height:50px;margin-top:24px;border:1px solid var(--forest);border-radius:0;background:var(--forest);color:#fff;font:700 14px inherit;cursor:pointer;box-shadow:5px 5px 0 rgba(22,75,56,.14)}button:hover{background:#0f382a}.privacy{margin:20px 0 0;padding-top:18px;border-top:1px solid var(--line);font-size:12px;line-height:1.7;color:var(--muted)}@media(max-width:800px){.shell{width:100%;display:block}.context{min-height:auto;padding:28px 20px 24px}.statement{margin:46px 0 34px}.statement h1{font-size:48px}.ledger{grid-template-columns:1fr}.ledger div{min-height:auto;border-right:0;border-bottom:1px solid var(--line)}.panel{min-height:auto;padding:24px 16px 40px;border-left:0;border-top:1px solid var(--line)}.card{padding:26px 22px}}@media(prefers-reduced-motion:no-preference){button{transition:background .18s ease,transform .18s ease}button:active{transform:translate(2px,2px)}}
+:root{--paper:#ebe5d6;--surface:#f8f5eb;--ink:#1d241f;--muted:#596158;--line:#c9c0ac;--forest:#164b38;--red:#a6432f;--soft:#e2ddcf}
+*{box-sizing:border-box}
+html{min-width:320px;background:var(--paper)}
+body{margin:0;min-height:100vh;color:var(--ink);font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:linear-gradient(rgba(29,36,31,.025) 1px,transparent 1px),var(--paper);background-size:100% 32px}
+.shell{width:min(1120px,calc(100% - 32px));min-height:100vh;margin:auto;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(360px,.85fr);align-items:stretch}
+.context{padding:clamp(44px,8vw,108px) clamp(28px,7vw,88px) 56px 0;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;align-items:center;gap:14px}
+.mark{display:grid;width:48px;height:58px;place-items:center;background:var(--forest);color:#fff;font:700 15px Georgia,serif;box-shadow:6px 6px 0 rgba(22,75,56,.13)}
+.brand strong{display:block;font:700 22px Georgia,"Songti SC",serif}
+.brand small,.eyebrow{font:700 10px "SFMono-Regular",Consolas,monospace;letter-spacing:.17em;color:var(--red)}
+.statement{max-width:630px;margin:64px 0}
+.statement h1{margin:0;font:700 clamp(46px,7vw,86px)/.98 Georgia,"Songti SC",serif;letter-spacing:-.055em}
+.statement h1 span{color:var(--red)}
+.statement p{max-width:560px;margin:24px 0 0;font-size:16px;line-height:1.9;color:var(--muted)}
+.ledger{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--ink);border-bottom:1px solid var(--line)}
+.ledger div{min-height:96px;padding:18px 16px;border-right:1px solid var(--line)}
+.ledger div:last-child{border:0}
+.ledger strong{display:block;font:700 13px Georgia,"Songti SC",serif}
+.ledger span{display:block;margin-top:9px;font-size:12px;line-height:1.6;color:var(--muted)}
+.panel{min-height:100vh;padding:clamp(32px,7vw,88px) clamp(24px,5vw,60px);display:flex;align-items:center;border-left:1px solid var(--line);background:rgba(248,245,235,.78)}
+.card{width:100%;min-width:0;padding:clamp(26px,4vw,42px);border:1px solid var(--line);background:var(--surface);box-shadow:0 20px 60px rgba(67,56,36,.08)}
+.card .step{font:700 10px "SFMono-Regular",Consolas,monospace;letter-spacing:.16em;color:var(--red)}
+h2{margin:12px 0 8px;font:700 31px Georgia,"Songti SC",serif}
+.intro{margin:0 0 28px;color:var(--muted);font-size:14px;line-height:1.7}
+.error{margin:0 0 20px;padding:12px 14px;border-left:3px solid var(--red);background:#f2e2dc;color:#7d2f22;font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+label{display:block;margin:16px 0 8px;font-size:13px;font-weight:600}
+input{width:100%;min-width:0;min-height:48px;padding:0 14px;border:1px solid var(--line);border-radius:0;background:#fffdf6;color:var(--ink);font:inherit}
+input:focus{outline:2px solid var(--red);outline-offset:2px;border-color:var(--forest)}
+button{width:100%;min-height:50px;margin-top:24px;border:1px solid var(--forest);border-radius:0;background:var(--forest);color:#fff;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;box-shadow:5px 5px 0 rgba(22,75,56,.14)}
+button:hover{background:#0f382a}
+button:focus-visible,.error:focus{outline:2px solid var(--red);outline-offset:4px}
+.password-control{display:flex;gap:8px;align-items:stretch}
+.password-toggle{flex-shrink:0;width:auto;min-height:48px;margin:0;padding:0 12px;background:var(--surface);color:var(--forest);box-shadow:none}
+.password-toggle:hover,.password-toggle[aria-pressed="true"]{background:var(--soft)}
+.caps-lock{min-height:20px;margin:8px 0 0;color:var(--red);font-size:13px;line-height:1.5}
+.privacy{margin:20px 0 0;padding-top:18px;border-top:1px solid var(--line);font-size:12px;line-height:1.7;color:var(--muted)}
+@media(max-width:800px){
+  .shell{width:100%;display:block}
+  .context{padding:18px 20px 12px}
+  .brand{gap:12px}
+  .mark{width:40px;height:44px}
+  .brand strong{font-size:20px}
+  .statement{margin:18px 0 0}
+  .statement h1{font-size:clamp(26px,5vw,36px);line-height:1.15}
+  .statement h1 br{display:none}
+  .statement p{margin-top:10px;font-size:13px;line-height:1.6}
+  .statement .eyebrow,.ledger{display:none}
+  .panel{min-height:auto;padding:16px 16px max(28px,env(safe-area-inset-bottom));border-left:0;border-top:1px solid var(--line)}
+  .card{padding:22px 20px}
+  .intro{margin-bottom:20px}
+}
+@media(prefers-reduced-motion:no-preference){button{transition:background .18s ease,transform .18s ease}button:active{transform:translate(2px,2px)}}
 </style>
-<style>@media(max-width:800px){.context{padding:22px 20px 14px}.statement{margin:30px 0 18px}.statement h1{font-size:42px}.statement p{margin-top:14px;font-size:14px;line-height:1.7}.ledger{display:none}.panel{padding-top:20px}}</style>
 </head>
 <body>
 <main class="shell">
@@ -354,13 +438,32 @@ class LoginHandler(BaseHTTPRequestHandler):
 <div class="statement"><p class="eyebrow">PRIVATE OPERATIONS ACCESS</p><h1 id="access-title">进入你的<br><span>媒体控制台。</span></h1><p>集中管理 115、CloudDrive2、Emby、STRM 自动任务与 Agent 接入。仅向明确授权的用户开放。</p></div>
 <div class="ledger" aria-label="访问说明"><div><strong>独立运行</strong><span>Go 服务与本地登录代理</span></div><div><strong>凭据隔离</strong><span>密码不会进入业务 API</span></div><div><strong>会话保护</strong><span>最长 30 天并可失效</span></div></div>
 </section>
-<aside class="panel"><form class="card" method="post" action="/login"><span class="step">ACCESS / 01</span><h2>身份验证</h2><p class="intro">使用管理员为你创建的账户继续。</p>__MESSAGE__<input type="hidden" name="csrf" value="__CSRF__"><input type="hidden" name="rd" value="__RD__"><label for="username">用户名</label><input id="username" name="username" autocomplete="username" required autofocus><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required><button type="submit">进入控制台</button><p class="privacy">这是私有运维系统。登录失败会按来源地址限速；请勿在共享设备上保存密码。</p></form></aside>
+<aside class="panel">
+<form class="card" method="post" action="/login" aria-labelledby="login-title" aria-describedby="login-intro__ERROR_DESCRIPTION__">
+<span class="step">ACCESS / 01</span><h2 id="login-title">身份验证</h2>
+<p id="login-intro" class="intro">使用管理员为你创建的账户继续。</p>
+__MESSAGE__
+<input type="hidden" name="csrf" value="__CSRF__"><input type="hidden" name="rd" value="__RD__">
+<label for="username">用户名</label>
+<input id="username" name="username" autocomplete="username" required__USERNAME_AUTOFOCUS__>
+<label for="password">密码</label>
+<div class="password-control">
+<input id="password" name="password" type="password" autocomplete="current-password" aria-describedby="caps-lock" required>
+<button id="password-toggle" class="password-toggle" type="button" aria-controls="password" aria-pressed="false" hidden>显示密码</button>
+</div>
+<p id="caps-lock" class="caps-lock" role="status" aria-live="polite"></p>
+<button type="submit">进入控制台</button>
+<p class="privacy">这是私有运维系统。登录失败会按来源地址限速；请勿在共享设备上保存密码。</p>
+</form>
+</aside>
 </main>
+<script>__LOGIN_SCRIPT__</script>
 </body>
 </html>'''
+        page = page.replace('__LOGIN_SCRIPT__', LOGIN_SCRIPT).replace('__ERROR_DESCRIPTION__', ' login-error' if message else '').replace('__USERNAME_AUTOFOCUS__', '' if message else ' autofocus')
         page = page.replace('__MESSAGE__', message_markup).replace('__CSRF__', html.escape(csrf, quote=True)).replace('__RD__', html.escape(rd, quote=True))
         body = page.encode()
-        self.send_headers(status)
+        self.send_headers(status, login_page=True)
         self.send_header('Set-Cookie', f'{CSRF_COOKIE}={csrf}; Max-Age=600; Path=/; SameSite=Strict')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
@@ -501,11 +604,12 @@ class LoginHandler(BaseHTTPRequestHandler):
             return
         username = form.get('username', [''])[0].strip()
         password = form.get('password', [''])[0]
-        if not self.state.verify_password(username, password):
+        session = self.state.authenticate(username, password)
+        if session is None:
             self.render_login(rd, '用户名或密码错误。', HTTPStatus.UNAUTHORIZED)
             return
         self.state.clear(key)
-        value, expires = self.state.session_value(username)
+        value, expires = session
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header('Set-Cookie', f'{SESSION_COOKIE}={value}; Max-Age={expires-int(time.time())}; Path=/; HttpOnly; SameSite=Strict')
         self.send_header('Location', rd)

@@ -19,7 +19,7 @@ http://gaotao.cc {
 		respond @internal 404
 	@agent {
 		path /mcp /api/v1/*
-		header X-Agent-Token *
+		expression `{http.request.header.X-Agent-Token} != "" || {http.request.header.Authorization} != ""`
 	}
 	handle @agent {
 		header {
@@ -28,7 +28,11 @@ http://gaotao.cc {
 			X-Content-Type-Options nosniff
 			X-Frame-Options DENY
 		}
-		reverse_proxy 127.0.0.1:3080
+		reverse_proxy 127.0.0.1:3080 {
+			header_up -Remote-User
+			header_up -Remote-Role
+			header_up -Sec-Fetch-Site
+		}
 	}
 
 

@@ -62,6 +62,13 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	owner, err := lockDatabase(*dbPath)
+	if err != nil {
+		log.Fatalf("claim database: %v", err)
+	}
+	if owner != nil {
+		defer owner.Close()
+	}
 	db, err := storage.Open(*dbPath)
 	if err != nil {
 		log.Fatalf("initialize database: %v", err)
@@ -105,7 +112,7 @@ func main() {
 	e.HideBanner = true
 	apiServer := api.NewServer(e, db, driveService, embyService, cloudDriveService, taskQueue, cronManager, settingsService, authorizer)
 	defer apiServer.Close()
-	mcpServer := mcp.NewMCPServer(db, driveService, embyService, cloudDriveService, taskQueue, authorizer, *mcpMode)
+	mcpServer := mcp.NewMCPServer(db, driveService, embyService, cloudDriveService, taskQueue, cronManager, authorizer, *mcpMode)
 	if *mcpMode {
 		if err := mcpserver.ServeStdio(mcpServer.Server()); err != nil && ctx.Err() == nil {
 			log.Fatalf("MCP stdio server: %v", err)

@@ -128,6 +128,9 @@ func (s *Server) registerRoutes() {
 	v1.POST("/tokens", s.handleCreateToken)
 	v1.DELETE("/tokens/:id", s.handleDeleteToken)
 	v1.GET("/audit-logs", s.handleListAuditLogs)
+	v1.GET("/destructive-approvals", s.handleListDestructiveApprovals)
+	v1.POST("/destructive-approvals/:id/approve", s.handleApproveDestructiveApproval)
+	v1.POST("/destructive-approvals/:id/reject", s.handleRejectDestructiveApproval)
 }
 
 func (s *Server) handleCloudDriveWebhook(c echo.Context) error {
@@ -315,10 +318,15 @@ func (s *Server) handleListAccounts(c echo.Context) error {
 }
 
 func (s *Server) handleAddAccount(c echo.Context) error {
-	var account domain.DriveAccount
-	if err := c.Bind(&account); err != nil {
+	var request struct {
+		domain.DriveAccount
+		Cookie string `json:"cookie"`
+	}
+	if err := c.Bind(&request); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
+	account := request.DriveAccount
+	account.Cookie = request.Cookie
 	account.Name = strings.TrimSpace(account.Name)
 	account.Cookie = strings.TrimSpace(account.Cookie)
 	if account.Name == "" || account.Cookie == "" {
@@ -405,7 +413,14 @@ func (s *Server) handleMove(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
 }
 
+func agentAuthenticated(c echo.Context) bool {
+	authenticated, _ := c.Get("agent-authenticated").(bool)
+	return authenticated
+}
 func (s *Server) handleDelete(c echo.Context) error {
+	if agentAuthenticated(c) {
+		return c.JSON(http.StatusForbidden, map[string]any{"error": "Agent deletion requires a target-bound browser approval"})
+	}
 	enabled, err := s.settings.Get("dangerous_actions_enabled")
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -503,14 +518,8 @@ func (s *Server) handleListMounts(c echo.Context) error {
 }
 
 func (s *Server) handleRemount(c echo.Context) error {
-	var request struct {
-		ConfirmPlaybackStopped bool `json:"confirm_playback_stopped"`
-	}
-	if err := c.Bind(&request); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
-	}
-	if !request.ConfirmPlaybackStopped {
-		return c.JSON(http.StatusConflict, map[string]any{"error": "confirm_playback_stopped must be true"})
+	if err := s.emby.EnsureNoActivePlayback(c.Request().Context()); err != nil {
+		return c.JSON(http.StatusConflict, map[string]any{"error": err.Error()})
 	}
 	report, err := s.cloudDrive.Remount(c.Request().Context())
 	if err != nil {
@@ -632,6 +641,11 @@ func (s *Server) handleUpdateSettings(c echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
+	if agentAuthenticated(c) {
+		if _, changesDeletionPolicy := body["dangerous_actions_enabled"]; changesDeletionPolicy {
+			return c.JSON(http.StatusForbidden, map[string]any{"error": "Agent requests cannot change the browser deletion safety switch"})
+		}
+	}
 	if err := s.settings.Update(body); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
@@ -674,6 +688,39 @@ func (s *Server) handleListTokens(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"tokens": tokens})
 }
 
+func (s *Server) requireBrowserDecision(c echo.Context, status string) error {
+	if agentAuthenticated(c) {
+		return c.JSON(http.StatusForbidden, map[string]any{"error": "destructive approvals require an authenticated browser user"})
+	}
+	user := strings.TrimSpace(c.Request().Header.Get("Remote-User"))
+	if user == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]any{"error": "authenticated browser user is required"})
+	}
+	approval, err := s.db.DecideDestructiveApproval(c.Param("id"), user, status, time.Now())
+	if err != nil {
+		return c.JSON(http.StatusConflict, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, approval)
+}
+
+func (s *Server) handleListDestructiveApprovals(c echo.Context) error {
+	if agentAuthenticated(c) {
+		return c.JSON(http.StatusForbidden, map[string]any{"error": "destructive approvals are visible only to authenticated browser users"})
+	}
+	approvals, err := s.db.ListPendingDestructiveApprovals(time.Now())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"approvals": approvals})
+}
+
+func (s *Server) handleApproveDestructiveApproval(c echo.Context) error {
+	return s.requireBrowserDecision(c, "approved")
+}
+func (s *Server) handleRejectDestructiveApproval(c echo.Context) error {
+	return s.requireBrowserDecision(c, "rejected")
+}
+
 func (s *Server) handleCreateToken(c echo.Context) error {
 	var req struct {
 		Name        string   `json:"name"`
@@ -709,7 +756,7 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 		role = "full-access"
 	}
 	if req.RateLimit == 0 {
-		req.RateLimit = 20
+		req.RateLimit = 120
 	}
 	if req.RateLimit < 1 || req.RateLimit > 600 {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": "rate_limit must be between 1 and 600 requests per minute"})
@@ -752,15 +799,7 @@ func (s *Server) handleDeleteToken(c echo.Context) error {
 }
 
 func (s *Server) handleListAuditLogs(c echo.Context) error {
-	limit := 20
-	if requested, err := strconv.Atoi(c.QueryParam("limit")); err == nil && requested > 0 {
-		limit = min(requested, 100)
-	}
-	logs, err := s.db.ListAuditLogs(limit)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, map[string]any{"logs": logs})
+	return s.queryAuditLogs(c)
 }
 
 func (s *Server) handleOpenAPI(c echo.Context) error {
@@ -839,6 +878,7 @@ func (s *Server) auditLogMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			caller = "agent"
 		}
 
+		c.Set("agent-authenticated", secret != "")
 		err := next(c)
 		statusCode := c.Response().Status
 		if statusCode == 0 {

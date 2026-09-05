@@ -159,6 +159,23 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS agent_audit_logs_created_at_idx ON agent_audit_logs(created_at DESC);
 
+	CREATE TABLE IF NOT EXISTS destructive_approvals (
+		id TEXT PRIMARY KEY,
+		action TEXT NOT NULL,
+		account_id TEXT NOT NULL,
+		parent_cid TEXT NOT NULL,
+		targets TEXT NOT NULL,
+		status TEXT NOT NULL,
+		requested_by TEXT NOT NULL,
+		approved_by TEXT,
+		error TEXT,
+		expires_at DATETIME NOT NULL,
+		created_at DATETIME NOT NULL,
+		decided_at DATETIME,
+		executed_at DATETIME
+	);
+	CREATE INDEX IF NOT EXISTS destructive_approvals_status_idx ON destructive_approvals(status, expires_at);
+
 	CREATE TABLE IF NOT EXISTS system_configs (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
@@ -881,6 +898,135 @@ func (d *DB) ListAuditLogs(limit int) ([]domain.AuditLog, error) {
 		result = append(result, entry)
 	}
 	return result, rows.Err()
+}
+
+func encodeApprovalTargets(targets []domain.DestructiveTarget) (string, error) {
+	encoded, err := json.Marshal(targets)
+	if err != nil {
+		return "", fmt.Errorf("encode destructive approval targets: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func scanDestructiveApproval(scanner interface{ Scan(...any) error }) (*domain.DestructiveApproval, error) {
+	var approval domain.DestructiveApproval
+	var targets string
+	var approvedBy, errorText sql.NullString
+	var decidedAt, executedAt sql.NullTime
+	if err := scanner.Scan(&approval.ID, &approval.Action, &approval.AccountID, &approval.ParentCID, &targets, &approval.Status, &approval.RequestedBy, &approvedBy, &errorText, &approval.ExpiresAt, &approval.CreatedAt, &decidedAt, &executedAt); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(targets), &approval.Targets); err != nil {
+		return nil, fmt.Errorf("decode destructive approval targets: %w", err)
+	}
+	if approvedBy.Valid {
+		approval.ApprovedBy = approvedBy.String
+	}
+	if errorText.Valid {
+		approval.Error = errorText.String
+	}
+	if decidedAt.Valid {
+		approval.DecidedAt = &decidedAt.Time
+	}
+	if executedAt.Valid {
+		approval.ExecutedAt = &executedAt.Time
+	}
+	return &approval, nil
+}
+
+// CreateDestructiveApproval stores one pending target-bound user decision.
+func (d *DB) CreateDestructiveApproval(approval *domain.DestructiveApproval) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	targets, err := encodeApprovalTargets(approval.Targets)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.Exec(`INSERT INTO destructive_approvals (id, action, account_id, parent_cid, targets, status, requested_by, expires_at, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`, approval.ID, approval.Action, approval.AccountID, approval.ParentCID, targets, approval.RequestedBy, approval.ExpiresAt, approval.CreatedAt)
+	return err
+}
+
+// ListPendingDestructiveApprovals returns unexpired requests awaiting a browser user.
+func (d *DB) ListPendingDestructiveApprovals(now time.Time) ([]domain.DestructiveApproval, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, err := d.db.Exec(`UPDATE destructive_approvals SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?`, now); err != nil {
+		return nil, err
+	}
+	rows, err := d.db.Query(`SELECT id, action, account_id, parent_cid, targets, status, requested_by, approved_by, error, expires_at, created_at, decided_at, executed_at FROM destructive_approvals WHERE status = 'pending' ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]domain.DestructiveApproval, 0)
+	for rows.Next() {
+		approval, err := scanDestructiveApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *approval)
+	}
+	return result, rows.Err()
+}
+
+// DecideDestructiveApproval records one browser user's pending approval decision.
+func (d *DB) DecideDestructiveApproval(id, user, status string, now time.Time) (*domain.DestructiveApproval, error) {
+	if status != "approved" && status != "rejected" {
+		return nil, fmt.Errorf("invalid destructive approval decision")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result, err := d.db.Exec(`UPDATE destructive_approvals SET status = ?, approved_by = ?, decided_at = ? WHERE id = ? AND status = 'pending' AND expires_at > ?`, status, user, now, id, now)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed != 1 {
+		return nil, fmt.Errorf("destructive approval is missing, expired, or already decided")
+	}
+	return scanDestructiveApproval(d.db.QueryRow(`SELECT id, action, account_id, parent_cid, targets, status, requested_by, approved_by, error, expires_at, created_at, decided_at, executed_at FROM destructive_approvals WHERE id = ?`, id))
+}
+
+// ClaimDestructiveApproval consumes one approved request before the provider mutation starts.
+func (d *DB) ClaimDestructiveApproval(id, action string, now time.Time) (*domain.DestructiveApproval, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result, err := d.db.Exec(`UPDATE destructive_approvals SET status = 'executing' WHERE id = ? AND action = ? AND status = 'approved' AND expires_at > ?`, id, action, now)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed != 1 {
+		return nil, fmt.Errorf("destructive approval is missing, expired, already used, or not approved")
+	}
+	return scanDestructiveApproval(d.db.QueryRow(`SELECT id, action, account_id, parent_cid, targets, status, requested_by, approved_by, error, expires_at, created_at, decided_at, executed_at FROM destructive_approvals WHERE id = ?`, id))
+}
+
+// FinishDestructiveApproval records the terminal provider result without permitting replay.
+func (d *DB) FinishDestructiveApproval(id, status, errorText string, now time.Time) error {
+	if status != "executed" && status != "failed" {
+		return fmt.Errorf("invalid destructive approval terminal status")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result, err := d.db.Exec(`UPDATE destructive_approvals SET status = ?, error = ?, executed_at = ? WHERE id = ? AND status = 'executing'`, status, errorText, now, id)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("destructive approval is not executing")
+	}
+	return nil
 }
 
 // Settings

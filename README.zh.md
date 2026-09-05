@@ -8,7 +8,7 @@ EmbyMedia V2 是面向 115、CloudDrive2、Emby、STRM 文件、持久任务、R
 
 Debian 部署通过 `embymedia-v2.service` 在 loopback 3080 端口运行独立二进制。同一个 listener 提供 Web UI、`/api/v1/*`、`/api/v1/openapi.json` 与 `/mcp` 上的 Streamable HTTP MCP。可选的旧式 SSE 监听 loopback 3081 端口，`-mcp` 则通过 stdio 提供相同 registry。
 
-Caddy 验证浏览器流量。携带 `X-Agent-Token` 的 `/api/v1/*` 或 `/mcp` 请求绕过浏览器登录，并由 Go 服务校验。数据库只保存 token secret 的 SHA-256 摘要；管理员创建 token 时，明文只返回一次。
+Caddy 验证浏览器流量。携带 `X-Agent-Token` 或 `Authorization` 的 `/api/v1/*` 或 `/mcp` 请求绕过浏览器登录，删除调用方提供的浏览器身份 header，再由 Go 服务校验。数据库只保存 token secret 的 SHA-256 摘要；管理员创建 token 时，明文只返回一次。
 
 `/srv/embymedia/data/embymedia.db` 中的 SQLite 负责设置、受管账号、定时任务、任务执行记录、Agent token 与审计。CloudDrive2、Emby 与登录服务仍是由 Compose stack 管理的外部依赖。
 
@@ -21,11 +21,17 @@ Caddy 验证浏览器流量。携带 `X-Agent-Token` 的 `/api/v1/*` 或 `/mcp` 
 - 列出 Emby 媒体库，按确切条目 ID 检查，刷新一个或全部媒体库，应用明确的 TMDB identity 与图片，并列出缺失海报的条目。
 - 从已配置媒体树同步 STRM 文件且不跟随输出 symlink，并验证每个 STRM target 均位于媒体根目录内且真实存在。
 - 以持久执行记录、进度、结果、错误、日志、取消与显式评审重试执行经过校验的后台操作。中断的 effectful 工作会失败，而非自动重放。
-- 通过 OpenAPI 3.1 暴露完整 REST API，并通过 stdio、Streamable HTTP 与旧式 SSE MCP 暴露相同的十八个运营工具。
+- 通过 stdio、Streamable HTTP 与旧式 SSE MCP 暴露完整 REST API 和三十四个明确的运营工具。Discovery 工具先解析账号、已有文件、分享、条目、会话、任务与计划 ID，再执行写操作。
+
+## 浏览器工作流
+
+从详情页返回时，资源检索保留筛选条件、已加载分页与滚动位置。检索、详情与收藏共享转存目标；已保存的目录不可用时，必须重新选择目标才能转存。收藏支持撤销移除。文件弹窗明确账号与目标目录，失败时保留输入，并将键盘焦点限制在弹窗内。任务失败记录集中显示日志与经确认的重试入口。剪贴板复制失败会打开手动复制弹窗，而非显示成功。
 
 ## Agent 接入
 
-浏览器控制中心位于 `/agent`。该页面执行真实 MCP 初始化、工具发现、安全只读调用与 OpenAPI 请求。仅被发现的工具和已成功或失败执行只读调用的工具采用不同状态标记。
+浏览器控制中心位于 `/agent`。该页面执行 MCP 初始化、工具发现、安全只读调用与 OpenAPI 请求。页面可见时，每 30 秒刷新连接与工具发现，每 10 秒读取最近 100 条审计记录。每个工具显示最近一次审计调用的成功或失败、调用方与时间。自主运行令牌默认具有读写权限和每分钟 120 次请求额度。删除 115 内容需要一个有效期 15 分钟、绑定准确目标的请求，并由已登录浏览器用户一次性批准；Agent token 不能批准请求、开启浏览器删除开关或调用 REST 删除路由。系统不暴露 Emby 媒体库删除能力。
+
+`/agent` 的 MCP 日志查询可按 Agent 令牌名称、准确工具名、结果、时间范围，以及脱敏参数或输出中的字面文本筛选持久化调用。每页显示 25 条；调用总数、失败率／拒绝率和逐工具平均耗时覆盖全部匹配记录。详情是已保存且可能截断的摘要，不包含用户原始指令、Agent 思考过程或完整对话。每个 Agent 实例使用单独命名的令牌；共用令牌无法区分，无令牌 stdio 的身份保留为未知。
 
 Hermes 使用 loopback Streamable HTTP endpoint 与 full-access Agent token：
 
@@ -36,14 +42,14 @@ hermes mcp test embymedia
 
 出现提示时，把 `/agent` 创建后只显示一次的 secret 作为 API key / Bearer token 输入。Hermes 会把 secret 存储在 `config.yaml` 之外，并发送 `Authorization: Bearer`；服务端同时接受该 header 与 `X-Agent-Token`。Release 会安装 `deploy/hermes/skills/embymedia-v2-operator/SKILL.md`；该技能只使用独立 registry，并拒绝已移除的 DSH 工具词汇。
 
-Claude Desktop 可以通过 stdio 启动二进制：
+Stdio 客户端可以启动单独配置的实例，并独占其数据库。不要让 stdio 指向正在运行的生产数据库：第二个进程会在迁移、任务恢复和调度之前被拒绝。需要共享生产账号、任务和日志时，使用生产 `/mcp` HTTP endpoint。隔离的 stdio 配置如下：
 
 ```json
 {
   "mcpServers": {
     "embymedia": {
       "command": "/opt/embymedia-v2/current/bin/embymedia",
-      "args": ["-mcp", "-db", "/srv/embymedia/data/embymedia.db"]
+      "args": ["-mcp", "-db", "/srv/embymedia/stdio/embymedia.db"]
     }
   }
 }
@@ -77,7 +83,7 @@ Oh My Pi 从 `.omp/mcp.json` 读取服务器；header 值从 `EMBYMEDIA_AGENT_TO
 ```text
 cmd/server/                 binary assembly and embedded Vue assets
 internal/api/               REST, OpenAPI, browser/Agent authorization
-internal/mcp/               eighteen-tool MCP registry
+internal/mcp/               34-tool autonomous MCP registry
 internal/service/           115, CloudDrive2, Emby, STRM, task, schedule, webhook logic
 internal/storage/           monotonic SQLite schema and queries
 web/                        Vue 3 browser application
@@ -110,16 +116,16 @@ go build -trimpath -o bin/embymedia ./cmd/server
 sudo deploy/scripts/install-release.sh "$PWD" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-Installer 会校验 artifact，把部署 assets 复制到不可变 release，执行无副作用数据库检查，持久化共享 webhook secret，原子切换 `current`，安装 units 与 Hermes skill，启动依赖 stack 与登录服务，启用 backup timer，启动 V2，并在 loopback OpenAPI probe 失败时回滚 symlink。
+Installer 校验 artifact，安装不可变 release，以服务用户检查数据库，持久化 webhook secret，并原子切换 `current`。激活失败时恢复上一版本、已安装配置与服务状态；数据库迁移和身份数据不会回退。恢复失败会保留已保存配置，且不会删除当前版本。
 
 ## 安全
 
 - 禁止把 115 Cookie、Emby key、CloudDrive token、webhook secret 或 Agent token 明文写入仓库和日志。
-- 除非明确启用 `dangerous_actions_enabled`，文件删除会返回 403；Web UI 还要求确认。
+- 浏览器文件删除要求启用 `dangerous_actions_enabled` 并在 UI 中明确确认。Agent token 不能使用该路由或开启其开关；MCP 删除要求提交绑定最新目标的请求，由浏览器用户在 15 分钟内批准，并且只能执行一次。
 - 工具 discovery 只证明注册，不证明 provider 成功。仅根据无错误 result 报告操作成功；异步操作只有在 `status=completed` 后才能报告成功。
 - 服务重启会把中断的 effectful 任务标为失败。创建显式 retry 前应检查 provider 当前状态。
 - CloudDrive 容器重启可能使 Emby 的 bind-mount view 失效。CloudDrive 容器重启后应重启 Emby，并在提供播放前验证 `/media/.embymedia-health-canary`。
-- 备份保留原始服务状态，先 quiesce V2 与依赖 writer，再在隔离路径中通过 `-check-db` 恢复，之后才能执行任何生产恢复。
+- 备份保留原始服务状态，先停止 V2 与依赖 writer，并包含 `data/auth/http-login.json` 中的实际浏览器用户。隔离恢复会验证身份数据，并通过 `-check-db` 检查 SQLite，之后才能执行任何生产恢复。
 
 ## 许可证
 

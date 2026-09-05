@@ -144,6 +144,18 @@ func mountedFilesystem(path string) bool {
 	return unix.Stat(clean, &current) == nil && unix.Stat(parent, &parentStat) == nil && current.Dev != parentStat.Dev
 }
 
+func localMountPath(providerPath, configuredPath string) string {
+	if configuredPath == "" {
+		return providerPath
+	}
+	provider := filepath.Clean(providerPath)
+	configured := filepath.Clean(configuredPath)
+	if configured == provider || (filepath.IsAbs(provider) && strings.HasSuffix(configured, provider)) {
+		return configuredPath
+	}
+	return providerPath
+}
+
 func localMount(path, source, name string, readOnly, autoMount, reportedMounted, providerKnown bool, failReason string) domain.CloudDriveMount {
 	status := "unmounted"
 	mounted := mountedFilesystem(path)
@@ -191,9 +203,10 @@ func (s *CloudDriveService) GetMounts(ctx context.Context) ([]domain.CloudDriveM
 		return nil, fmt.Errorf("list CloudDrive2 mounts: %w", err)
 	}
 	mounts := make([]domain.CloudDriveMount, 0, len(result.GetMountPoints()))
+	configuredPath := s.setting("clouddrive_mount_path")
 	for _, mount := range result.GetMountPoints() {
 		mounts = append(mounts, localMount(
-			mount.GetMountPoint(), mount.GetSourceDir(), mount.GetName(), mount.GetReadOnly(), mount.GetAutoMount(), mount.GetIsMounted(), true, mount.GetFailReason(),
+			localMountPath(mount.GetMountPoint(), configuredPath), mount.GetSourceDir(), mount.GetName(), mount.GetReadOnly(), mount.GetAutoMount(), mount.GetIsMounted(), true, mount.GetFailReason(),
 		))
 	}
 	return mounts, nil

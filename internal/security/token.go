@@ -52,7 +52,7 @@ func BearerToken(header http.Header) string {
 
 // TrustedWithoutToken reports whether an authenticated browser session initiated the request.
 func TrustedWithoutToken(header http.Header) bool {
-	return strings.TrimSpace(header.Get("Remote-User")) != "" || strings.EqualFold(strings.TrimSpace(header.Get("Sec-Fetch-Site")), "same-origin")
+	return len(header.Values("X-Agent-Token")) == 0 && len(header.Values("Authorization")) == 0 && strings.TrimSpace(header.Get("Remote-User")) != ""
 }
 
 func containsScope(scopes []string, required string) bool {

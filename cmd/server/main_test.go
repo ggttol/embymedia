@@ -47,4 +47,17 @@ func TestMCPHTTPAuthentication(t *testing.T) {
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("authenticated browser session returned %d", response.Code)
 	}
+	for _, headers := range []http.Header{
+		{"Sec-Fetch-Site": {"same-origin"}},
+		{"Remote-User": {"administrator"}, "X-Agent-Token": {"\u00a0"}},
+		{"Remote-User": {"administrator"}, "Authorization": {"Bearer invalid"}},
+	} {
+		request = httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request.Header = headers
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("untrusted authentication headers returned %d", response.Code)
+		}
+	}
 }

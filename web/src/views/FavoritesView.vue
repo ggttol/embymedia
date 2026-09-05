@@ -1,44 +1,28 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import {
-  Bookmark,
-  Trash2,
-  Download,
-  Copy,
-  Check,
-  Search,
-  FolderInput,
-  Loader2,
-  CheckSquare,
-  Square
-} from 'lucide-vue-next'
-import { useFavorites } from '@/stores/favorites'
-import { getDiskLabel, getDiskColor } from '@/utils/resourceMeta'
+import { computed, onMounted, ref, watch } from 'vue'
+import { Bookmark, CheckSquare, Download, FolderInput, Loader2, Search, Square, Trash2, Undo2 } from 'lucide-vue-next'
+import CopyButton from '@/components/CopyButton.vue'
+import UiDialog from '@/components/UiDialog.vue'
+import { type FavoriteItem, useFavorites } from '@/stores/favorites'
+import { saveResource, useTransferTarget } from '@/stores/transferTarget'
+import { getDiskColor, getDiskLabel } from '@/utils/resourceMeta'
 
-const { favorites, count, removeFavorite } = useFavorites()
+const { favorites, count, removeFavorite, restoreFavorite } = useFavorites()
+const target = useTransferTarget()
 const searchQuery = ref('')
 const selectedDisk = ref('')
-const copiedId = ref<number | null>(null)
+const selectedIds = ref<Set<number>>(new Set())
 const pushingId = ref<number | null>(null)
 const pushMessage = ref<{ id: number; text: string; ok: boolean } | null>(null)
 const batchRunning = ref(false)
-const batchMessage = ref<string | null>(null)
-const selectedIds = ref<Set<number>>(new Set())
-const cidMap = ref<Record<string, string>>({})
-const defaultCid = ref('0')
-const savedCidKey = 'embymedia_default_target_cid'
+const batchDialog = ref(false)
+const batchResults = ref<Array<{ title: string; text: string; ok: boolean }>>([])
+const removed = ref<FavoriteItem | null>(null)
+const filteredFavorites = computed(() => favorites.value.filter(item => (!searchQuery.value || item.title.toLowerCase().includes(searchQuery.value.toLowerCase())) && (!selectedDisk.value || item.disk_type === selectedDisk.value)))
+const selectedTargets = computed(() => filteredFavorites.value.filter(item => item.disk_type === '115' && selectedIds.value.has(item.id)))
 
-const filteredFavorites = computed(() => {
-  return favorites.value.filter(item => {
-    const matchQuery = !searchQuery.value || item.title.toLowerCase().includes(searchQuery.value.toLowerCase())
-    const matchDisk = !selectedDisk.value || item.disk_type === selectedDisk.value
-    return matchQuery && matchDisk
-  })
-})
-
-const is115 = (item: any) => item.disk_type === '115'
-const selectedTargets = computed(() => filteredFavorites.value.filter(item => is115(item) && selectedIds.value.has(item.id)))
-const selectedCount = computed(() => selectedTargets.value.length)
+watch([searchQuery, selectedDisk], () => { selectedIds.value = new Set() })
+onMounted(target.loadTargets)
 
 function toggleSelect(id: number) {
   const next = new Set(selectedIds.value)
@@ -48,258 +32,73 @@ function toggleSelect(id: number) {
 }
 
 function selectAllVisible() {
-  const next = new Set(selectedIds.value)
-	filteredFavorites.value.filter(is115).forEach(item => next.add(item.id))
-  selectedIds.value = next
+  selectedIds.value = new Set(filteredFavorites.value.filter(item => item.disk_type === '115').map(item => item.id))
 }
 
-function clearSelection() {
-  selectedIds.value = new Set()
+function clearFilters() {
+  searchQuery.value = ''
+  selectedDisk.value = ''
 }
 
-function copyToClipboard(text: string, id: number) {
-  navigator.clipboard.writeText(text)
-  copiedId.value = id
-  setTimeout(() => {
-    if (copiedId.value === id) copiedId.value = null
-  }, 2000)
+function remove(item: FavoriteItem) {
+  removeFavorite(item.id)
+  removed.value = item
+  selectedIds.value.delete(item.id)
+  selectedIds.value = new Set(selectedIds.value)
 }
 
-async function fetchCidMap() {
-  try {
-    const res = await fetch('/api/v1/cid-map')
-    if (res.ok) {
-      const data = await res.json()
-      cidMap.value = data.map ?? {}
-    }
-  } catch (e) {
-    console.error(e)
-  }
-  const stored = localStorage.getItem(savedCidKey)
-  defaultCid.value = stored || Object.values(cidMap.value)[0] || '0'
+function undoRemoval() {
+  if (!removed.value) return
+  restoreFavorite(removed.value)
+  removed.value = null
 }
 
-async function saveOne(link: any, targetCid: string): Promise<string> {
-  const res = await fetch(`/api/v1/links/${link.id}/save`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target_cid: targetCid })
-  })
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error || '转存失败')
-  return `已转存「${data.title || link.title}」${data.count} 项`
-}
-
-async function triggerSave(link: any) {
-  pushingId.value = link.id
+async function triggerSave(item: FavoriteItem) {
+  const destination = target.destination()
+  if (!destination) return
+  pushingId.value = item.id
   pushMessage.value = null
   try {
-    const message = await saveOne(link, defaultCid.value)
-    pushMessage.value = { id: link.id, text: message, ok: true }
-  } catch (e) {
-    pushMessage.value = { id: link.id, text: e instanceof Error ? e.message : '请求失败', ok: false }
+    pushMessage.value = { id: item.id, text: `「${item.title}」${await saveResource(item.id, destination)}`, ok: true }
+  } catch (cause) {
+    pushMessage.value = { id: item.id, text: `「${item.title}」转存至 ${destination.label} 失败：${cause instanceof Error ? cause.message : '请求失败'}`, ok: false }
   } finally {
     pushingId.value = null
   }
 }
 
 async function triggerBatchSave() {
-	const targets = selectedTargets.value
-  if (targets.length === 0) return
+  const destination = target.destination()
+  const items = [...selectedTargets.value]
+  if (!destination || items.length === 0) return
   batchRunning.value = true
-  batchMessage.value = null
-  let ok = 0
-  const failures: string[] = []
-  for (const item of targets) {
+  batchResults.value = []
+  for (const item of items) {
     try {
-      await saveOne(item, defaultCid.value)
-      ok++
-    } catch (e) {
-      failures.push(`${item.title}: ${e instanceof Error ? e.message : '失败'}`)
+      batchResults.value.push({ title: item.title, text: await saveResource(item.id, destination), ok: true })
+    } catch (cause) {
+      batchResults.value.push({ title: item.title, text: `转存至 ${destination.label} 失败：${cause instanceof Error ? cause.message : '请求失败'}`, ok: false })
     }
   }
-  batchMessage.value = `批量转存完成：成功 ${ok} / ${targets.length}` + (failures.length ? `；失败: ${failures.slice(0, 3).join('；')}` : '')
   batchRunning.value = false
+  batchDialog.value = false
   selectedIds.value = new Set()
 }
-
-onMounted(fetchCidMap)
 </script>
 
 <template>
   <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex items-center justify-between pb-6 border-b border-border">
-      <div>
-        <h1 class="font-serif text-3xl font-bold text-text">收藏资源</h1>
-        <p class="text-sm text-text-muted mt-2">
-          此浏览器已保存 <span class="font-semibold text-text">{{ count }}</span> 条资源。
-        </p>
-      </div>
-    </div>
+    <header class="pb-6 border-b border-border"><h1 class="font-serif text-3xl font-bold text-text">收藏资源</h1><p class="mt-2 text-sm text-text-muted">此浏览器已保存 {{ count }} 条资源。</p></header>
+    <section v-if="count" class="p-4 rounded-xl border border-border bg-surface space-y-4" aria-labelledby="favorite-filters"><h2 id="favorite-filters" class="font-serif text-lg font-semibold">筛选与转存</h2><div class="grid grid-cols-1 md:grid-cols-3 gap-3"><label class="text-sm"><span class="block mb-1">收藏关键词</span><span class="relative flex items-center"><Search class="absolute left-3 w-4 h-4 text-text-faint"/><input v-model="searchQuery" type="search" class="w-full min-h-11 pl-9 pr-3 border border-border bg-bg rounded-lg" placeholder="资源名称"></span></label><label class="text-sm"><span class="block mb-1">网盘类型</span><select v-model="selectedDisk" class="w-full min-h-11 px-3 border border-border bg-bg rounded-lg"><option value="">全部网盘</option><option value="115">115</option><option value="quark">夸克</option><option value="baidu">百度网盘</option><option value="aliyun">阿里云盘</option></select></label><label class="text-sm"><span class="mb-1 flex items-center gap-1"><FolderInput class="w-4 h-4"/>转存目标目录</span><select v-model="target.targetCid.value" :disabled="target.loading.value" class="w-full min-h-11 px-3 border border-border bg-bg rounded-lg"><option value="0">根目录（CID: 0）</option><option v-for="option in target.options.value" :key="option.cid" :value="option.cid">{{ option.name }}（CID: {{ option.cid }}）</option></select></label></div><p v-if="target.error.value" class="text-sm text-danger">无法读取目录配置。转存已停用，避免误存到根目录。<button class="underline ml-1" @click="target.loadTargets">重试</button></p><p v-else-if="!target.available.value" class="text-sm text-danger">已保存的目标 {{ target.targetLabel.value }} 当前不可用，请重新选择。</p><p v-else class="text-xs text-text-muted">当前目标：{{ target.targetLabel.value }}</p></section>
 
-    <!-- Filter Tools -->
-    <div v-if="count > 0" class="flex flex-col md:flex-row items-center gap-3 p-4 rounded-xl border border-border bg-surface">
-      <div class="relative flex-1 w-full">
-        <Search class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-faint" />
-        <input
-          v-model="searchQuery"
-          type="text"
-          placeholder="在收藏中筛选..."
-          class="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-bg text-text placeholder:text-text-faint text-xs font-mono focus:outline-none focus:border-accent"
-        />
-      </div>
-      <div class="flex items-center gap-1.5 text-xs font-mono text-text-muted shrink-0">
-        <FolderInput class="w-3.5 h-3.5" />
-        <span>转存目录:</span>
-        <select
-          v-model="defaultCid"
-          class="px-2.5 py-1.5 rounded-md border border-border bg-bg text-text text-xs font-mono focus:outline-none focus:border-accent min-h-8"
-        >
-          <option value="0">根目录</option>
-          <option v-for="(cid, name) in cidMap" :key="cid" :value="cid">{{ name }}</option>
-        </select>
-      </div>
-    </div>
+    <div v-if="removed" role="status" class="p-4 border border-border bg-surface flex flex-wrap items-center justify-between gap-3"><span>已移除「{{ removed.title }}」</span><button class="min-h-11 px-4 border border-border rounded-lg flex items-center gap-2" @click="undoRemoval"><Undo2 class="w-4 h-4"/>撤销</button></div>
+    <div v-if="selectedTargets.length" class="p-4 border border-accent bg-accent-soft flex flex-wrap items-center justify-between gap-3"><span>已选 {{ selectedTargets.length }} 项；目标：{{ target.targetLabel.value }}</span><div class="flex gap-2"><button :disabled="!target.ready.value" class="min-h-11 px-4 bg-accent text-accent-contrast rounded-lg disabled:opacity-50" @click="batchDialog = true">确认批量转存</button><button class="min-h-11 px-4 border border-border rounded-lg" @click="selectedIds = new Set()">取消选择</button></div></div>
+    <div v-if="batchResults.length" class="p-4 border border-border bg-surface"><h2 class="font-serif font-semibold">批量转存结果</h2><ul class="mt-3 space-y-2"><li v-for="result in batchResults" :key="result.title" :class="result.ok ? 'text-ok' : 'text-danger'"><strong>{{ result.title }}</strong>：{{ result.text }}</li></ul></div>
 
-    <!-- Batch actions -->
-    <div v-if="selectedCount > 0" class="flex items-center justify-between gap-3 p-4 rounded-xl border border-accent/40 bg-accent-soft">
-      <div class="text-xs font-mono text-text">
-        已选 <span class="font-bold">{{ selectedCount }}</span> 项
-      </div>
-      <div class="flex items-center gap-2">
-        <button
-          @click="triggerBatchSave"
-          :disabled="batchRunning"
-          class="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-accent bg-accent hover:bg-accent-strong text-accent-contrast text-xs font-mono transition-colors disabled:opacity-60"
-        >
-          <Loader2 v-if="batchRunning" class="w-3.5 h-3.5 animate-spin" />
-          <Download v-else class="w-3.5 h-3.5" />
-          <span>{{ batchRunning ? '批量转存中...' : '批量转存到 115' }}</span>
-        </button>
-        <button
-          @click="clearSelection"
-          class="px-3 py-2 rounded-lg border border-border bg-surface text-xs font-mono text-text-muted hover:text-text transition-colors"
-        >
-          取消选择
-        </button>
-      </div>
-    </div>
+    <section v-if="count === 0" class="p-16 border border-dashed border-border bg-surface text-center"><Bookmark class="w-8 h-8 mx-auto text-text-faint"/><h2 class="mt-3 font-serif text-lg font-semibold">暂无收藏</h2><p class="mt-2 text-sm text-text-muted">在检索结果中收藏资源后，会显示在这里。</p><RouterLink to="/resources" class="mt-4 inline-flex min-h-11 items-center px-5 bg-accent text-accent-contrast rounded-lg">前往资源检索</RouterLink></section>
+    <section v-else-if="filteredFavorites.length === 0" class="p-12 border border-dashed border-border bg-surface text-center"><h2 class="font-serif text-lg font-semibold">当前筛选没有匹配收藏</h2><p class="mt-2 text-sm text-text-muted">收藏仍保留在浏览器中。</p><button class="mt-4 min-h-11 px-5 border border-border rounded-lg" @click="clearFilters">清除筛选</button></section>
+    <section v-else class="space-y-3" aria-labelledby="favorite-list"><div class="flex justify-between items-center"><h2 id="favorite-list" class="font-serif text-xl font-semibold">收藏列表</h2><button class="min-h-11 flex items-center gap-2 text-sm" @click="selectAllVisible"><CheckSquare class="w-4 h-4"/>选择当前 115 资源</button></div><article v-for="item in filteredFavorites" :key="item.id" class="p-5 border bg-surface rounded-xl" :class="selectedIds.has(item.id) ? 'border-accent' : 'border-border'"><div class="flex flex-col md:flex-row md:items-start justify-between gap-4"><div class="flex gap-3 min-w-0"><button v-if="item.disk_type === '115'" class="min-w-11 min-h-11 flex items-center justify-center" :aria-pressed="selectedIds.has(item.id)" @click="toggleSelect(item.id)"><CheckSquare v-if="selectedIds.has(item.id)" class="w-5 h-5 text-accent"/><Square v-else class="w-5 h-5"/><span class="sr-only">选择 {{ item.title }}</span></button><div class="min-w-0"><RouterLink :to="{ path:`/resources/${item.id}`, query:{ returnTo:'/favorites' } }" class="font-serif text-lg font-semibold hover:text-accent break-words">{{ item.title }}</RouterLink><div class="mt-2 flex flex-wrap gap-2 text-xs text-text-muted"><span class="px-2 py-1 text-white" :style="{ backgroundColor:getDiskColor(item.disk_type) }">{{ getDiskLabel(item.disk_type) }}</span><span>收藏于 {{ new Date(item.savedAt).toLocaleDateString() }}</span><span v-if="item.first_source">来源：{{ item.first_source }}</span></div><p v-if="pushMessage?.id === item.id" class="mt-3 text-sm" :class="pushMessage.ok ? 'text-ok' : 'text-danger'">{{ pushMessage.text }}</p></div></div><div class="flex flex-wrap gap-2"><CopyButton :text="item.url" label="复制链接"/><button v-if="item.disk_type === '115'" :disabled="pushingId === item.id || !target.ready.value" class="min-h-11 px-4 bg-accent text-accent-contrast rounded-lg disabled:opacity-50 flex items-center gap-2" @click="triggerSave(item)"><Loader2 v-if="pushingId === item.id" class="w-4 h-4 animate-spin"/><Download v-else class="w-4 h-4"/>转存至 {{ target.targetLabel.value }}</button><button class="min-h-11 min-w-11 border border-border rounded-lg flex items-center justify-center hover:text-danger" @click="remove(item)"><Trash2 class="w-4 h-4"/><span class="sr-only">移除 {{ item.title }}</span></button></div></div></article></section>
 
-    <div v-if="batchMessage" class="px-4 py-2.5 rounded-lg border border-border bg-surface text-xs font-mono text-text-muted">
-      {{ batchMessage }}
-    </div>
-
-    <!-- Empty State -->
-    <div
-      v-if="count === 0"
-      class="p-16 rounded-xl border border-dashed border-border text-center bg-surface space-y-4"
-    >
-      <div class="w-12 h-12 rounded-full bg-bg-muted flex items-center justify-center mx-auto text-text-faint">
-        <Bookmark class="w-6 h-6" />
-      </div>
-      <div>
-        <h3 class="font-serif font-semibold text-lg text-text">暂无收藏</h3>
-        <p class="text-sm text-text-muted mt-2">
-          在检索结果中使用收藏按钮，资源会保存在当前浏览器。
-        </p>
-      </div>
-      <RouterLink
-        to="/resources"
-        class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-accent-contrast font-medium text-xs shadow-sm hover:bg-accent-strong transition-colors"
-      >
-        前往检索资源库
-      </RouterLink>
-    </div>
-
-    <!-- Favorites List -->
-    <div v-else class="space-y-3">
-      <div class="flex items-center gap-3 px-1">
-        <button
-          @click="selectAllVisible"
-          class="flex items-center gap-1 text-xs font-mono text-text-muted hover:text-accent transition-colors"
-        >
-          <CheckSquare class="w-3.5 h-3.5" />
-          <span>全选当前列表</span>
-        </button>
-      </div>
-      <div
-        v-for="item in filteredFavorites"
-        :key="item.id"
-        class="p-4 rounded-xl border bg-surface transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
-        :class="selectedIds.has(item.id) ? 'border-accent' : 'border-border hover:border-border-strong'"
-      >
-        <div class="flex items-start gap-3 flex-1 min-w-0">
-          <button
-            v-if="is115(item)"
-            @click="toggleSelect(item.id)"
-            class="mt-0.5 text-text-faint hover:text-accent transition-colors shrink-0"
-            :title="selectedIds.has(item.id) ? '取消选择' : '加入批量转存'"
-          >
-            <CheckSquare v-if="selectedIds.has(item.id)" class="w-4 h-4 text-accent" />
-            <Square v-else class="w-4 h-4" />
-          </button>
-          <div class="space-y-1.5 flex-1 min-w-0">
-            <div class="flex items-center gap-2">
-              <span
-                class="px-2 py-0.5 rounded text-[11px] font-mono font-medium text-white shrink-0 shadow-xs"
-                :style="{ backgroundColor: getDiskColor(item.disk_type) }"
-              >
-                {{ getDiskLabel(item.disk_type) }}
-              </span>
-              <RouterLink
-				:to="`/resources/${item.id}`"
-                class="text-sm font-medium text-text hover:text-accent truncate block"
-              >
-                {{ item.title }}
-              </RouterLink>
-            </div>
-            <div class="text-xs font-mono text-text-faint flex items-center gap-3">
-              <span>保存时间: {{ new Date(item.savedAt).toLocaleDateString() }}</span>
-              <span v-if="item.password">密码: {{ item.password }}</span>
-              <span v-if="item.first_source">来源: {{ item.first_source }}</span>
-            </div>
-
-            <div
-              v-if="pushMessage && pushMessage.id === item.id"
-              class="text-xs font-mono pt-1"
-              :class="pushMessage.ok ? 'text-ok' : 'text-danger'"
-            >
-              {{ pushMessage.text }}
-            </div>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 shrink-0">
-          <button
-            @click="copyToClipboard(item.url, item.id)"
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:border-text-muted bg-bg text-xs font-mono text-text transition-colors"
-          >
-            <Check v-if="copiedId === item.id" class="w-3.5 h-3.5 text-ok" />
-            <Copy v-else class="w-3.5 h-3.5" />
-            <span>{{ copiedId === item.id ? '已复制' : '复制' }}</span>
-          </button>
-
-          <button
-            v-if="is115(item)"
-            @click="triggerSave(item)"
-            :disabled="pushingId === item.id"
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent bg-accent hover:bg-accent-strong text-accent-contrast text-xs font-mono transition-colors shadow-xs"
-          >
-            <Loader2 v-if="pushingId === item.id" class="w-3.5 h-3.5 animate-spin" />
-            <Download v-else class="w-3.5 h-3.5" />
-            <span>转存到 115</span>
-          </button>
-
-          <button
-            @click="removeFavorite(item.id)"
-            class="p-2 rounded-lg border border-border hover:border-danger hover:text-danger bg-bg text-text-faint transition-colors"
-            title="移除收藏"
-          >
-            <Trash2 class="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-    </div>
+    <UiDialog v-if="batchDialog" title="确认批量转存" :busy="batchRunning" @close="batchDialog = false"><p>将 {{ selectedTargets.length }} 项转存至 <strong>{{ target.targetLabel.value }}</strong>。转存开始后，请在结果区域核对每一项。</p><div class="mt-5 flex flex-wrap justify-end gap-2"><button class="min-h-11 px-4 border border-border rounded-lg" :disabled="batchRunning" @click="batchDialog = false">取消</button><button class="min-h-11 px-4 bg-accent text-accent-contrast rounded-lg flex items-center gap-2" :disabled="batchRunning" @click="triggerBatchSave"><Loader2 v-if="batchRunning" class="w-4 h-4 animate-spin"/>开始转存</button></div></UiDialog>
   </div>
 </template>

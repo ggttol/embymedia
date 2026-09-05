@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-05-embymedia-go-mcp-web-port.md
-2026-09-05-embymedia-go-mcp-web-port.md: 05bc37d720b6584a6626816c0e17dc37df820301
-2026-09-05-embymedia-go-mcp-web-port.zh.md: 98bc060d03fdd1fb58b026899923bdc6d1a11a29
+2026-09-05-embymedia-go-mcp-web-port.md: 420dd868d9b01a12894870ccae93c4e0df0ca23d
+2026-09-05-embymedia-go-mcp-web-port.zh.md: b686d133d79bb82abaed5386b92b6983dd11af41

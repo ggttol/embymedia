@@ -100,8 +100,12 @@ func (s *SettingsService) CheckAvailability(component string) ServiceHealth {
 		if apiKey == "" {
 			return ServiceHealth{Status: "unconfigured", Message: "未配置 Emby API Key"}
 		}
-		url := fmt.Sprintf("%s/System/Info?api_key=%s", strings.TrimRight(baseURL, "/"), apiKey)
-		resp, err := client.Get(url)
+		request, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/System/Info", nil)
+		if err != nil {
+			return ServiceHealth{Status: "error", Message: "Emby URL 无效"}
+		}
+		request.Header.Set("X-Emby-Token", apiKey)
+		resp, err := client.Do(request)
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
 			return ServiceHealth{Status: "error", Message: "连接超时或拒绝: " + err.Error(), Latency: latency}

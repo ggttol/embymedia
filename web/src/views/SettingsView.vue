@@ -28,6 +28,7 @@ const baseline = ref(JSON.stringify(settings.value))
 const loaded = ref(false)
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const feedback = ref('')
+const readError = ref('')
 const dirty = computed(() => loaded.value && JSON.stringify(settings.value) !== baseline.value)
 const configuredCount = computed(() => Object.values(configured.value).filter(Boolean).length)
 const integrationItems = [
@@ -58,7 +59,7 @@ function secretPlaceholder(key: string, fallback: string) {
 
 async function fetchSettings() {
   saveState.value = 'saving'
-  feedback.value = ''
+  readError.value = ''
   try {
     const response = await fetch('/api/v1/settings')
     if (!response.ok) throw new Error('读取设置失败')
@@ -69,13 +70,15 @@ async function fetchSettings() {
     baseline.value = JSON.stringify(settings.value)
     saveState.value = 'idle'
     loaded.value = true
+    readError.value = ''
   } catch (error) {
-    saveState.value = 'error'
-    feedback.value = error instanceof Error ? error.message : '无法读取设置'
+    saveState.value = 'idle'
+    readError.value = error instanceof Error ? error.message : '无法读取设置'
   }
 }
 
 async function checkComponent(key: string) {
+  if (!loaded.value || checking.value[key]) return
   checking.value[key] = true
   health.value = { ...health.value, [key]: { status: 'checking', message: '正在检查连接' } }
   try {
@@ -118,7 +121,7 @@ async function saveSettings() {
   }
 }
 watch(settings, () => {
-  if (loaded.value && saveState.value === 'saved') {
+  if (dirty.value && saveState.value === 'saved') {
     saveState.value = 'idle'
     feedback.value = ''
   }
@@ -146,24 +149,34 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
         <h1 class="font-serif text-3xl font-bold text-text">系统设置</h1>
         <p class="text-sm text-text-muted mt-2">管理服务地址与凭据。秘密值读取时始终保持隐藏。</p>
       </div>
-		<div class="flex flex-wrap items-center justify-end gap-3 text-sm">
-			<span class="font-mono text-xs text-text-faint">{{ configuredCount }} / 4 已配置</span>
-			<span class="w-2 h-2 rounded-full" :class="configuredCount === 4 ? 'bg-ok' : 'bg-warn'"></span>
-		</div>
+        <div class="flex flex-wrap items-center justify-end gap-3 text-sm">
+          <span class="font-mono text-xs text-text-faint">{{ loaded ? `${configuredCount} / 4 已配置` : '配置状态未知' }}</span>
+          <span class="w-2 h-2 rounded-full" :class="loaded ? (configuredCount === 4 ? 'bg-ok' : 'bg-warn') : 'bg-text-faint'"></span>
+        </div>
     </header>
+    <div v-if="readError" role="alert" class="border-l-2 border-danger bg-danger/5 p-4 text-sm text-danger">
+      <p>{{ readError }}</p>
+      <p class="mt-1 text-text-muted">为避免覆盖已保存的设置，读取成功前不能编辑或检查连接。</p>
+      <button type="button" :disabled="saveState === 'saving'" class="mt-3 min-h-11 border border-danger/40 px-4 disabled:opacity-50" @click="fetchSettings">{{ saveState === 'saving' ? '正在重试' : '重新读取设置' }}</button>
+    </div>
+    <div v-else-if="!loaded" role="status" class="flex items-center gap-2 border border-border bg-surface p-4 text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取系统设置</div>
 
     <div class="grid grid-cols-2 lg:grid-cols-4 border border-border bg-surface rounded-xl overflow-hidden">
       <div v-for="item in integrationItems" :key="item.key" class="p-4 border-b border-r border-border last:border-r-0 lg:border-b-0 flex flex-col justify-between">
         <div class="flex items-center justify-between">
           <span class="text-xs font-medium text-text-muted">{{ item.label }}</span>
-          <button type="button" :disabled="checking[item.key]" class="p-1 text-text-faint hover:text-text rounded transition-colors" title="测试连接" @click="checkComponent(item.key)">
+          <button type="button" :disabled="!loaded || checking[item.key]" class="inline-flex min-h-11 min-w-11 items-center justify-center text-text-faint hover:text-text rounded transition-colors disabled:opacity-45" :aria-label="`测试${item.label}连接`" @click="checkComponent(item.key)">
             <Loader2 v-if="checking[item.key]" class="w-3 h-3 animate-spin text-accent" />
             <RefreshCw v-else class="w-3 h-3" />
           </button>
         </div>
         <div class="mt-2.5">
           <div class="flex items-center gap-2 text-xs font-mono">
-            <span v-if="health[item.key]?.status === 'ok'" class="inline-flex items-center gap-1.5 text-ok font-semibold">
+            <span v-if="!loaded" class="inline-flex items-center gap-1.5 text-text-faint">
+              <span class="w-2 h-2 rounded-full bg-text-faint"></span>
+              状态未知
+            </span>
+            <span v-else-if="health[item.key]?.status === 'ok'" class="inline-flex items-center gap-1.5 text-ok font-semibold">
               <span class="w-2 h-2 rounded-full bg-ok"></span>
               正常在线
             </span>
@@ -180,17 +193,21 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
               待配置
             </span>
           </div>
-          <p v-if="health[item.key]?.message" class="text-[11px] text-text-faint mt-1 truncate" :title="health[item.key]?.message">
+          <p v-if="health[item.key]?.message" class="mt-2 break-words text-xs leading-5" :class="health[item.key]?.status === 'error' ? 'text-danger' : 'text-text-faint'">
             {{ health[item.key]?.message }}
           </p>
+          <p v-if="health[item.key]?.details" class="mt-1 break-words text-xs leading-5 text-text-muted">{{ health[item.key]?.details }}</p>
+          <p v-if="!loaded" class="mt-2 text-xs leading-5 text-text-faint">读取设置后才能检查连接。</p>
         </div>
       </div>
     </div>
 
 	<form id="settings-form" class="border border-border bg-surface rounded-xl" @submit.prevent="saveSettings">
+      <fieldset :disabled="!loaded || saveState === 'saving'">
+      <div class="border-b border-border bg-bg-muted/50 px-5 py-4 sm:px-7"><h2 class="font-serif text-xl font-semibold text-text">服务连接</h2><p class="mt-1 text-sm text-text-muted">配置网盘、媒体服务器、挂载服务与资源索引的访问方式。</p></div>
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
         <div>
-          <div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h2 class="font-serif font-semibold text-lg">115 网盘</h2></div>
+          <div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">115 网盘</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">用于账号鉴权。保存后不会再次返回明文。</p>
         </div>
         <div>
@@ -201,7 +218,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
 
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
         <div>
-          <div class="flex items-center gap-2"><Tv class="w-4 h-4 text-accent" /><h2 class="font-serif font-semibold text-lg">Emby</h2></div>
+          <div class="flex items-center gap-2"><Tv class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">Emby</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">媒体库读取与刷新所需的服务地址和密钥。</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -212,25 +229,29 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
 
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
         <div>
-          <div class="flex items-center gap-2"><Radio class="w-4 h-4 text-accent" /><h2 class="font-serif font-semibold text-lg">CloudDrive2</h2></div>
+          <div class="flex items-center gap-2"><Radio class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">CloudDrive2 连接</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">使用官方 gRPC API 读取和重新挂载；API Token 读取时不会返回明文。</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div><label for="clouddrive-url" class="block text-xs font-mono text-text-muted mb-2">gRPC 地址</label><input id="clouddrive-url" v-model="settings['clouddrive_url']" type="url" placeholder="http://127.0.0.1:19798" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
           <div><label for="clouddrive-token" class="block text-xs font-mono text-text-muted mb-2">API Token</label><input id="clouddrive-token" v-model="settings['clouddrive_api_token']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 CloudDrive2 API Token')" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+        </div>
+      </section>
+
+      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
+        <div><div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">媒体与路径映射</h3></div><p class="mt-2 text-xs leading-5 text-text-faint">对应 CloudDrive 来源、本地挂载、STRM 输出与 Emby 可见路径。</p></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div><label for="mount-path" class="block text-xs font-mono text-text-muted mb-2">本地挂载目录</label><input id="mount-path" v-model="settings['clouddrive_mount_path']" type="text" placeholder="/srv/clouddrive/CloudDrive" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
           <div><label for="source-path" class="block text-xs font-mono text-text-muted mb-2">CloudDrive 源目录</label><input id="source-path" v-model="settings['clouddrive_source_path']" type="text" placeholder="115://Media" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="webhook-secret" class="block text-xs font-mono text-text-muted mb-2">Webhook Secret</label><input id="webhook-secret" v-model="settings['clouddrive_webhook_secret']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 Webhook Secret')" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="webhook-delay" class="block text-xs font-mono text-text-muted mb-2">防抖秒数</label><input id="webhook-delay" v-model="settings['clouddrive_webhook_debounce_seconds']" type="number" min="1" max="300" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
           <div><label for="media-root" class="block text-xs font-mono text-text-muted mb-2">媒体源根目录</label><input id="media-root" v-model="settings['media_root']" type="text" placeholder="/srv/embymedia/data/clouddrive/CloudNAS/CloudDrive" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
           <div><label for="strm-root" class="block text-xs font-mono text-text-muted mb-2">STRM 输出根目录</label><input id="strm-root" v-model="settings['strm_root']" type="text" placeholder="/srv/embymedia/data/strm" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="emby-media-prefix" class="block text-xs font-mono text-text-muted mb-2">Emby 媒体路径前缀</label><input id="emby-media-prefix" v-model="settings['emby_media_prefix']" type="text" placeholder="/media" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div class="md:col-span-2"><label for="emby-media-prefix" class="block text-xs font-mono text-text-muted mb-2">Emby 媒体路径前缀</label><input id="emby-media-prefix" v-model="settings['emby_media_prefix']" type="text" placeholder="/media" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
         </div>
       </section>
 
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7">
         <div>
-          <div class="flex items-center gap-2"><FileCode class="w-4 h-4 text-annotation" /><h2 class="font-serif font-semibold text-lg">公共资源索引</h2></div>
+          <div class="flex items-center gap-2"><FileCode class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg">公共资源索引</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">资源搜索上游地址；授权令牌按部署需要选填。</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -239,9 +260,18 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
         </div>
       </section>
 
+      <details class="border-t border-border">
+        <summary class="flex min-h-11 cursor-pointer items-center px-5 py-4 font-serif text-lg font-semibold text-text sm:px-7">高级设置</summary>
+        <div class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 border-t border-border p-5 sm:p-7">
+          <div><div class="flex items-center gap-2"><Radio class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg">Webhook 与调优</h3></div><p class="mt-2 text-xs leading-5 text-text-faint">仅在 CloudDrive2 主动通知文件变化时需要。防抖用于合并短时间内连续到达的通知。</p></div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><label for="webhook-secret" class="block text-xs font-mono text-text-muted mb-2">Webhook Secret</label><input id="webhook-secret" v-model="settings['clouddrive_webhook_secret']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 Webhook Secret')" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+            <div><label for="webhook-delay" class="block text-xs font-mono text-text-muted mb-2">防抖秒数</label><input id="webhook-delay" v-model="settings['clouddrive_webhook_debounce_seconds']" type="number" min="1" max="300" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          </div>
+        </div>
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-t border-border">
         <div>
-          <div class="flex items-center gap-2"><CircleAlert class="w-4 h-4 text-annotation" /><h2 class="font-serif font-semibold text-lg">破坏性操作</h2></div>
+          <div class="flex items-center gap-2"><CircleAlert class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg">破坏性操作</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">关闭时，文件删除 API 会以 403 拒绝，不会触达 115。</p>
         </div>
         <label class="inline-flex min-h-11 items-center gap-3 text-sm">
@@ -249,15 +279,18 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
           <span>允许将 115 文件移入回收站</span>
         </label>
       </section>
+      </details>
+      </fieldset>
 
-		<footer class="sticky bottom-0 z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-7 border-t border-border bg-bg-muted shadow-[0_-8px_24px_rgba(67,56,36,0.08)]">
+		<footer class="action-dock sticky bottom-0 z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-7 border-t border-border bg-bg-muted shadow-[0_-8px_24px_rgba(67,56,36,0.08)]">
         <div class="min-h-6 text-sm">
           <span v-if="saveState === 'saved'" class="inline-flex items-start gap-2 text-ok"><Check class="w-4 h-4 mt-0.5 shrink-0" />{{ feedback }}</span>
           <span v-else-if="saveState === 'error'" class="inline-flex items-start gap-2 text-danger"><CircleAlert class="w-4 h-4 mt-0.5 shrink-0" />{{ feedback }}</span>
           <span v-else-if="dirty" class="text-text-muted">有尚未保存的修改。</span>
+          <span v-else-if="!loaded" class="text-text-faint">读取设置后可编辑和保存。</span>
           <span v-else class="text-text-faint">当前页面与已保存设置一致。</span>
         </div>
-        <button type="submit" :disabled="!dirty || saveState === 'saving'" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-5 bg-accent text-accent-contrast text-sm font-medium disabled:cursor-not-allowed disabled:opacity-45">
+        <button type="submit" :disabled="!loaded || !dirty || saveState === 'saving'" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-5 bg-accent text-accent-contrast text-sm font-medium disabled:cursor-not-allowed disabled:opacity-45" :title="!loaded ? '设置尚未读取成功' : !dirty ? '没有需要保存的修改' : undefined">
           <Loader2 v-if="saveState === 'saving'" class="w-4 h-4 animate-spin" />
           <Save v-else class="w-4 h-4" />
           <span>{{ saveState === 'saving' ? '正在保存' : '保存修改' }}</span>

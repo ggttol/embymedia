@@ -29,6 +29,8 @@ func NewCronManager(db *storage.DB, queue *TaskQueueService) *CronManager {
 
 // Start restores enabled schedules and starts dispatching them.
 func (cm *CronManager) Start(_ context.Context) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	tasks, err := cm.db.ListTasks()
 	if err != nil {
 		return err
@@ -62,6 +64,7 @@ func taskPayload(task domain.ScheduledTask) (map[string]any, error) {
 	return payload, nil
 }
 
+// registerTask requires cm.mu until the entry and captured task are fully published.
 func (cm *CronManager) registerTask(task domain.ScheduledTask) error {
 	payload, err := taskPayload(task)
 	if err != nil {
@@ -69,6 +72,12 @@ func (cm *CronManager) registerTask(task domain.ScheduledTask) error {
 	}
 	var entryID cron.EntryID
 	entryID, err = cm.cron.AddFunc(task.CronExpr, func() {
+		cm.mu.Lock()
+		defer cm.mu.Unlock()
+		// Removed entries may already have a callback waiting to run.
+		if currentID, exists := cm.entryMap[task.ID]; !exists || currentID != entryID {
+			return
+		}
 		now := time.Now()
 		task.LastRunAt = &now
 		queued, enqueueErr := cm.queue.Enqueue(task.Type, payload)
@@ -90,7 +99,7 @@ func (cm *CronManager) registerTask(task domain.ScheduledTask) error {
 		return fmt.Errorf("invalid cron expression: %w", err)
 	}
 	cm.entryMap[task.ID] = entryID
-	next := cm.cron.Entry(entryID).Next
+	next := cm.cron.Entry(entryID).Schedule.Next(time.Now())
 	task.NextRunAt = &next
 	if err := cm.db.SaveTask(&task); err != nil {
 		cm.cron.Remove(entryID)
@@ -130,9 +139,24 @@ func (cm *CronManager) ScheduleTask(task *domain.ScheduledTask) error {
 		task.Status = "idle"
 	} else {
 		task.Status = "paused"
+		task.NextRunAt = nil
 	}
 	if !task.Enabled {
 		return cm.db.SaveTask(task)
 	}
 	return cm.registerTask(*task)
+}
+
+// DeleteTask removes one schedule and its active cron registration.
+func (cm *CronManager) DeleteTask(id string) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if _, err := cm.db.GetTask(id); err != nil {
+		return fmt.Errorf("scheduled task not found")
+	}
+	if entryID, exists := cm.entryMap[id]; exists {
+		cm.cron.Remove(entryID)
+		delete(cm.entryMap, id)
+	}
+	return cm.db.DeleteTask(id)
 }

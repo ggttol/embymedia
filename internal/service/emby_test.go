@@ -27,11 +27,11 @@ func TestEmbyAndCloudDriveServices(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/Items" {
+			if r.URL.Query().Get("Ids") == "item1" {
+				w.Write([]byte(`{"Items":[{"Id":"item1","Name":"Inception","Type":"Movie","Path":"/media/movies/Inception.mkv","ImageTags":{"Primary":"tag1"},"BackdropImageTags":["backdrop"],"ProviderIds":{"Tmdb":"27205"}}]}`))
+				return
+			}
 			w.Write([]byte(`{"Items":[{"Id":"item1","Name":"Inception","Type":"Movie","Path":"/media/movies/Inception.mkv","ImageTags":{"Primary":"tag1"}}]}`))
-			return
-		}
-		if r.URL.Path == "/Items/item1" {
-			w.Write([]byte(`{"Id":"item1","Name":"Inception","Type":"Movie","Path":"/media/movies/Inception.mkv","ImageTags":{"Primary":"tag1"},"BackdropImageTags":["backdrop"],"ProviderIds":{"Tmdb":"27205"}}`))
 			return
 		}
 		if r.URL.Path == "/Items/RemoteSearch/Apply/item1" && r.Method == http.MethodPost {
@@ -72,6 +72,13 @@ func TestEmbyAndCloudDriveServices(t *testing.T) {
 	sessions, err := embySrv.ListSessions()
 	if err != nil || len(sessions) != 1 || sessions[0].ItemName != "Interstellar" {
 		t.Fatalf("unexpected sessions: %v, err: %v", sessions, err)
+	}
+	if err := embySrv.EnsureNoActivePlayback(context.Background()); err == nil {
+		t.Fatal("active playback did not block disruptive maintenance")
+	}
+	items, err := embySrv.SearchMediaCtx(context.Background(), "Inception", 10)
+	if err != nil || len(items) != 1 || items[0].ID != "item1" {
+		t.Fatalf("search items: %+v, err=%v", items, err)
 	}
 	item, err := embySrv.GetItem("item1")
 	if err != nil || item.ID != "item1" || !item.HasPoster || !item.HasBackdrop || item.ProviderIDs["Tmdb"] != "27205" {

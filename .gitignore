@@ -47,6 +47,7 @@ embymedia
 *.db
 *.db-shm
 *.db-wal
+*.db.owner.lock
 
 # Temporary migration & debug scripts
 scripts/check_*.py

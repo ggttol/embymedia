@@ -62,6 +62,12 @@ func apiOperation(id, summary string, parameters []any, body map[string]any) map
 	return operation
 }
 
+func browserOperation(id, summary string, parameters []any) map[string]any {
+	operation := apiOperation(id, summary, parameters, nil)
+	operation["security"] = []any{map[string]any{"BrowserSession": []any{}}}
+	return operation
+}
+
 func openAPISchema() map[string]any {
 	accountID := stringSchema("Managed 115 account ID; omit to use the default account")
 	targetCID := stringSchema("Destination 115 directory CID; omit or use 0 for root")
@@ -107,7 +113,7 @@ func openAPISchema() map[string]any {
 		"/api/v1/emby/match":       map[string]any{"post": apiOperation("matchEmbyItem", "Apply TMDB metadata and images to an Emby item", nil, schemaObject([]string{"item_id", "tmdb_id"}, map[string]any{"item_id": stringSchema("Emby item ID"), "tmdb_id": stringSchema("TMDB ID")}))},
 		"/api/v1/emby/items/{id}":  map[string]any{"get": apiOperation("getEmbyItem", "Inspect one exact Emby item", []any{pathParameter("id", "Emby item ID")}, nil)},
 		"/api/v1/mounts":           map[string]any{"get": apiOperation("listCloudDriveMounts", "List and verify CloudDrive2 mounts", nil, nil)},
-		"/api/v1/mounts/remount":   map[string]any{"post": apiOperation("remountCloudDrive", "Remount CloudDrive2 after playback is stopped", nil, schemaObject([]string{"confirm_playback_stopped"}, map[string]any{"confirm_playback_stopped": map[string]any{"type": "boolean", "const": true}}))},
+		"/api/v1/mounts/remount":   map[string]any{"post": apiOperation("remountCloudDrive", "Remount CloudDrive2 only when Emby reports no active playback", nil, nil)},
 		"/api/v1/tasks": map[string]any{
 			"get": apiOperation("listSchedules", "List scheduled tasks", nil, nil),
 			"post": apiOperation("createSchedule", "Create or update a scheduled real operation", nil, schemaObject([]string{"type", "name", "enabled"}, map[string]any{
@@ -133,19 +139,24 @@ func openAPISchema() map[string]any {
 			"get": apiOperation("listAgentTokens", "List Agent tokens without secret values", nil, nil),
 			"post": apiOperation("createAgentToken", "Create an Agent token and return its secret once", nil, schemaObject([]string{"name", "permissions"}, map[string]any{
 				"name": stringSchema("Agent name"), "permissions": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"read", "write"}}},
-				"rate_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 600, "default": 20},
+				"rate_limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 600, "default": 120},
 			})),
 		},
-		"/api/v1/tokens/{id}": map[string]any{"delete": apiOperation("revokeAgentToken", "Revoke an Agent token", []any{pathParameter("id", "Token ID")}, nil)},
-		"/api/v1/audit-logs":  map[string]any{"get": apiOperation("listAgentAudits", "List bounded REST and MCP audit records", []any{integerQueryParameter("limit", "Maximum 100 records")}, nil)},
+		"/api/v1/tokens/{id}":                        map[string]any{"delete": apiOperation("revokeAgentToken", "Revoke an Agent token", []any{pathParameter("id", "Token ID")}, nil)},
+		"/api/v1/audit-logs":                         map[string]any{"get": apiOperation("listAgentAudits", "List bounded REST and MCP audit records", auditLogParameters(), nil)},
+		"/api/v1/destructive-approvals":              map[string]any{"get": browserOperation("listDestructiveApprovals", "List pending target-bound deletion requests", nil)},
+		"/api/v1/destructive-approvals/{id}/approve": map[string]any{"post": browserOperation("approveDestructiveApproval", "Approve one exact deletion request", []any{pathParameter("id", "Approval ID")})},
+		"/api/v1/destructive-approvals/{id}/reject":  map[string]any{"post": browserOperation("rejectDestructiveApproval", "Reject one exact deletion request", []any{pathParameter("id", "Approval ID")})},
 	}
+	paths["/api/v1/files/delete"].(map[string]any)["post"].(map[string]any)["security"] = []any{map[string]any{"BrowserSession": []any{}}}
 	return map[string]any{
 		"openapi": "3.1.0",
 		"info":    map[string]any{"title": "EmbyMedia V2 API", "version": "2.0.0", "description": "Standalone 115, Emby, CloudDrive2, task, settings and Agent operations", "license": map[string]any{"name": "MIT", "identifier": "MIT"}},
 		"servers": []any{map[string]any{"url": "/", "description": "Current EmbyMedia server"}},
 		"components": map[string]any{"securitySchemes": map[string]any{
-			"AgentToken":    map[string]any{"type": "apiKey", "in": "header", "name": "X-Agent-Token", "description": "Agent token issued by the administrator"},
-			"WebhookSecret": map[string]any{"type": "apiKey", "in": "header", "name": "X-Webhook-Secret", "description": "CloudDrive2 webhook secret"},
+			"AgentToken":     map[string]any{"type": "apiKey", "in": "header", "name": "X-Agent-Token", "description": "Agent token issued by the administrator"},
+			"BrowserSession": map[string]any{"type": "apiKey", "in": "cookie", "name": "embymedia_http_session", "description": "Authenticated browser session; Agent tokens cannot decide destructive approvals"},
+			"WebhookSecret":  map[string]any{"type": "apiKey", "in": "header", "name": "X-Webhook-Secret", "description": "CloudDrive2 webhook secret"},
 		}},
 		"paths": paths,
 	}

@@ -146,12 +146,20 @@ func (s *EmbyService) RefreshLibraryCtx(ctx context.Context, libraryID string) e
 	return nil
 }
 
-// ListSessions returns active playback sessions
+// ListSessions returns active playback sessions.
 func (s *EmbyService) ListSessions() ([]domain.EmbyPlaybackSession, error) {
-	baseURL, apiKey, _ := s.getURLAndKey()
-	reqURL := fmt.Sprintf("%s/Sessions?api_key=%s", baseURL, apiKey)
+	return s.ListSessionsCtx(context.Background())
+}
 
-	resp, err := s.client.Get(reqURL)
+// ListSessionsCtx returns active playback sessions with cancellation.
+func (s *EmbyService) ListSessionsCtx(ctx context.Context) ([]domain.EmbyPlaybackSession, error) {
+	baseURL, apiKey, _ := s.getURLAndKey()
+	reqURL := fmt.Sprintf("%s/Sessions?api_key=%s", baseURL, url.QueryEscape(apiKey))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -159,28 +167,19 @@ func (s *EmbyService) ListSessions() ([]domain.EmbyPlaybackSession, error) {
 	if err := requireEmbyResponse(resp, "Emby session list"); err != nil {
 		return nil, err
 	}
-
 	var raw []struct {
-		ID         string `json:"Id"`
-		UserName   string `json:"UserName"`
-		Client     string `json:"Client"`
-		DeviceName string `json:"DeviceName"`
-		PlayState  struct {
-			IsPaused      bool   `json:"IsPaused"`
-			PositionTicks int64  `json:"PositionTicks"`
-			PlayMethod    string `json:"PlayMethod"`
-		} `json:"PlayState"`
-		NowPlayingItem *struct {
-			Name string `json:"Name"`
-			Type string `json:"Type"`
-		} `json:"NowPlayingItem"`
+		ID, UserName, Client, DeviceName string
+		PlayState                        struct {
+			IsPaused      bool
+			PositionTicks int64
+			PlayMethod    string
+		}
+		NowPlayingItem *struct{ Name, Type string }
 	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&raw); err != nil {
 		return nil, err
 	}
-
-	var res []domain.EmbyPlaybackSession
+	res := make([]domain.EmbyPlaybackSession, 0, len(raw))
 	for _, sess := range raw {
 		if sess.NowPlayingItem == nil {
 			continue
@@ -189,20 +188,25 @@ func (s *EmbyService) ListSessions() ([]domain.EmbyPlaybackSession, error) {
 		if sess.PlayState.IsPaused {
 			playState = "Paused"
 		}
-
-		res = append(res, domain.EmbyPlaybackSession{
-			ID:             sess.ID,
-			UserName:       sess.UserName,
-			ItemName:       sess.NowPlayingItem.Name,
-			ItemType:       sess.NowPlayingItem.Type,
-			Client:         sess.Client,
-			DeviceName:     sess.DeviceName,
-			PlayState:      playState,
-			PositionTicks:  sess.PlayState.PositionTicks,
-			PlaybackMethod: sess.PlayState.PlayMethod,
-		})
+		res = append(res, domain.EmbyPlaybackSession{ID: sess.ID, UserName: sess.UserName, ItemName: sess.NowPlayingItem.Name, ItemType: sess.NowPlayingItem.Type, Client: sess.Client, DeviceName: sess.DeviceName, PlayState: playState, PositionTicks: sess.PlayState.PositionTicks, PlaybackMethod: sess.PlayState.PlayMethod})
 	}
 	return res, nil
+}
+
+// EnsureNoActivePlayback refuses disruptive maintenance while Emby reports a playing or paused item.
+func (s *EmbyService) EnsureNoActivePlayback(ctx context.Context) error {
+	sessions, err := s.ListSessionsCtx(ctx)
+	if err != nil {
+		return fmt.Errorf("check active Emby playback: %w", err)
+	}
+	if len(sessions) == 0 {
+		return nil
+	}
+	active := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		active = append(active, fmt.Sprintf("%s on %s: %s", session.UserName, session.DeviceName, session.ItemName))
+	}
+	return fmt.Errorf("active Emby playback prevents remount: %s", strings.Join(active, "; "))
 }
 
 func (s *EmbyService) GetLibraries() ([]domain.EmbyLibrary, error) {
@@ -226,7 +230,8 @@ func (s *EmbyService) GetItemCtx(ctx context.Context, itemID string) (*domain.Em
 		return nil, fmt.Errorf("Emby item ID is required")
 	}
 	baseURL, apiKey, _ := s.getURLAndKey()
-	reqURL := fmt.Sprintf("%s/Items/%s?Fields=Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags&api_key=%s", baseURL, url.PathEscape(itemID), url.QueryEscape(apiKey))
+	query := url.Values{"Ids": {itemID}, "Recursive": {"true"}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}, "api_key": {apiKey}}
+	reqURL := fmt.Sprintf("%s/Items?%s", baseURL, query.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
@@ -242,7 +247,7 @@ func (s *EmbyService) GetItemCtx(ctx context.Context, itemID string) (*domain.Em
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("inspect Emby item returned HTTP %d", resp.StatusCode)
 	}
-	var raw struct {
+	type rawItem struct {
 		ID                string            `json:"Id"`
 		Name              string            `json:"Name"`
 		Type              string            `json:"Type"`
@@ -252,12 +257,16 @@ func (s *EmbyService) GetItemCtx(ctx context.Context, itemID string) (*domain.Em
 		BackdropImageTags []string          `json:"BackdropImageTags"`
 		ProviderIDs       map[string]string `json:"ProviderIds"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&raw); err != nil {
+	var result struct {
+		Items []rawItem `json:"Items"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode Emby item: %w", err)
 	}
-	if raw.ID != itemID {
-		return nil, fmt.Errorf("Emby returned item %q for requested item %q", raw.ID, itemID)
+	if len(result.Items) != 1 || result.Items[0].ID != itemID {
+		return nil, fmt.Errorf("Emby item %s was not found", itemID)
 	}
+	raw := result.Items[0]
 	_, hasPoster := raw.ImageTags["Primary"]
 	return &domain.EmbyMediaItem{
 		ID:           raw.ID,
@@ -305,15 +314,30 @@ func (s *EmbyService) MatchMediaCtx(ctx context.Context, itemID, tmdbID string) 
 	return nil
 }
 
-// SearchMedia searches items in Emby by keyword
+// SearchMedia searches items in Emby by keyword.
 func (s *EmbyService) SearchMedia(term string, limit int) ([]domain.EmbyMediaItem, error) {
-	baseURL, apiKey, _ := s.getURLAndKey()
+	return s.SearchMediaCtx(context.Background(), term, limit)
+}
+
+// SearchMediaCtx searches Emby items by keyword with cancellation.
+func (s *EmbyService) SearchMediaCtx(ctx context.Context, term string, limit int) ([]domain.EmbyMediaItem, error) {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return nil, fmt.Errorf("Emby search term is required")
+	}
 	if limit <= 0 {
 		limit = 20
 	}
-	reqURL := fmt.Sprintf("%s/Items?SearchTerm=%s&Recursive=true&Limit=%d&api_key=%s", baseURL, url.QueryEscape(term), limit, apiKey)
-
-	resp, err := s.client.Get(reqURL)
+	if limit > 100 {
+		limit = 100
+	}
+	baseURL, apiKey, _ := s.getURLAndKey()
+	query := url.Values{"SearchTerm": {term}, "Recursive": {"true"}, "Limit": {fmt.Sprint(limit)}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}, "api_key": {apiKey}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/Items?"+query.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -321,38 +345,21 @@ func (s *EmbyService) SearchMedia(term string, limit int) ([]domain.EmbyMediaIte
 	if err := requireEmbyResponse(resp, "Emby media search"); err != nil {
 		return nil, err
 	}
-
 	var raw struct {
 		Items []struct {
-			ID           string            `json:"Id"`
-			Name         string            `json:"Name"`
-			Type         string            `json:"Type"`
-			Path         string            `json:"Path"`
-			PremiereDate string            `json:"PremiereDate"`
-			ImageTags    map[string]string `json:"ImageTags"`
-			ProviderIds  map[string]string `json:"ProviderIds"`
-		} `json:"Items"`
+			ID, Name, Type, Path, PremiereDate string
+			ImageTags                          map[string]string
+			BackdropImageTags                  []string
+			ProviderIds                        map[string]string
+		}
 	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&raw); err != nil {
 		return nil, err
 	}
-
-	var res []domain.EmbyMediaItem
+	res := make([]domain.EmbyMediaItem, 0, len(raw.Items))
 	for _, item := range raw.Items {
 		_, hasPrimary := item.ImageTags["Primary"]
-		_, hasBackdrop := item.ImageTags["Backdrop"]
-
-		res = append(res, domain.EmbyMediaItem{
-			ID:           item.ID,
-			Name:         item.Name,
-			Type:         item.Type,
-			Path:         item.Path,
-			PremiereDate: item.PremiereDate,
-			HasPoster:    hasPrimary,
-			HasBackdrop:  hasBackdrop,
-			ProviderIDs:  item.ProviderIds,
-		})
+		res = append(res, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, Type: item.Type, Path: item.Path, PremiereDate: item.PremiereDate, HasPoster: hasPrimary, HasBackdrop: len(item.BackdropImageTags) > 0, ProviderIDs: item.ProviderIds})
 	}
 	return res, nil
 }

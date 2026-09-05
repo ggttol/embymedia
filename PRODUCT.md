@@ -14,8 +14,8 @@ EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 1
 - STRM synchronization and containment-aware target verification.
 - Persistent task, schedule, execution-attempt, cancellation, retry, and audit state.
 - Credential configured/writable status without revealing stored values.
-- Agent integration through authenticated Streamable HTTP MCP, loopback legacy SSE, stdio MCP, and OpenAPI 3.1.
-- Supported writes: bounded 115 and Emby operations, CloudDrive gRPC remount, settings, scheduled tasks, and Agent token management.
+- Agent integration through authenticated Streamable HTTP MCP, loopback legacy SSE, stdio MCP, and OpenAPI 3.1. Thirty-four MCP tools expose account/stored-file/share/offline discovery, Emby item/session discovery, task and schedule lifecycle, provider writes, validated settings updates, and system health.
+- Autonomous tokens default to read/write access and 120 requests per minute. Non-destructive 115, Emby, CloudDrive, STRM, task, settings, schedule, and Agent-token operations do not require per-action confirmation.
 - Session-backed user administration: create users, enable or disable access, reset passwords, assign administrator or operator status, and terminate the current browser session.
 
 ## Constraints and non-goals
@@ -23,7 +23,10 @@ EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 1
 - Never display stored password material or secret values; Agent token plaintext appears only in the creation response.
 - Administrators and operators can use media operations; only administrators can manage browser users.
 - Tool discovery is not execution evidence; the UI distinguishes discovery from successful or failed read calls.
+- A 115 deletion requires a short-lived request bound to freshly resolved IDs and names, followed by one authenticated browser decision and one non-replayable execution. Agent tokens cannot approve deletion, enable the browser deletion switch, or use the REST file-delete route. Emby library deletion is not exposed.
 - Provider operations fail with their actual configuration, authorization, transport, or response error; no synthetic success or empty fallback.
+- UI improvements retain the current routes, provider operations, Chinese interface, Warm Paper palette, and login proxy; they do not introduce dark mode, TLS changes, or synthetic operational success.
+- Transfer destinations use a consistent browser preference; resource return navigation preserves search context. Favorites removal supports undo within the browser.
 
 ## Missing facts
 - No supplied product logo beyond the current EmbyMedia mark.

@@ -54,6 +54,15 @@ export function useFavorites() {
     saveToStorage()
   }
 
+  function restoreFavorite(item: FavoriteItem): boolean {
+    if (isFavorite(item.id)) return false
+    favorites.value = [...favorites.value, item]
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt))
+      .slice(0, MAX_FAVORITES)
+    saveToStorage()
+    return true
+  }
+
   function toggleFavorite(item: Omit<FavoriteItem, 'savedAt'>): boolean {
     if (isFavorite(item.id)) {
       removeFavorite(item.id)
@@ -70,6 +79,7 @@ export function useFavorites() {
     isFavorite,
     addFavorite,
     removeFavorite,
+    restoreFavorite,
     toggleFavorite
   }
 }

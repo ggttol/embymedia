@@ -27,16 +27,18 @@ func newTestMCPServer(t *testing.T) *MCPServer {
 	emby := service.NewEmbyService(db)
 	cd := service.NewCloudDriveService(db)
 	tq := service.NewTaskQueueService(db, drive, emby)
-	return NewMCPServer(db, drive, emby, cd, tq, security.NewAgentAuthorizer(db), false)
+	return NewMCPServer(db, drive, emby, cd, tq, service.NewCronManager(db, tq), security.NewAgentAuthorizer(db), false)
 }
 
-func TestAll18MCPToolsRegistered(t *testing.T) {
+func TestAllMCPToolsRegistered(t *testing.T) {
 	mcpServer := newTestMCPServer(t)
 	registered := mcpServer.Server().ListTools()
 	expected := []string{
 		"c115_list_files", "c115_search", "c115_save_share", "c115_move", "c115_rename", "c115_mkdir", "c115_get_share_link",
 		"cd2_mount_status", "cd2_remount", "emby_refresh_library", "emby_get_libraries", "emby_inspect_item",
 		"task_submit", "task_query", "task_cancel", "task_get_logs", "system_get_config", "system_health",
+		"c115_list_accounts", "c115_search_files", "c115_snapshot_share", "c115_list_offline", "emby_search_items", "emby_list_sessions", "emby_missing_posters",
+		"task_list", "task_retry", "schedule_list", "schedule_upsert", "schedule_run", "schedule_delete", "c115_request_delete", "c115_execute_delete", "system_update_config",
 	}
 	if len(registered) != len(expected) {
 		t.Fatalf("expected %d tools, got %d", len(expected), len(registered))
@@ -176,5 +178,59 @@ func TestSystemConfigRedactsSecrets(t *testing.T) {
 	}
 	if cidMap, ok := decoded["c115_cid_map"].(map[string]any); !ok || cidMap["电影"] != "123" {
 		t.Fatalf("CID map was not structured: %+v", decoded["c115_cid_map"])
+	}
+}
+
+func TestAutonomousScheduleAndTaskHandlers(t *testing.T) {
+	server := newTestMCPServer(t)
+	upsert := mcp.CallToolRequest{}
+	upsert.Params.Arguments = map[string]any{"name": "Paused verification", "task_type": "emby_refresh", "enabled": false, "payload": map[string]any{}}
+	result, err := server.handleScheduleUpsert(context.Background(), upsert)
+	if err != nil || result.IsError {
+		t.Fatalf("upsert schedule: result=%+v err=%v", result, err)
+	}
+	var schedule map[string]any
+	if err := json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &schedule); err != nil {
+		t.Fatalf("decode schedule: %v", err)
+	}
+	id, _ := schedule["id"].(string)
+	listed, _ := server.handleScheduleList(context.Background(), mcp.CallToolRequest{})
+	if listed.IsError || !strings.Contains(listed.Content[0].(mcp.TextContent).Text, id) {
+		t.Fatalf("schedule not listed: %+v", listed)
+	}
+	run := mcp.CallToolRequest{}
+	run.Params.Arguments = map[string]any{"schedule_id": id}
+	runResult, _ := server.handleScheduleRun(context.Background(), run)
+	if runResult.IsError {
+		t.Fatalf("run schedule: %+v", runResult)
+	}
+	tasks, _ := server.handleTaskList(context.Background(), mcp.CallToolRequest{})
+	if tasks.IsError || !strings.Contains(tasks.Content[0].(mcp.TextContent).Text, "emby_refresh") {
+		t.Fatalf("task not listed: %+v", tasks)
+	}
+	remove := mcp.CallToolRequest{}
+	remove.Params.Arguments = map[string]any{"schedule_id": id}
+	removed, _ := server.handleScheduleDelete(context.Background(), remove)
+	if removed.IsError {
+		t.Fatalf("delete schedule: %+v", removed)
+	}
+}
+
+func TestAutonomousConfigCannotBypassDeletionPolicy(t *testing.T) {
+	server := newTestMCPServer(t)
+	update := mcp.CallToolRequest{}
+	update.Params.Arguments = map[string]any{"settings": map[string]any{"clouddrive_webhook_debounce_seconds": "45"}}
+	updated, _ := server.handleSystemUpdateConfig(context.Background(), update)
+	if updated.IsError {
+		t.Fatalf("update config: %+v", updated)
+	}
+	dangerous := mcp.CallToolRequest{}
+	dangerous.Params.Arguments = map[string]any{"settings": map[string]any{"dangerous_actions_enabled": "true"}}
+	rejected, _ := server.handleSystemUpdateConfig(context.Background(), dangerous)
+	if !rejected.IsError {
+		t.Fatal("Agent changed browser deletion switch")
+	}
+	if !toolRequiresWrite("system_update_config") || !toolRequiresWrite("c115_execute_delete") || toolRequiresWrite("c115_search_files") {
+		t.Fatal("expanded tool write classification is incorrect")
 	}
 }

@@ -106,6 +106,40 @@ func TestStorageOperations(t *testing.T) {
 	}
 }
 
+func TestDestructiveApprovalRequiresDecisionAndCannotReplay(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "approval.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	now := time.Now()
+	approval := &domain.DestructiveApproval{ID: "approval-1", Action: "c115.delete", AccountID: "account", ParentCID: "parent", Targets: []domain.DestructiveTarget{{FileID: "file", Name: "Movie.mkv"}}, Status: "pending", RequestedBy: "agent", ExpiresAt: now.Add(time.Minute), CreatedAt: now}
+	if err := db.CreateDestructiveApproval(approval); err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	if _, err := db.ClaimDestructiveApproval(approval.ID, approval.Action, now); err == nil {
+		t.Fatal("unapproved deletion was claimable")
+	}
+	pending, err := db.ListPendingDestructiveApprovals(now)
+	if err != nil || len(pending) != 1 || pending[0].Targets[0].Name != "Movie.mkv" {
+		t.Fatalf("pending approvals = %+v, err=%v", pending, err)
+	}
+	decided, err := db.DecideDestructiveApproval(approval.ID, "operator", "approved", now)
+	if err != nil || decided.Status != "approved" || decided.ApprovedBy != "operator" {
+		t.Fatalf("approve = %+v, err=%v", decided, err)
+	}
+	claimed, err := db.ClaimDestructiveApproval(approval.ID, approval.Action, now)
+	if err != nil || claimed.Status != "executing" {
+		t.Fatalf("claim = %+v, err=%v", claimed, err)
+	}
+	if _, err := db.ClaimDestructiveApproval(approval.ID, approval.Action, now); err == nil {
+		t.Fatal("approval was replayable")
+	}
+	if err := db.FinishDestructiveApproval(approval.ID, "executed", "", now); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 func TestSetSettingsUpdatesDefaultAccountCredential(t *testing.T) {
 	db, err := Open(":memory:")
 	if err != nil {

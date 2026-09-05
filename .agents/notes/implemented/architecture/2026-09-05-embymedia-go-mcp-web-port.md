@@ -12,9 +12,9 @@ The standalone Go service exposed its browser and REST API on port 3080 but expo
 
 The Go MCP registry is available through Streamable HTTP at `/mcp` on the main Web listener. The Go HTTP wrapper requires an Agent token before MCP initialization unless the request carries the authenticated browser identity; tool calls then enforce read/write scope and the shared rate bucket. The same binary supports trusted local `-mcp` stdio clients, while port 3081 remains a token-authenticated, on-host SSE listener. The Agent page performs a real `initialize`, `tools/list`, and safe read-tool exchange and distinguishes discovery from execution results.
 
-Hermes on the Debian host connects to `http://127.0.0.1:3080/mcp` with `X-Agent-Token`. The deployed configuration uses the standalone Go registry under the `embymedia` name and discovers eighteen tools.
+Hermes on the Debian host connects to `http://127.0.0.1:3080/mcp` with `X-Agent-Token`. The deployed configuration uses the standalone Go registry under the `embymedia` name and discovers thirty-four tools.
 
-Agent token creation returns a random secret once and stores only its SHA-256 digest. REST and HTTP MCP requests authenticate, rate-limit, and check read/write scope through one process-wide authorizer; invalid credentials fail closed. Browser requests continue through the deployment login proxy.
+Agent token creation returns a random secret once and stores only its SHA-256 digest. REST and HTTP MCP requests authenticate, rate-limit, and check read/write scope through one process-wide authorizer; invalid credentials fail closed. Autonomous tokens default to read/write access and 120 requests per minute. Browser requests continue through the deployment login proxy.
 
 ## Alternatives considered
 
@@ -26,4 +26,4 @@ Agent token creation returns a random secret once and stores only its SHA-256 di
 
 ## Consequences
 
-One application port serves the Web UI, REST schema, and preferred MCP transport. Same-host Hermes has a tested eighteen-tool connection and uses the same token policy as public Agent clients. Tool discovery means protocol registration, not successful upstream execution; provider configuration and runtime failures return explicit MCP errors instead of synthetic success. Caddy forwards token-bearing Agent paths directly to the fail-closed Go middleware and keeps headerless browser traffic behind login.
+One application port serves the Web UI, REST schema, and preferred MCP transport. Same-host Hermes uses the same thirty-four-tool registry and token policy as public Agent clients. Tool discovery means protocol registration, not successful upstream execution; provider configuration and runtime failures return explicit MCP errors instead of synthetic success. Caddy forwards token-bearing Agent paths directly to the fail-closed Go middleware and keeps headerless browser traffic behind login.

@@ -1,13 +1,18 @@
 package api
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/embymedia/embymedia/internal/domain"
 	"github.com/embymedia/embymedia/internal/security"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
@@ -135,6 +140,26 @@ func TestAPIRoutes(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/tokens", nil)
+	req.Header.Set("X-Agent-Token", "\u00a0")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("blank explicit token bypassed authentication: %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"id":"created-account","name":"Account","cookie":"UID=synthetic-secret"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated || strings.Contains(rec.Body.String(), "synthetic-secret") {
+		t.Fatalf("account creation failed or exposed credentials: %d %s", rec.Code, rec.Body.String())
+	}
+	accounts, err := db.ListAccounts()
+	if err != nil || len(accounts) != 1 || accounts[0].Cookie != "UID=synthetic-secret" {
+		t.Fatal("account credential was not persisted")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tokens", nil)
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	if strings.Contains(rec.Body.String(), created.Token) {
@@ -210,5 +235,67 @@ func TestProxiedRESTRequiresAgentToken(t *testing.T) {
 	e.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("proxied tokenless request returned %d", response.Code)
+	}
+}
+
+func TestAgentCannotEnableOrBypassBrowserDeletionApproval(t *testing.T) {
+	e := echo.New()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer db.Close()
+	drive := service.NewDriveService(db, "http://127.0.0.1:8100", "")
+	emby := service.NewEmbyService(db)
+	queue := service.NewTaskQueueService(db, drive, emby)
+	server := NewServer(e, db, drive, emby, service.NewCloudDriveService(db), queue, service.NewCronManager(db, queue), service.NewSettingsService(db), security.NewAgentAuthorizer(db))
+	defer server.Close()
+	secret := "full-access-test"
+	digest := sha256.Sum256([]byte(secret))
+	if err := db.SaveToken(&domain.AgentToken{ID: "agent", Token: hex.EncodeToString(digest[:]), Name: "agent", Scopes: []string{"read", "write"}, RateLimit: 20, Enabled: true, CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("save token: %v", err)
+	}
+	for _, test := range []struct{ path, body string }{
+		{"/api/v1/settings", `{"dangerous_actions_enabled":"true"}`},
+		{"/api/v1/files/delete", `{"account_id":"default","file_ids":["file"]}`},
+		{"/api/v1/destructive-approvals/approval/approve", `{}`},
+	} {
+		request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewBufferString(test.body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Agent-Token", secret)
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("POST %s returned %d, want 403: %s", test.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestBrowserUserCanApproveExactPendingDeletion(t *testing.T) {
+	e := echo.New()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer db.Close()
+	drive := service.NewDriveService(db, "http://127.0.0.1:8100", "")
+	emby := service.NewEmbyService(db)
+	queue := service.NewTaskQueueService(db, drive, emby)
+	server := NewServer(e, db, drive, emby, service.NewCloudDriveService(db), queue, service.NewCronManager(db, queue), service.NewSettingsService(db), security.NewAgentAuthorizer(db))
+	defer server.Close()
+	now := time.Now()
+	approval := &domain.DestructiveApproval{ID: "approval", Action: "c115.delete", AccountID: "account", ParentCID: "0", Targets: []domain.DestructiveTarget{{FileID: "file", Name: "Movie.mkv"}}, Status: "pending", RequestedBy: "agent", ExpiresAt: now.Add(time.Minute), CreatedAt: now}
+	if err := db.CreateDestructiveApproval(approval); err != nil {
+		t.Fatalf("create approval: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/destructive-approvals/approval/approve", nil)
+	request.Header.Set("Remote-User", "operator")
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("approve returned %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := db.ClaimDestructiveApproval("approval", "c115.delete", time.Now()); err != nil {
+		t.Fatalf("approved request was not claimable: %v", err)
 	}
 }

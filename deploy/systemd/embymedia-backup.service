@@ -1,7 +1,7 @@
 [Unit]
 Description=Encrypted local EmbyMedia backup
 After=network-online.target embymedia-stack.service
-Wants=network-online.target embymedia-stack.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot

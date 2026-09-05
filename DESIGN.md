@@ -3,14 +3,14 @@
 ## Direction
 A warm-paper media operations ledger: forest-green signal lines, terracotta annotations, ivory surfaces, and a live service path that makes resource, storage, Emby, task, and Agent state legible at a glance.
 
-Reading this as: an operations application for one technical administrator, industrial/editorial language, signature moment: an interactive live signal spine.
+Reading this as: an operations application for administrators and media operators, industrial/editorial language, signature moment: an actionable service-status ledger with a task recovery queue.
 
 Candidate directions considered:
 - Safe: restrained light admin console — clear but interchangeable.
 - Bold: media operations ledger — selected; dense facts and live paths read like an operator's annotated runbook.
 - Unexpected: film contact-sheet layout — distinctive but weaker for continuous controls.
 
-Ambition: VARIANCE 6 · MOTION 2 · DENSITY 8.
+Ambition: VARIANCE 4 · MOTION 2 · DENSITY 8.
 
 ## Color
 Source: the Warm Paper reference and operational status conventions.
@@ -22,33 +22,35 @@ Source: the Warm Paper reference and operational status conventions.
 
 ## Type
 Source: custom rationale; privacy/performance-preserving local font stacks.
-- display: condensed local sans stack, 36–54px, 700, tight leading
-- headings: local Chinese sans, 18–28px, 650
-- body: local Chinese sans, 14–16px
-- labels/data: monospace, 11–13px, tabular numerals
+- headings: local Chinese serif, 20–30px; the page owns one primary heading.
+- body: local Chinese sans, 14–16px.
+- labels: 12–14px; monospace is reserved for paths, identifiers, and tabular data.
 
 ## Geometry
-- Full-viewport control surface; 240px rail + flexible canvas.
+- Full-viewport control surface; 232px desktop rail and flexible canvas.
 - 8px spacing base; dense data rows separated by rules, not floating cards.
-- 6–12px radii only for controls/status modules.
+- 4px panel and control radii; pill geometry is reserved for compact status badges.
 - One elevation level for command drawers; most grouping uses borders and color blocks.
 
 ## Components
-- Signal spine: four labelled nodes with live service or protocol state.
-- Module rail: Dashboard, Resources, Favorites, Files, Tasks, Agent, and Settings.
+- Status: checking, healthy, failed, and untested have explicit text and matching colors; protocol diagrams never imply unobserved success.
+- Module rail: Dashboard, Resources, Favorites, Files, Tasks, Agent, Settings, and administrator-only Users.
 - Agent console: actual MCP `initialize`, `tools/list`, and safe read-tool calls; discovery-only, success, and failure are distinct states; Hermes setup requests `X-Agent-Token`.
 - Configuration matrix: endpoint, filesystem, webhook, destructive-action, and write-only credential settings.
 - Authentication entry: a Warm Paper access ledger with a single credential form, explicit private-system context, and no decorative dashboard metrics.
 - User administration: a restrained roster table with role, access state, password-reset, and removal actions; destructive changes use explicit confirmation.
 - Destructive controls require explicit confirmation, a server-side enable switch where applicable, and visible upstream errors.
+- Copy actions acknowledge success only after clipboard completion; unavailable browser APIs expose selectable text for manual copying.
+- Dialogs own focus, Escape dismissal, submission feedback, and return focus to their opener.
+- Failed reads remain distinct from successful empty results; stale results show their age.
 
 ## Composition
-Persistent module rail → signal spine/status header → module-specific continuous canvas → contextual action dock. Authentication uses a split access-ledger composition; configuration and user administration use continuous bordered rows rather than interchangeable card grids.
+Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options.
 
 ## Motion
 Status pulse and 180ms control transitions only. No scroll reveal. Reduced motion removes pulses/transitions while preserving state.
 
 ## Responsive behavior
-- ≥1100px: fixed rail and full operations canvas.
-- 720–1099px: compact top navigation and two-column modules where content permits.
-- <720px: wrapped top navigation, single-column modules, vertical signal path, and horizontally scrollable data tables.
+- ≥1024px: fixed rail and full operations canvas.
+- 640–1023px: compact persistent top navigation.
+- <640px: five persistent destinations (Overview, Search, Files, Tasks, More); secondary destinations open in an accessible dialog. File rows recompose for touch; save and batch-action bars sit above navigation and safe-area insets.

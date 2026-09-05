@@ -77,6 +77,45 @@ func (s *fakeCloudDriveServer) Unmount(ctx context.Context, request *clouddrivep
 	return &clouddrivepb.MountPointResult{Success: true}, nil
 }
 
+func TestLocalMountPathUsesConfiguredHostPathForProviderMount(t *testing.T) {
+	configured := filepath.Join(string(filepath.Separator), "srv", "embymedia", "CloudNAS", "CloudDrive")
+	if got := localMountPath("/CloudNAS/CloudDrive", configured); got != configured {
+		t.Fatalf("local mount path = %q, want %q", got, configured)
+	}
+	if got := localMountPath("/CloudNAS/Archive", configured); got != "/CloudNAS/Archive" {
+		t.Fatalf("unmatched provider mount path changed to %q", got)
+	}
+}
+
+func TestLocalMountPathDistinguishesSameBasenameMounts(t *testing.T) {
+	configured := "/srv/embymedia/data/clouddrive/CloudNAS/B/Media"
+	if got := localMountPath("/CloudNAS/A/Media", configured); got != "/CloudNAS/A/Media" {
+		t.Fatalf("mount A uses mount B's local path: %q", got)
+	}
+	if got := localMountPath("/CloudNAS/B/Media", configured); got != configured {
+		t.Fatalf("mount B local path = %q, want %q", got, configured)
+	}
+}
+
+func TestLocalMountPathBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name, provider, configured, expected string
+	}{
+		{"unconfigured", "/CloudNAS/Media", "", "/CloudNAS/Media"},
+		{"identical", "/CloudNAS/Media", "/CloudNAS/Media", "/CloudNAS/Media"},
+		{"trailing separators", "/CloudNAS/Media/", "/srv/CloudNAS/Media/", "/srv/CloudNAS/Media/"},
+		{"component boundary", "/CloudNAS/Media", "/srv/NotCloudNAS/Media", "/CloudNAS/Media"},
+		{"relative provider", "CloudNAS/Media", "/srv/CloudNAS/Media", "CloudNAS/Media"},
+		{"provider root", "/", "/srv/CloudNAS/Media", "/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := localMountPath(test.provider, test.configured); got != test.expected {
+				t.Fatalf("local mount path = %q, want %q", got, test.expected)
+			}
+		})
+	}
+}
+
 func TestCloudDriveGRPCHealthAndRemount(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

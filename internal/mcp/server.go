@@ -15,6 +15,7 @@ import (
 	"github.com/embymedia/embymedia/internal/security"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
+	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -26,12 +27,13 @@ type MCPServer struct {
 	emby           *service.EmbyService
 	cloudDrive     *service.CloudDriveService
 	taskQueue      *service.TaskQueueService
+	cron           *service.CronManager
 	settings       *service.SettingsService
 	authorizer     *security.AgentAuthorizer
 	trustTokenless bool
 }
 
-func NewMCPServer(db *storage.DB, drive *service.DriveService, emby *service.EmbyService, cd *service.CloudDriveService, tq *service.TaskQueueService, authorizer *security.AgentAuthorizer, trustTokenless bool) *MCPServer {
+func NewMCPServer(db *storage.DB, drive *service.DriveService, emby *service.EmbyService, cd *service.CloudDriveService, tq *service.TaskQueueService, cron *service.CronManager, authorizer *security.AgentAuthorizer, trustTokenless bool) *MCPServer {
 	s := server.NewMCPServer(
 		"EmbyMedia MCP Server",
 		"2.0.0",
@@ -39,11 +41,11 @@ func NewMCPServer(db *storage.DB, drive *service.DriveService, emby *service.Emb
 	)
 
 	ms := &MCPServer{
-		server: s, db: db, drive: drive, emby: emby, cloudDrive: cd, taskQueue: tq, settings: service.NewSettingsService(db), authorizer: authorizer, trustTokenless: trustTokenless,
+		server: s, db: db, drive: drive, emby: emby, cloudDrive: cd, taskQueue: tq, cron: cron, settings: service.NewSettingsService(db), authorizer: authorizer, trustTokenless: trustTokenless,
 	}
 	s.Use(ms.auditToolCalls)
 
-	ms.registerAll18Tools()
+	ms.registerTools()
 	return ms
 }
 
@@ -53,11 +55,21 @@ func (m *MCPServer) Server() *server.MCPServer {
 
 func toolRequiresWrite(name string) bool {
 	switch name {
-	case "c115_save_share", "c115_move", "c115_rename", "c115_mkdir", "c115_get_share_link", "cd2_remount", "emby_refresh_library", "task_submit", "task_cancel":
+	case "c115_save_share", "c115_move", "c115_rename", "c115_mkdir", "c115_get_share_link", "c115_request_delete", "c115_execute_delete", "cd2_remount", "emby_refresh_library", "task_submit", "task_cancel", "task_retry", "schedule_upsert", "schedule_run", "schedule_delete", "system_update_config":
 		return true
 	default:
 		return false
 	}
+}
+
+type requesterContextKey struct{}
+
+func requesterFromContext(ctx context.Context) string {
+	requester, _ := ctx.Value(requesterContextKey{}).(string)
+	if requester == "" {
+		return "unknown MCP caller"
+	}
+	return requester
 }
 
 func auditIP(header http.Header) string {
@@ -99,6 +111,11 @@ func (m *MCPServer) auditToolCalls(next server.ToolHandlerFunc) server.ToolHandl
 			}
 			caller = "agent"
 		}
+		requester := agentName
+		if requester == "" {
+			requester = caller
+		}
+		ctx = context.WithValue(ctx, requesterContextKey{}, requester)
 		result, err := next(ctx, request)
 		status := "success"
 		output := map[string]any{"handler_error": err != nil}
@@ -140,7 +157,7 @@ func (m *MCPServer) recordToolAudit(request mcp.CallToolRequest, tokenID, agentN
 	}
 }
 
-func (m *MCPServer) registerAll18Tools() {
+func (m *MCPServer) registerTools() {
 	// 1. c115_list_files: 列出指定 CID 下文件
 	m.server.AddTool(mcp.NewTool("c115_list_files",
 		mcp.WithDescription("List one bounded page of files and folders in a 115 directory"),
@@ -203,8 +220,7 @@ func (m *MCPServer) registerAll18Tools() {
 
 	// 9. cd2_remount: 重新挂载 CloudDrive2 挂载点
 	m.server.AddTool(mcp.NewTool("cd2_remount",
-		mcp.WithDescription("Remount configured CloudDrive2 points after playback is stopped; returns partial effects on failure"),
-		mcp.WithBoolean("confirm_playback_stopped", mcp.Required(), mcp.Description("Must be true after stopping active playback")),
+		mcp.WithDescription("Remount configured CloudDrive2 points when live Emby sessions show no active playback; returns partial effects on failure"),
 	), m.handleCD2Remount)
 
 	// 10. emby_refresh_library: 触发 Emby 媒体库刷新
@@ -258,9 +274,26 @@ func (m *MCPServer) registerAll18Tools() {
 	m.server.AddTool(mcp.NewTool("system_health",
 		mcp.WithDescription("Inspect local storage and configured CloudDrive2 mount inventory"),
 	), m.handleSystemHealth)
+
+	m.server.AddTool(mcp.NewTool("c115_list_accounts", mcp.WithDescription("List managed 115 accounts, status and capacity without credentials")), m.handleC115ListAccounts)
+	m.server.AddTool(mcp.NewTool("c115_search_files", mcp.WithDescription("Search files and directories already stored in a managed 115 account"), mcp.WithString("query", mcp.Required()), mcp.WithString("account_id"), mcp.WithInteger("offset", mcp.Min(0)), mcp.WithInteger("limit", mcp.Min(1), mcp.Max(200))), m.handleC115SearchFiles)
+	m.server.AddTool(mcp.NewTool("c115_snapshot_share", mcp.WithDescription("Inspect a 115 share before saving it"), mcp.WithString("url", mcp.Required()), mcp.WithString("password"), mcp.WithString("account_id")), m.handleC115SnapshotShare)
+	m.server.AddTool(mcp.NewTool("c115_list_offline", mcp.WithDescription("List current 115 offline download tasks"), mcp.WithString("account_id")), m.handleC115ListOffline)
+	m.server.AddTool(mcp.NewTool("emby_search_items", mcp.WithDescription("Search Emby items and return exact IDs for later operations"), mcp.WithString("query", mcp.Required()), mcp.WithInteger("limit", mcp.Min(1), mcp.Max(100))), m.handleEmbySearchItems)
+	m.server.AddTool(mcp.NewTool("emby_list_sessions", mcp.WithDescription("List active Emby playback sessions before disruptive maintenance")), m.handleEmbyListSessions)
+	m.server.AddTool(mcp.NewTool("emby_missing_posters", mcp.WithDescription("List up to 100 Emby movies and series without primary artwork")), m.handleEmbyMissingPosters)
+	m.server.AddTool(mcp.NewTool("task_list", mcp.WithDescription("List recent persistent tasks with optional status filter"), mcp.WithString("status"), mcp.WithInteger("limit", mcp.Min(1), mcp.Max(100))), m.handleTaskList)
+	m.server.AddTool(mcp.NewTool("task_retry", mcp.WithDescription("Create a reviewed retry from a failed or cancelled task"), mcp.WithString("task_id", mcp.Required())), m.handleTaskRetry)
+	m.server.AddTool(mcp.NewTool("schedule_list", mcp.WithDescription("List persisted automatic operation schedules")), m.handleScheduleList)
+	m.server.AddTool(mcp.NewTool("schedule_upsert", mcp.WithDescription("Create, update, pause or enable an automatic operation schedule"), mcp.WithString("schedule_id"), mcp.WithString("name", mcp.Required()), mcp.WithString("task_type", mcp.Required(), mcp.Enum(service.SupportedTaskTypes()...)), mcp.WithString("cron_expr"), mcp.WithBoolean("enabled", mcp.Required()), mcp.WithObject("payload")), m.handleScheduleUpsert)
+	m.server.AddTool(mcp.NewTool("schedule_run", mcp.WithDescription("Run one persisted schedule immediately"), mcp.WithString("schedule_id", mcp.Required())), m.handleScheduleRun)
+	m.server.AddTool(mcp.NewTool("schedule_delete", mcp.WithDescription("Delete an automatic schedule; does not delete media or task history"), mcp.WithString("schedule_id", mcp.Required())), m.handleScheduleDelete)
+	m.server.AddTool(mcp.NewTool("c115_request_delete", mcp.WithDescription("Request browser confirmation to recycle exact 115 objects"), mcp.WithString("account_id"), mcp.WithString("parent_cid", mcp.Required()), mcp.WithArray("file_ids", mcp.Required(), mcp.WithStringItems())), m.handleC115RequestDelete)
+	m.server.AddTool(mcp.NewTool("c115_execute_delete", mcp.WithDescription("Execute one unexpired target-bound deletion after browser approval"), mcp.WithString("approval_id", mcp.Required())), m.handleC115ExecuteDelete)
+	m.server.AddTool(mcp.NewTool("system_update_config", mcp.WithDescription("Update validated system settings; cannot change the browser deletion switch"), mcp.WithObject("settings", mcp.Required())), m.handleSystemUpdateConfig)
 }
 
-// Implement handlers for all 18 tools
+// Tool handlers share the same provider and persistence services as REST.
 
 func (m *MCPServer) handleC115ListFiles(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	accountID := req.GetString("account_id", "")
@@ -273,6 +306,18 @@ func (m *MCPServer) handleC115ListFiles(ctx context.Context, req mcp.CallToolReq
 	}
 	encoded, _ := json.MarshalIndent(map[string]any{"files": files, "total": total, "offset": offset, "limit": limit}, "", "  ")
 	return mcp.NewToolResultText(string(encoded)), nil
+}
+
+func (m *MCPServer) handleC115SearchFiles(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError("query is required"), nil
+	}
+	files, total, err := m.drive.SearchFilesCtx(ctx, req.GetString("account_id", ""), query, req.GetInt("offset", 0), req.GetInt("limit", 50))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("search 115 files failed: %v", err)), nil
+	}
+	return jsonToolResult(map[string]any{"files": files, "total": total, "offset": req.GetInt("offset", 0)}), nil
 }
 
 func (m *MCPServer) handleC115Search(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -376,9 +421,9 @@ func (m *MCPServer) handleCD2MountStatus(ctx context.Context, req mcp.CallToolRe
 	return mcp.NewToolResultText(string(encoded)), nil
 }
 
-func (m *MCPServer) handleCD2Remount(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if !req.GetBool("confirm_playback_stopped", false) {
-		return mcp.NewToolResultError("confirm_playback_stopped must be true"), nil
+func (m *MCPServer) handleCD2Remount(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if err := m.emby.EnsureNoActivePlayback(ctx); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 	report, err := m.cloudDrive.Remount(ctx)
 	if err != nil {
@@ -480,6 +525,237 @@ func (m *MCPServer) handleTaskGetLogs(ctx context.Context, req mcp.CallToolReque
 	}
 	encoded, _ := json.MarshalIndent(map[string]any{"task": task, "runs": runs}, "", "  ")
 	return mcp.NewToolResultText(string(encoded)), nil
+}
+
+func jsonToolResult(value any) *mcp.CallToolResult {
+	encoded, _ := json.MarshalIndent(value, "", "  ")
+	return mcp.NewToolResultText(string(encoded))
+}
+
+func (m *MCPServer) handleC115ListAccounts(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	accounts, err := m.drive.CheckAccounts(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list accounts failed: %v", err)), nil
+	}
+	return jsonToolResult(accounts), nil
+}
+
+func (m *MCPServer) handleC115SnapshotShare(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	rawURL, err := req.RequireString("url")
+	if err != nil {
+		return mcp.NewToolResultError("url is required"), nil
+	}
+	title, entries, err := m.drive.SnapshotShareCtx(ctx, req.GetString("account_id", ""), rawURL, req.GetString("password", ""))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("snapshot share failed: %v", err)), nil
+	}
+	return jsonToolResult(map[string]any{"title": title, "entries": entries, "count": len(entries)}), nil
+}
+
+func (m *MCPServer) handleC115ListOffline(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	tasks, err := m.drive.ListOfflineTasks(req.GetString("account_id", ""))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list offline tasks failed: %v", err)), nil
+	}
+	return jsonToolResult(tasks), nil
+}
+
+func (m *MCPServer) handleEmbySearchItems(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError("query is required"), nil
+	}
+	items, err := m.emby.SearchMediaCtx(ctx, query, req.GetInt("limit", 20))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("search Emby items failed: %v", err)), nil
+	}
+	return jsonToolResult(items), nil
+}
+
+func (m *MCPServer) handleEmbyListSessions(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	sessions, err := m.emby.ListSessionsCtx(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list Emby sessions failed: %v", err)), nil
+	}
+	return jsonToolResult(sessions), nil
+}
+
+func (m *MCPServer) handleEmbyMissingPosters(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	items, err := m.emby.GetMediaWithoutPostersCtx(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list missing posters failed: %v", err)), nil
+	}
+	if len(items) > 100 {
+		items = items[:100]
+	}
+	return jsonToolResult(items), nil
+}
+
+func (m *MCPServer) handleTaskList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	tasks, err := m.db.ListAsyncTasks(strings.TrimSpace(req.GetString("status", "")), req.GetInt("limit", 50))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list tasks failed: %v", err)), nil
+	}
+	return jsonToolResult(tasks), nil
+}
+
+func (m *MCPServer) handleTaskRetry(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("task_id")
+	if err != nil {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	task, err := m.taskQueue.Retry(id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("retry task failed: %v", err)), nil
+	}
+	return jsonToolResult(task), nil
+}
+
+func (m *MCPServer) handleScheduleList(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	tasks, err := m.db.ListTasks()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list schedules failed: %v", err)), nil
+	}
+	return jsonToolResult(tasks), nil
+}
+
+func schedulePayload(req mcp.CallToolRequest) (map[string]any, error) {
+	payload := map[string]any{}
+	if raw, present := req.GetArguments()["payload"]; present {
+		var ok bool
+		payload, ok = raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("payload must be an object")
+		}
+	}
+	return payload, nil
+}
+
+func (m *MCPServer) handleScheduleUpsert(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name, err := req.RequireString("name")
+	if err != nil {
+		return mcp.NewToolResultError("name is required"), nil
+	}
+	taskType, err := req.RequireString("task_type")
+	if err != nil {
+		return mcp.NewToolResultError("task_type is required"), nil
+	}
+	payload, err := schedulePayload(req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	params, _ := json.Marshal(payload)
+	task := domain.ScheduledTask{ID: strings.TrimSpace(req.GetString("schedule_id", "")), Name: strings.TrimSpace(name), Type: strings.TrimSpace(taskType), CronExpr: strings.TrimSpace(req.GetString("cron_expr", "")), Enabled: req.GetBool("enabled", false), Params: string(params)}
+	if err := m.cron.ScheduleTask(&task); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("save schedule failed: %v", err)), nil
+	}
+	return jsonToolResult(task), nil
+}
+
+func (m *MCPServer) handleScheduleRun(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("schedule_id")
+	if err != nil {
+		return mcp.NewToolResultError("schedule_id is required"), nil
+	}
+	schedule, err := m.db.GetTask(id)
+	if err != nil {
+		return mcp.NewToolResultError("scheduled task not found"), nil
+	}
+	payload := map[string]any{}
+	if schedule.Params != "" && json.Unmarshal([]byte(schedule.Params), &payload) != nil {
+		return mcp.NewToolResultError("scheduled task payload is invalid"), nil
+	}
+	task, err := m.taskQueue.Enqueue(schedule.Type, payload)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("run schedule failed: %v", err)), nil
+	}
+	return jsonToolResult(map[string]any{"schedule_id": id, "task_id": task.ID, "status": task.Status}), nil
+}
+
+func (m *MCPServer) handleScheduleDelete(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("schedule_id")
+	if err != nil {
+		return mcp.NewToolResultError("schedule_id is required"), nil
+	}
+	if err := m.cron.DeleteTask(id); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("delete schedule failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText("Schedule deleted"), nil
+}
+
+func (m *MCPServer) handleC115RequestDelete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	fileIDs, err := req.RequireStringSlice("file_ids")
+	if err != nil {
+		return mcp.NewToolResultError("file_ids is required"), nil
+	}
+	parentCID, err := req.RequireString("parent_cid")
+	if err != nil {
+		return mcp.NewToolResultError("parent_cid is required"), nil
+	}
+	accountID, targets, err := m.drive.ResolveDeleteTargetsCtx(ctx, req.GetString("account_id", ""), parentCID, fileIDs)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("resolve delete targets failed: %v", err)), nil
+	}
+	now := time.Now()
+	approval := &domain.DestructiveApproval{ID: uuid.NewString(), Action: "c115.delete", AccountID: accountID, ParentCID: parentCID, Targets: targets, Status: "pending", RequestedBy: requesterFromContext(ctx), ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now}
+	if err := m.db.CreateDestructiveApproval(approval); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("request delete approval failed: %v", err)), nil
+	}
+	return jsonToolResult(approval), nil
+}
+
+func (m *MCPServer) handleC115ExecuteDelete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("approval_id")
+	if err != nil {
+		return mcp.NewToolResultError("approval_id is required"), nil
+	}
+	now := time.Now()
+	approval, err := m.db.ClaimDestructiveApproval(id, "c115.delete", now)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("delete approval rejected: %v", err)), nil
+	}
+	fileIDs := make([]string, len(approval.Targets))
+	for index, target := range approval.Targets {
+		fileIDs[index] = target.FileID
+	}
+	if err := m.drive.DeleteCtx(ctx, approval.AccountID, fileIDs); err != nil {
+		_ = m.db.FinishDestructiveApproval(id, "failed", err.Error(), time.Now())
+		return mcp.NewToolResultError(fmt.Sprintf("delete failed after approval: %v", err)), nil
+	}
+	if err := m.db.FinishDestructiveApproval(id, "executed", "", time.Now()); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("record delete result failed: %v", err)), nil
+	}
+	approval.Status = "executed"
+	executed := time.Now()
+	approval.ExecutedAt = &executed
+	return jsonToolResult(approval), nil
+}
+
+func (m *MCPServer) handleSystemUpdateConfig(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	raw, present := req.GetArguments()["settings"]
+	settings, ok := raw.(map[string]any)
+	if !present || !ok {
+		return mcp.NewToolResultError("settings must be an object"), nil
+	}
+	values := make(map[string]string, len(settings))
+	for key, value := range settings {
+		text, ok := value.(string)
+		if !ok {
+			return mcp.NewToolResultError(fmt.Sprintf("setting %s must be a string", key)), nil
+		}
+		if key == "dangerous_actions_enabled" {
+			return mcp.NewToolResultError("Agent tools cannot change the browser deletion safety switch"), nil
+		}
+		values[key] = text
+	}
+	if err := m.settings.Update(values); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("update settings failed: %v", err)), nil
+	}
+	state, err := m.settings.State()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("read updated settings failed: %v", err)), nil
+	}
+	return jsonToolResult(state), nil
 }
 
 func (m *MCPServer) handleSystemGetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

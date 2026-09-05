@@ -1,6 +1,9 @@
 package service
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/embymedia/embymedia/internal/domain"
@@ -79,5 +82,35 @@ func TestSettingsStateOmitsUnknownPersistedKeys(t *testing.T) {
 	state.Values["115_cookie"] = "new-cookie"
 	if err := settings.Update(state.Values); err != nil {
 		t.Fatalf("save returned settings: %v", err)
+	}
+}
+
+func TestEmbyHealthDoesNotExposeKeyOnConnectionFailure(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Emby-Token") != "private-health-key" || r.URL.RawQuery != "" {
+			t.Error("health authentication must use the Emby header, not the URL")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	if err := db.SetSetting("emby_url", upstream.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting("emby_api_key", "private-health-key"); err != nil {
+		t.Fatal(err)
+	}
+	settings := NewSettingsService(db)
+	if health := settings.CheckAvailability("emby"); health.Status != "ok" {
+		t.Fatalf("health request failed: %+v", health)
+	}
+	upstream.Close()
+	health := settings.CheckAvailability("emby")
+	if health.Status != "error" || strings.Contains(health.Message, "private-health-key") {
+		t.Fatalf("outage response leaked credentials or hid failure: %+v", health)
 	}
 }

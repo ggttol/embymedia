@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Activity, CalendarClock, FileText, ListTodo, Loader2, Play, Plus, RotateCcw, X } from 'lucide-vue-next'
+import UiDialog from '../components/UiDialog.vue'
 
 type TaskType = 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
 
@@ -80,11 +81,24 @@ function newScheduleForm() {
 const tasks = ref<ScheduledTask[]>([])
 const asyncTasks = ref<AsyncTask[]>([])
 const loading = ref(false)
+const schedulesLoaded = ref(false)
+const executionsLoaded = ref(false)
+const schedulesError = ref('')
+const executionsError = ref('')
 const executingId = ref<string | null>(null)
 const actionMessage = ref('')
+const scheduleErrors = ref<Record<string, string>>({})
+const taskErrors = ref<Record<string, string>>({})
+const actionBusyId = ref<string | null>(null)
+const retryTarget = ref<AsyncTask | null>(null)
+const retryError = ref('')
 const taskRuns = ref<Record<string, TaskRun[]>>({})
+const runsLoading = ref<Record<string, boolean>>({})
+const runsErrors = ref<Record<string, string>>({})
 const showScheduleForm = ref(false)
 const scheduleForm = ref(newScheduleForm())
+const savingSchedule = ref(false)
+const scheduleError = ref('')
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
 const activeTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'pending' || task.status === 'running').length)
 const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed').length)
@@ -173,25 +187,47 @@ function selectTaskType() {
   scheduleForm.value.name = selectedDefinition.value.defaultName
 }
 
+async function fetchSchedules() {
+  try {
+    const response = await fetch('/api/v1/tasks')
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '读取自动任务失败')
+    tasks.value = data.tasks ?? []
+    schedulesLoaded.value = true
+    schedulesError.value = ''
+  } catch (error) {
+    schedulesError.value = error instanceof Error ? error.message : '读取自动任务失败'
+  }
+}
+
+async function fetchExecutions() {
+  try {
+    const response = await fetch('/api/v1/async-tasks')
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '读取执行记录失败')
+    asyncTasks.value = data.tasks ?? []
+    executionsLoaded.value = true
+    executionsError.value = ''
+  } catch (error) {
+    executionsError.value = error instanceof Error ? error.message : '读取执行记录失败'
+  }
+}
+
 async function fetchTasks() {
   if (loading.value) return
   loading.value = true
   try {
-    const [cronRes, asyncRes] = await Promise.all([fetch('/api/v1/tasks'), fetch('/api/v1/async-tasks')])
-    if (!cronRes.ok || !asyncRes.ok) throw new Error('读取任务列表失败')
-    const [cronData, asyncData] = await Promise.all([cronRes.json(), asyncRes.json()])
-    tasks.value = cronData.tasks ?? []
-    asyncTasks.value = asyncData.tasks ?? []
-  } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : '读取任务列表失败'
+    await Promise.all([fetchSchedules(), fetchExecutions()])
   } finally {
     loading.value = false
   }
 }
 
 async function runTask(task: ScheduledTask) {
+  if (executingId.value) return
   executingId.value = task.id
   actionMessage.value = ''
+  scheduleErrors.value[task.id] = ''
   try {
     const response = await fetch(`/api/v1/tasks/${encodeURIComponent(task.id)}/run`, { method: 'POST' })
     const data = await response.json()
@@ -199,13 +235,16 @@ async function runTask(task: ScheduledTask) {
     actionMessage.value = `“${task.name}”已加入执行队列。`
     await fetchTasks()
   } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : '启动任务失败'
+    scheduleErrors.value[task.id] = error instanceof Error ? error.message : '启动任务失败'
   } finally {
     executingId.value = null
   }
 }
 
 async function cancelTask(task: AsyncTask) {
+  if (actionBusyId.value || (task.status !== 'pending' && task.status !== 'running')) return
+  actionBusyId.value = task.id
+  taskErrors.value[task.id] = ''
   actionMessage.value = ''
   try {
     const response = await fetch(`/api/v1/async-tasks/${encodeURIComponent(task.id)}/cancel`, { method: 'POST' })
@@ -214,38 +253,61 @@ async function cancelTask(task: AsyncTask) {
     actionMessage.value = `已请求停止“${taskDefinition(task.type).label}”。`
     await fetchTasks()
   } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : '停止任务失败'
+    taskErrors.value[task.id] = error instanceof Error ? error.message : '停止任务失败'
+  } finally {
+    actionBusyId.value = null
   }
 }
 
-async function retryTask(task: AsyncTask) {
-  if (!window.confirm(`确认重新执行“${taskDefinition(task.type).label}”？系统会创建一条新的执行记录。`)) return
+function openRetry(task: AsyncTask) {
+  if (actionBusyId.value) return
+  retryError.value = ''
+  retryTarget.value = task
+}
+
+function closeRetry() {
+  if (!actionBusyId.value) retryTarget.value = null
+}
+
+async function retryTask() {
+  const task = retryTarget.value
+  if (!task || actionBusyId.value) return
+  actionBusyId.value = task.id
   actionMessage.value = ''
+  retryError.value = ''
   try {
     const response = await fetch(`/api/v1/async-tasks/${encodeURIComponent(task.id)}/retry`, { method: 'POST' })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '重新执行失败')
     actionMessage.value = `“${taskDefinition(task.type).label}”已重新加入队列。`
+    retryTarget.value = null
     await fetchTasks()
   } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : '重新执行失败'
+    retryError.value = error instanceof Error ? error.message : '重新执行失败'
+  } finally {
+    actionBusyId.value = null
   }
 }
 
 async function toggleTaskRuns(id: string) {
+  if (runsLoading.value[id]) return
+  runsErrors.value[id] = ''
   if (taskRuns.value[id]) {
     const next = { ...taskRuns.value }
     delete next[id]
     taskRuns.value = next
     return
   }
+  runsLoading.value[id] = true
   try {
     const response = await fetch(`/api/v1/async-tasks/${encodeURIComponent(id)}/runs`)
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '读取执行记录失败')
     taskRuns.value = { ...taskRuns.value, [id]: data.runs ?? [] }
   } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : '读取执行记录失败'
+    runsErrors.value[id] = error instanceof Error ? error.message : '读取执行记录失败'
+  } finally {
+    runsLoading.value[id] = false
   }
 }
 
@@ -258,6 +320,9 @@ function formatLog(line: string) {
 }
 
 async function createSchedule() {
+  if (savingSchedule.value) return
+  savingSchedule.value = true
+  scheduleError.value = ''
   actionMessage.value = ''
   try {
     const payload = buildPayload()
@@ -282,7 +347,9 @@ async function createSchedule() {
     showScheduleForm.value = false
     await fetchTasks()
   } catch (error) {
-    actionMessage.value = error instanceof Error ? error.message : '创建自动任务失败'
+    scheduleError.value = error instanceof Error ? error.message : '创建自动任务失败'
+  } finally {
+    savingSchedule.value = false
   }
 }
 
@@ -311,7 +378,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         <p class="text-sm text-text-muted mt-2">创建自动任务，查看每次执行结果，并处理失败或仍在运行的工作。</p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button type="button" @click="showScheduleForm = !showScheduleForm" class="flex min-h-11 items-center gap-2 px-4 border border-accent bg-accent text-xs font-medium text-accent-contrast">
+        <button type="button" @click="showScheduleForm = !showScheduleForm" :disabled="savingSchedule" class="flex min-h-11 items-center gap-2 px-4 border border-accent bg-accent text-xs font-medium text-accent-contrast disabled:opacity-50">
           <X v-if="showScheduleForm" class="w-4 h-4" /><Plus v-else class="w-4 h-4" />{{ showScheduleForm ? '收起创建表单' : '新建自动任务' }}
         </button>
         <button type="button" @click="fetchTasks" :disabled="loading" class="flex min-h-11 items-center gap-2 px-4 border border-border bg-surface text-xs font-medium text-text disabled:opacity-50">
@@ -321,14 +388,16 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
     </header>
 
     <div class="grid grid-cols-3 border border-border bg-surface">
-      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-text">{{ activeTaskCount }}</strong><span class="text-xs text-text-muted">正在处理</span></div>
-      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-ok">{{ completedTaskCount }}</strong><span class="text-xs text-text-muted">已完成</span></div>
-      <div class="p-4 sm:p-5"><strong class="block font-serif text-2xl" :class="failedTaskCount ? 'text-danger' : 'text-text'">{{ failedTaskCount }}</strong><span class="text-xs text-text-muted">需要处理</span></div>
+      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-text">{{ executionsLoaded ? activeTaskCount : '—' }}</strong><span class="text-xs text-text-muted">正在处理</span></div>
+      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-ok">{{ executionsLoaded ? completedTaskCount : '—' }}</strong><span class="text-xs text-text-muted">已完成</span></div>
+      <div class="p-4 sm:p-5"><strong class="block font-serif text-2xl" :class="failedTaskCount ? 'text-danger' : 'text-text'">{{ executionsLoaded ? failedTaskCount : '—' }}</strong><span class="text-xs text-text-muted">需要处理</span></div>
     </div>
+    <p v-if="!executionsLoaded" class="text-xs text-text-muted">{{ executionsError ? '执行记录尚未读取成功，暂时无法统计任务。' : '正在读取执行记录与任务统计…' }}</p>
 
-    <p v-if="actionMessage" role="status" class="p-3 border border-border bg-surface text-sm text-text-muted">{{ actionMessage }}</p>
+    <p v-if="actionMessage" role="status" class="p-3 border-l-2 border-ok bg-ok/5 text-sm text-ok">{{ actionMessage }}</p>
 
     <form v-if="showScheduleForm" class="border border-border bg-surface shadow-sm" @submit.prevent="createSchedule">
+      <fieldset :disabled="savingSchedule">
       <div class="p-5 sm:p-7 border-b border-border">
         <div class="flex items-center gap-2 mb-1"><CalendarClock class="w-4 h-4 text-annotation" /><h2 class="font-serif text-xl font-semibold text-text">创建自动任务</h2></div>
         <p class="text-sm text-text-muted">先选择要完成的工作，再填写这项工作需要的信息和执行时间。</p>
@@ -376,20 +445,24 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           <label class="inline-flex min-h-11 items-center gap-2 text-sm"><input v-model="scheduleForm.enabled" type="checkbox" />创建后自动按计划执行</label>
         </div>
       </div>
+      </fieldset>
+      <p v-if="scheduleError" role="alert" class="mx-5 mb-5 border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger sm:mx-7">{{ scheduleError }}</p>
 
       <footer class="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 p-5 sm:px-7 border-t border-border bg-bg-muted/60">
-        <button type="button" class="min-h-11 px-5 border border-border bg-surface text-sm" @click="showScheduleForm = false">取消</button>
-        <button type="submit" class="min-h-11 px-5 bg-accent text-accent-contrast text-sm font-medium">保存自动任务</button>
+        <button type="button" :disabled="savingSchedule" class="min-h-11 px-5 border border-border bg-surface text-sm disabled:opacity-50" @click="showScheduleForm = false">取消</button>
+        <button type="submit" :disabled="savingSchedule" class="inline-flex min-h-11 items-center justify-center gap-2 px-5 bg-accent text-accent-contrast text-sm font-medium disabled:opacity-50"><Loader2 v-if="savingSchedule" class="w-4 h-4 animate-spin" />{{ savingSchedule ? '正在保存' : '保存自动任务' }}</button>
       </footer>
     </form>
 
     <section class="space-y-3" aria-labelledby="execution-heading">
       <div class="flex items-center justify-between gap-3 px-1">
         <div><div class="flex items-center gap-2"><Activity class="w-4 h-4 text-annotation" /><h2 id="execution-heading" class="font-serif font-semibold text-xl text-text">最近执行</h2></div><p class="mt-1 text-xs text-text-faint">每 5 秒自动更新；失败任务会保留原因和重新执行入口。</p></div>
-        <span class="text-xs font-mono text-text-faint">{{ asyncTasks.length }} 条</span>
+        <span class="text-xs font-mono text-text-faint">{{ executionsLoaded ? `${asyncTasks.length} 条` : '—' }}</span>
       </div>
 
-      <div v-if="asyncTasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-text-faint text-sm">还没有执行记录。创建自动任务并选择“立即执行”后，进度会显示在这里。</div>
+      <div v-if="executionsError" role="alert" class="border-l-2 border-danger bg-danger/5 p-4 text-sm text-danger"><p>{{ executionsError }}</p><p v-if="executionsLoaded" class="mt-1">以下为上次读取的执行记录。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
+      <div v-else-if="!executionsLoaded" role="status" class="flex items-center justify-center gap-2 p-8 border border-border bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取执行记录</div>
+      <div v-else-if="asyncTasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-text-faint text-sm">还没有执行记录。创建自动任务并选择“立即执行”后，进度会显示在这里。</div>
 
       <article v-for="task in asyncTasks" :key="task.id" class="p-5 border border-border bg-surface shadow-sm space-y-4">
         <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
@@ -413,16 +486,18 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         <div v-if="task.error" class="p-3 border-l-2 border-danger bg-danger/5 text-sm text-danger">{{ userError(task.error) }}</div>
 
         <div class="flex flex-wrap gap-2">
-          <button type="button" class="inline-flex min-h-10 items-center gap-1.5 border border-border px-3 text-xs font-medium" @click="toggleTaskRuns(task.id)"><FileText class="w-3.5 h-3.5" />{{ taskRuns[task.id] ? '收起执行记录' : '查看执行记录' }}</button>
-          <button v-if="task.status === 'pending' || task.status === 'running'" type="button" class="min-h-10 border border-danger/40 px-3 text-xs font-medium text-danger" @click="cancelTask(task)">停止任务</button>
-          <button v-if="task.status === 'failed' || task.status === 'cancelled'" type="button" class="min-h-10 border border-accent px-3 text-xs font-medium text-accent" @click="retryTask(task)">重新执行</button>
+          <button type="button" :disabled="runsLoading[task.id]" :aria-expanded="Boolean(taskRuns[task.id])" class="inline-flex min-h-11 items-center gap-1.5 border border-border px-3 text-xs font-medium disabled:opacity-50" @click="toggleTaskRuns(task.id)"><Loader2 v-if="runsLoading[task.id]" class="w-3.5 h-3.5 animate-spin" /><FileText v-else class="w-3.5 h-3.5" />{{ runsLoading[task.id] ? '正在读取记录' : taskRuns[task.id] ? '收起执行记录' : runsErrors[task.id] ? '重试读取记录' : '查看执行记录' }}</button>
+          <button v-if="task.status === 'pending' || task.status === 'running'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-11 border border-danger/40 px-3 text-xs font-medium text-danger disabled:opacity-50" @click="cancelTask(task)">{{ actionBusyId === task.id ? '正在提交' : '停止任务' }}</button>
+          <button v-if="task.status === 'failed' || task.status === 'cancelled'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-11 border border-accent px-3 text-xs font-medium text-accent disabled:opacity-50" @click="openRetry(task)">重新执行</button>
         </div>
+        <p v-if="taskErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ taskErrors[task.id] }}</p>
+        <p v-if="runsErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ runsErrors[task.id] }}</p>
 
         <div v-if="taskRuns[task.id]" class="border-t border-border pt-4 space-y-3">
           <p v-if="taskRuns[task.id].length === 0" class="text-sm text-text-faint">任务尚未开始，没有执行记录。</p>
           <div v-for="run in taskRuns[task.id]" :key="run.id" class="bg-bg p-4 text-sm">
             <div class="flex justify-between gap-3"><span class="font-medium">第 {{ run.attempt }} 次执行 · {{ statusLabel(run.status) }}</span><span class="font-mono text-xs text-text-muted">{{ Math.round(run.progress) }}%</span></div>
-            <ul v-if="run.logs?.length" class="mt-3 space-y-1 text-xs text-text-muted"><li v-for="(line, index) in run.logs" :key="index">{{ formatLog(line) }}</li></ul>
+            <ul v-if="run.logs?.length" class="mt-3 space-y-1 break-words text-xs text-text-muted"><li v-for="(line, index) in run.logs" :key="index">{{ formatLog(line) }}</li></ul>
             <p v-else class="mt-3 text-xs text-text-faint">没有详细日志。</p>
           </div>
         </div>
@@ -432,19 +507,34 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
     <section class="space-y-3" aria-labelledby="schedule-heading">
       <div class="flex items-center justify-between gap-3 px-1">
         <div><div class="flex items-center gap-2"><ListTodo class="w-4 h-4 text-accent" /><h2 id="schedule-heading" class="font-serif font-semibold text-xl text-text">自动任务</h2></div><p class="mt-1 text-xs text-text-faint">系统会按计划执行；也可以随时手动启动一次。</p></div>
-        <span class="text-xs font-mono text-text-faint">{{ tasks.length }} 个</span>
+        <span class="text-xs font-mono text-text-faint">{{ schedulesLoaded ? `${tasks.length} 个` : '—' }}</span>
       </div>
-      <div v-if="tasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
+      <div v-if="schedulesError" role="alert" class="border-l-2 border-danger bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
+      <div v-else-if="!schedulesLoaded" role="status" class="flex items-center justify-center gap-2 p-8 border border-border bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取自动任务</div>
+      <div v-else-if="tasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
       <article v-for="task in tasks" :key="task.id" class="p-5 border border-border bg-surface shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-5">
         <div class="space-y-3 min-w-0">
           <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="{ 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-warn animate-pulse': task.status === 'running', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2 py-0.5 bg-accent-soft text-xs font-medium text-accent">{{ frequencyLabel(task.cron_expr) }}</span></div>
           <div><strong class="text-sm text-text">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>
           <div class="flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-faint"><span>上次：{{ formatTime(task.last_run_at) }}</span><span v-if="task.next_run_at">下次：{{ formatTime(task.next_run_at) }}</span><span v-if="task.error" class="text-danger">{{ userError(task.error) }}</span></div>
+          <p v-if="scheduleErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ scheduleErrors[task.id] }}</p>
         </div>
-        <button type="button" @click="runTask(task)" :disabled="executingId === task.id" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 border border-accent bg-bg text-sm font-medium text-accent disabled:opacity-50">
+        <button type="button" @click="runTask(task)" :disabled="Boolean(executingId)" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 border border-accent bg-bg text-sm font-medium text-accent disabled:opacity-50">
           <Loader2 v-if="executingId === task.id" class="w-4 h-4 animate-spin" /><Play v-else class="w-4 h-4" /><span>{{ executingId === task.id ? '正在加入队列' : '立即执行' }}</span>
         </button>
       </article>
     </section>
+
+    <UiDialog v-if="retryTarget" title="重新执行任务" :busy="Boolean(actionBusyId)" @close="closeRetry">
+      <form class="space-y-5" @submit.prevent="retryTask">
+        <p class="text-sm leading-6 text-text-muted">确认重新执行“{{ taskDefinition(retryTarget.type).label }}”？系统会创建一条新的执行记录。</p>
+        <p v-if="retryTarget.error" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ userError(retryTarget.error) }}</p>
+        <p v-if="retryError" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ retryError }}</p>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button type="button" :disabled="Boolean(actionBusyId)" class="min-h-11 border border-border bg-surface px-5 text-sm disabled:opacity-50" @click="closeRetry">取消</button>
+          <button type="submit" :disabled="Boolean(actionBusyId)" class="inline-flex min-h-11 items-center justify-center gap-2 bg-accent px-5 text-sm text-accent-contrast disabled:opacity-50"><Loader2 v-if="actionBusyId" class="w-4 h-4 animate-spin" />{{ actionBusyId ? '正在加入队列' : '确认重新执行' }}</button>
+        </div>
+      </form>
+    </UiDialog>
   </div>
 </template>

@@ -258,6 +258,133 @@ func (s *DriveService) listFiles(ctx context.Context, accountID, cid string, off
 	return files, raw.Count, nil
 }
 
+// ResolveDeleteTargetsCtx verifies that every requested object is present in one freshly read directory.
+func (s *DriveService) ResolveDeleteTargetsCtx(ctx context.Context, accountID, parentCID string, fileIDs []string) (string, []domain.DestructiveTarget, error) {
+	if len(fileIDs) == 0 || len(fileIDs) > 100 {
+		return "", nil, fmt.Errorf("file_ids must contain 1 to 100 values")
+	}
+	account, err := s.getAccount(accountID)
+	if err != nil {
+		return "", nil, err
+	}
+	if parentCID == "" {
+		parentCID = "0"
+	}
+	wanted := make(map[string]struct{}, len(fileIDs))
+	for _, id := range fileIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return "", nil, fmt.Errorf("file_ids must contain non-empty values")
+		}
+		if _, duplicate := wanted[id]; duplicate {
+			return "", nil, fmt.Errorf("file_ids must not contain duplicates")
+		}
+		wanted[id] = struct{}{}
+	}
+	found := make(map[string]domain.DestructiveTarget, len(wanted))
+	for offset := 0; offset < 50_000 && len(found) < len(wanted); offset += 1000 {
+		files, total, err := s.listFiles(ctx, account.ID, parentCID, offset, 1000)
+		if err != nil {
+			return "", nil, err
+		}
+		for _, file := range files {
+			if _, selected := wanted[file.FileID]; selected {
+				found[file.FileID] = domain.DestructiveTarget{FileID: file.FileID, Name: file.Name, IsFolder: file.IsFolder, Size: file.Size}
+			}
+		}
+		if int64(offset+len(files)) >= total || len(files) == 0 {
+			break
+		}
+	}
+	targets := make([]domain.DestructiveTarget, 0, len(fileIDs))
+	for _, id := range fileIDs {
+		target, ok := found[strings.TrimSpace(id)]
+		if !ok {
+			return "", nil, fmt.Errorf("115 object %s was not found in parent CID %s", id, parentCID)
+		}
+		targets = append(targets, target)
+	}
+	return account.ID, targets, nil
+}
+
+// SearchFilesCtx searches the selected managed 115 account without traversing every directory.
+func (s *DriveService) SearchFilesCtx(ctx context.Context, accountID, query string, offset, limit int) ([]domain.DriveFile, int64, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, 0, fmt.Errorf("search query is required")
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	account, err := s.getAccount(accountID)
+	if err != nil {
+		return nil, 0, err
+	}
+	values := url.Values{"search_value": {query}, "offset": {strconv.Itoa(offset)}, "limit": {strconv.Itoa(limit)}, "cid": {"0"}, "show_dir": {"1"}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://webapi.115.com/files/search?"+values.Encode(), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Cookie", account.Cookie)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("search 115 files: %w", err)
+	}
+	defer resp.Body.Close()
+	var raw struct {
+		State bool   `json:"state"`
+		Error string `json:"error"`
+		Count int64  `json:"count"`
+		Data  []struct {
+			Fid, Cid, Pid any
+			Name          string `json:"n"`
+			Size          any    `json:"s"`
+			PickCode      string `json:"pc"`
+			Sha1          string `json:"sha"`
+			Updated       string `json:"te"`
+		} `json:"data"`
+	}
+	if err := decodeProviderJSON(resp, "115 file search", &raw); err != nil {
+		return nil, 0, err
+	}
+	if !raw.State {
+		return nil, 0, fmt.Errorf("115 file search rejected: %s", raw.Error)
+	}
+	files := make([]domain.DriveFile, 0, len(raw.Data))
+	for _, item := range raw.Data {
+		fileID := strings.TrimSpace(fmt.Sprint(item.Fid))
+		isFolder := fileID == "" || fileID == "0" || fileID == "<nil>"
+		parentID := strings.TrimSpace(fmt.Sprint(item.Cid))
+		if isFolder {
+			fileID = parentID
+			parentID = strings.TrimSpace(fmt.Sprint(item.Pid))
+		}
+		if fileID == "" || fileID == "<nil>" {
+			continue
+		}
+		var size int64
+		switch value := item.Size.(type) {
+		case float64:
+			size = int64(value)
+		case string:
+			size, _ = strconv.ParseInt(value, 10, 64)
+		}
+		updatedAt := time.Time{}
+		if timestamp, err := strconv.ParseInt(item.Updated, 10, 64); err == nil {
+			updatedAt = time.Unix(timestamp, 0)
+		}
+		files = append(files, domain.DriveFile{FileID: fileID, ParentID: parentID, Name: item.Name, Size: size, PickCode: item.PickCode, Sha1: item.Sha1, IsFolder: isFolder, UpdatedTime: updatedAt})
+	}
+	return files, raw.Count, nil
+}
+
 // AddOfflineTask submits a magnet, ed2k, or HTTP URL to 115 offline download.
 func (s *DriveService) AddOfflineTask(accountID, urlStr, targetCID string) (string, error) {
 	return s.AddOfflineTaskCtx(context.Background(), accountID, urlStr, targetCID)
@@ -534,6 +661,11 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 
 // SnapshotShare lists the top-level contents of a 115 share link.
 func (s *DriveService) SnapshotShare(accountID, rawURL, password string) (string, []ShareEntry, error) {
+	return s.SnapshotShareCtx(context.Background(), accountID, rawURL, password)
+}
+
+// SnapshotShareCtx lists one share's top-level contents with cancellation.
+func (s *DriveService) SnapshotShareCtx(ctx context.Context, accountID, rawURL, password string) (string, []ShareEntry, error) {
 	acc, err := s.getAccount(accountID)
 	if err != nil {
 		return "", nil, err
@@ -542,7 +674,7 @@ func (s *DriveService) SnapshotShare(accountID, rawURL, password string) (string
 	if err != nil {
 		return "", nil, err
 	}
-	return s.snapshotShareEntries(context.Background(), acc, code, receive, "0")
+	return s.snapshotShareEntries(ctx, acc, code, receive, "0")
 }
 
 // SaveShare transfers all top-level files of a 115 share into targetCid.

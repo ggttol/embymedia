@@ -32,6 +32,8 @@ func TestDriveProviderOperations(t *testing.T) {
 		switch request.URL.Path {
 		case "/files":
 			_, _ = io.WriteString(response, `{"state":true,"count":2,"data":[{"fid":"11","pid":"0","n":"movie.mkv","s":"1024"},{"cid":"12","pid":"0","n":"Series"}]}`)
+		case "/files/search":
+			_, _ = io.WriteString(response, `{"state":true,"count":1,"data":[{"fid":"21","cid":"12","n":"Titanic.mkv","s":"2048","fc":1,"te":"1788367119"}]}`)
 		case "/files/index_info":
 			_, _ = io.WriteString(response, `{"state":true,"data":{"vip":2,"expire":4102444800,"space_info":{"all_total":{"size":1000},"all_use":{"size":250}}}}`)
 		case "/files/add":
@@ -97,6 +99,10 @@ func TestDriveProviderOperations(t *testing.T) {
 	if err != nil || len(files) != 2 || files[1].FileID != "12" || !files[1].IsFolder {
 		t.Fatalf("list files: %+v, err=%v", files, err)
 	}
+	searched, total, err := service.SearchFilesCtx(ctx, account.ID, "Titanic", 0, 20)
+	if err != nil || total != 1 || len(searched) != 1 || searched[0].FileID != "21" || searched[0].ParentID != "12" {
+		t.Fatalf("search files: total=%d files=%+v err=%v", total, searched, err)
+	}
 	if cid, err := service.MkdirCtx(ctx, account.ID, "0", "New"); err != nil || cid != "13" {
 		t.Fatalf("mkdir: cid=%s err=%v", cid, err)
 	}
@@ -105,6 +111,10 @@ func TestDriveProviderOperations(t *testing.T) {
 	}
 	if err := service.MoveCtx(ctx, account.ID, []string{"11"}, "13"); err != nil {
 		t.Fatalf("move: %v", err)
+	}
+	resolvedAccount, targets, err := service.ResolveDeleteTargetsCtx(ctx, account.ID, "0", []string{"11"})
+	if err != nil || resolvedAccount != account.ID || len(targets) != 1 || targets[0].Name != "movie.mkv" || targets[0].IsFolder {
+		t.Fatalf("resolve delete targets: account=%s targets=%+v err=%v", resolvedAccount, targets, err)
 	}
 	if err := service.DeleteCtx(ctx, account.ID, []string{"11"}); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -123,9 +133,62 @@ func TestDriveProviderOperations(t *testing.T) {
 	if err != nil || len(health) != 1 || health[0].Status != "active" || health[0].VIPLevel != 2 || health[0].QuotaTotal != 1000 || health[0].QuotaUsed != 250 {
 		t.Fatalf("account health: %+v, err=%v", health, err)
 	}
-	for _, path := range []string{"/files", "/files/index_info", "/files/add", "/files/edit", "/files/move", "/rb/delete", "/share/snap", "/share/receive", "/share/send", "/web/lixian/"} {
+	for _, path := range []string{"/files", "/files/search", "/files/index_info", "/files/add", "/files/edit", "/files/move", "/rb/delete", "/share/snap", "/share/receive", "/share/send", "/web/lixian/"} {
 		if calls[path] == 0 {
 			t.Fatalf("provider operation %s was not called", path)
+		}
+	}
+}
+
+func TestSearchFilesUsesFileIDPresence(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/files/search" {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(response, `{"state":true,"count":4,"data":[
+			{"fid":"21","cid":"12","n":"Titanic.mkv"},
+			{"fid":22,"cid":12,"n":"Titanic.srt"},
+			{"cid":"31","pid":"0","n":"Titanic","fc":2},
+			{"fid":0,"cid":32,"pid":31,"n":"Extras","fc":1}
+		]}`)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer db.Close()
+	account := &domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "cookie", IsDefault: true}
+	if err := db.SaveAccount(account); err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	service := NewDriveService(db, "", "")
+	service.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme = upstreamURL.Scheme
+		clone.URL.Host = upstreamURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	files, total, err := service.SearchFilesCtx(context.Background(), account.ID, "Titanic", 0, 20)
+	if err != nil || total != 4 || len(files) != 4 {
+		t.Fatalf("search files: total=%d files=%+v err=%v", total, files, err)
+	}
+	expected := []struct {
+		fileID, parentID string
+		isFolder         bool
+	}{
+		{"21", "12", false},
+		{"22", "12", false},
+		{"31", "0", true},
+		{"32", "31", true},
+	}
+	for index, want := range expected {
+		got := files[index]
+		if got.FileID != want.fileID || got.ParentID != want.parentID || got.IsFolder != want.isFolder {
+			t.Errorf("search result %d: got %+v, want ID=%s parent=%s folder=%t", index, got, want.fileID, want.parentID, want.isFolder)
 		}
 	}
 }
