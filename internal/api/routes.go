@@ -83,6 +83,7 @@ func (s *Server) registerRoutes() {
 	v1.POST("/offline/download", s.handleAddOffline)
 
 	// Emby & Media
+	v1.GET("/emby/libraries", s.handleEmbyLibraries)
 	v1.POST("/files/delete", s.handleDelete)
 	v1.POST("/emby/refresh", s.handleEmbyRefresh)
 	v1.POST("/emby/match", s.handleEmbyMatch)
