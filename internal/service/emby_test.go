@@ -33,6 +33,13 @@ func TestEmbyAndCloudDriveServices(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/Items" {
+			if r.URL.Query().Get("ImageTypes") == "None" {
+				if r.URL.Query().Get("Fields") != "Path,ProviderIds" || r.URL.Query().Get("Limit") != "100" {
+					t.Error("missing-poster query omitted bounded detail fields")
+				}
+				w.Write([]byte(`{"Items":[{"Id":"missing","Name":"Missing","Type":"Movie","Path":"/strm/Missing.strm","ProviderIds":{"Tmdb":"42"}}],"TotalRecordCount":2772}`))
+				return
+			}
 			if r.URL.Query().Get("Ids") == "item1" {
 				w.Write([]byte(`{"Items":[{"Id":"item1","Name":"Inception","Type":"Movie","Path":"/media/movies/Inception.mkv","ImageTags":{"Primary":"tag1"},"BackdropImageTags":["backdrop"],"ProviderIds":{"Tmdb":"27205"}}]}`))
 				return
@@ -85,6 +92,10 @@ func TestEmbyAndCloudDriveServices(t *testing.T) {
 	items, err := embySrv.SearchMediaCtx(context.Background(), "Inception", 10)
 	if err != nil || len(items) != 1 || items[0].ID != "item1" {
 		t.Fatalf("search items: %+v, err=%v", items, err)
+	}
+	report, err := embySrv.GetMediaWithoutPosters()
+	if err != nil || report.Total != 2772 || report.Returned != 1 || !report.Truncated || report.Items[0].Path != "/strm/Missing.strm" || report.Items[0].ProviderIDs["Tmdb"] != "42" {
+		t.Fatalf("unexpected missing-poster report: %+v, err=%v", report, err)
 	}
 	item, err := embySrv.GetItem("item1")
 	if err != nil || item.ID != "item1" || !item.HasPoster || !item.HasBackdrop || item.ProviderIDs["Tmdb"] != "27205" {

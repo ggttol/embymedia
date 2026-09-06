@@ -47,6 +47,79 @@ func TestMediaServiceSynchronizesAndVerifiesSTRM(t *testing.T) {
 	}
 }
 
+func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T) {
+	root := t.TempDir()
+	mediaRoot := filepath.Join(root, "media")
+	strmRoot := filepath.Join(root, "strm")
+	for _, directory := range []string{filepath.Join(mediaRoot, "Movies"), filepath.Join(strmRoot, "Movies")} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(mediaRoot, ".embymedia-health-canary"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaRoot, "Movies", "Current.mkv"), []byte("video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(strmRoot, "Movies", "Stale.strm")
+	manual := filepath.Join(strmRoot, "Movies", "Alternate.strm")
+	if err := os.WriteFile(stale, []byte("/media/Movies/Missing.mkv\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manual, []byte("/media/Movies/Current.mkv\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSettings(map[string]string{"media_root": mediaRoot, "strm_root": strmRoot, "emby_media_prefix": "/media"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewMediaService(db).SyncSTRM(context.Background(), "Movies")
+	if err != nil || result.Removed != 1 || result.Missing != 0 || result.Valid != 2 || result.PruneStatus != "completed" {
+		t.Fatalf("stale reconciliation failed: %+v, err=%v", result, err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale generated STRM was retained: %v", err)
+	}
+	if _, err := os.Stat(manual); err != nil {
+		t.Fatalf("valid non-generated STRM was removed: %v", err)
+	}
+}
+
+func TestMediaServiceSkipsPruningWithoutMountCanary(t *testing.T) {
+	root := t.TempDir()
+	mediaRoot := filepath.Join(root, "media")
+	strmRoot := filepath.Join(root, "strm")
+	for _, directory := range []string{filepath.Join(mediaRoot, "Movies"), filepath.Join(strmRoot, "Movies")} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := filepath.Join(strmRoot, "Movies", "Stale.strm")
+	if err := os.WriteFile(stale, []byte("/media/Movies/Missing.mkv\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSettings(map[string]string{"media_root": mediaRoot, "strm_root": strmRoot, "emby_media_prefix": "/media"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewMediaService(db).SyncSTRM(context.Background(), "Movies")
+	if err != nil || result.Removed != 0 || result.Missing != 1 || result.PruneStatus != "skipped_no_mount_canary" {
+		t.Fatalf("unsafe pruning was not skipped: %+v, err=%v", result, err)
+	}
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("STRM was removed without mount proof: %v", err)
+	}
+}
+
 func TestMediaServiceRejectsSymlinkedOutputDirectory(t *testing.T) {
 	root := t.TempDir()
 	mediaRoot := filepath.Join(root, "media")

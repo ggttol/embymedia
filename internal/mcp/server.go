@@ -281,7 +281,7 @@ func (m *MCPServer) registerTools() {
 	m.server.AddTool(mcp.NewTool("c115_list_offline", mcp.WithDescription("List current 115 offline download tasks"), mcp.WithString("account_id")), m.handleC115ListOffline)
 	m.server.AddTool(mcp.NewTool("emby_search_items", mcp.WithDescription("Search Emby items and return exact IDs for later operations"), mcp.WithString("query", mcp.Required()), mcp.WithInteger("limit", mcp.Min(1), mcp.Max(100))), m.handleEmbySearchItems)
 	m.server.AddTool(mcp.NewTool("emby_list_sessions", mcp.WithDescription("List active Emby playback sessions before disruptive maintenance")), m.handleEmbyListSessions)
-	m.server.AddTool(mcp.NewTool("emby_missing_posters", mcp.WithDescription("List up to 100 Emby movies and series without primary artwork")), m.handleEmbyMissingPosters)
+	m.server.AddTool(mcp.NewTool("emby_missing_posters", mcp.WithDescription("Return the complete missing-poster count and up to 100 Emby movies or series with paths and provider IDs")), m.handleEmbyMissingPosters)
 	m.server.AddTool(mcp.NewTool("task_list", mcp.WithDescription("List recent persistent tasks with optional status filter"), mcp.WithString("status"), mcp.WithInteger("limit", mcp.Min(1), mcp.Max(100))), m.handleTaskList)
 	m.server.AddTool(mcp.NewTool("task_retry", mcp.WithDescription("Create a reviewed retry from a failed or cancelled task"), mcp.WithString("task_id", mcp.Required())), m.handleTaskRetry)
 	m.server.AddTool(mcp.NewTool("schedule_list", mcp.WithDescription("List persisted automatic operation schedules")), m.handleScheduleList)
@@ -581,14 +581,11 @@ func (m *MCPServer) handleEmbyListSessions(ctx context.Context, _ mcp.CallToolRe
 }
 
 func (m *MCPServer) handleEmbyMissingPosters(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	items, err := m.emby.GetMediaWithoutPostersCtx(ctx)
+	report, err := m.emby.GetMediaWithoutPostersCtx(ctx)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("list missing posters failed: %v", err)), nil
 	}
-	if len(items) > 100 {
-		items = items[:100]
-	}
-	return jsonToolResult(items), nil
+	return jsonToolResult(report), nil
 }
 
 func (m *MCPServer) handleTaskList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

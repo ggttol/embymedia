@@ -362,14 +362,17 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 		}
 		return map[string]any{"item_id": itemID, "tmdb_id": tmdbID, "matched": true}, nil
 	case "emby_missing_posters":
-		items, err := s.embySvc.GetMediaWithoutPostersCtx(ctx)
+		report, err := s.embySvc.GetMediaWithoutPostersCtx(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if len(items) > 100 {
-			items = items[:100]
+		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Emby missing-poster findings total=%d returned=%d truncated=%t", report.Total, report.Returned, report.Truncated)); err != nil {
+			return nil, err
 		}
-		return map[string]any{"items": items, "returned": len(items)}, nil
+		return map[string]any{
+			"items": report.Items, "total_missing": report.Total,
+			"returned": report.Returned, "truncated": report.Truncated,
+		}, nil
 	case "c115_save_share":
 		rawURL, _ := stringPayload(task.Payload, "url", true)
 		password, _ := stringPayload(task.Payload, "password", false)
@@ -395,11 +398,20 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 		if err != nil {
 			return nil, err
 		}
+		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM sync media=%d created=%d updated=%d removed=%d prune=%s", result.MediaFiles, result.Created, result.Updated, result.Removed, result.PruneStatus)); err != nil {
+			return nil, err
+		}
+		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM findings valid=%d missing=%d invalid=%d", result.Valid, result.Missing, result.Invalid)); err != nil {
+			return nil, err
+		}
 		return map[string]any{"strm": result}, nil
 	case "strm_verify":
 		library, _ := stringPayload(task.Payload, "library", false)
 		result, err := s.mediaSvc.VerifySTRM(ctx, library)
 		if err != nil {
+			return nil, err
+		}
+		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM findings valid=%d missing=%d invalid=%d", result.Valid, result.Missing, result.Invalid)); err != nil {
 			return nil, err
 		}
 		return map[string]any{"strm": result}, nil

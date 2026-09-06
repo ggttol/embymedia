@@ -544,39 +544,53 @@ func (s *EmbyService) SearchMediaCtx(ctx context.Context, term string, limit int
 	return res, nil
 }
 
-// GetMediaWithoutPosters returns Movie and Series items that have no image.
-func (s *EmbyService) GetMediaWithoutPosters() ([]domain.EmbyMediaItem, error) {
+// EmbyMissingPosterReport returns a bounded page and the complete matching count.
+type EmbyMissingPosterReport struct {
+	Items     []domain.EmbyMediaItem `json:"items"`
+	Total     int                    `json:"total_missing"`
+	Returned  int                    `json:"returned"`
+	Truncated bool                   `json:"truncated"`
+}
+
+// GetMediaWithoutPosters returns up to 100 Movie and Series items that have no primary image.
+func (s *EmbyService) GetMediaWithoutPosters() (EmbyMissingPosterReport, error) {
 	return s.GetMediaWithoutPostersCtx(context.Background())
 }
 
-// GetMediaWithoutPostersCtx returns missing-poster items with cancellation.
-func (s *EmbyService) GetMediaWithoutPostersCtx(ctx context.Context) ([]domain.EmbyMediaItem, error) {
-	req, err := s.newRequest(ctx, http.MethodGet, "/Items?Recursive=true&IncludeItemTypes=Movie,Series&ImageTypes=None", nil)
+// GetMediaWithoutPostersCtx returns bounded missing-poster items, paths, provider IDs and total count.
+func (s *EmbyService) GetMediaWithoutPostersCtx(ctx context.Context) (EmbyMissingPosterReport, error) {
+	query := url.Values{
+		"Recursive": {"true"}, "IncludeItemTypes": {"Movie,Series"}, "ImageTypes": {"None"},
+		"Fields": {"Path,ProviderIds"}, "Limit": {"100"}, "EnableTotalRecordCount": {"true"},
+	}
+	req, err := s.newRequest(ctx, http.MethodGet, "/Items?"+query.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return EmbyMissingPosterReport{}, err
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		return EmbyMissingPosterReport{}, err
 	}
 	defer resp.Body.Close()
 	if err := requireEmbyResponse(resp, "Emby missing-poster list"); err != nil {
-		return nil, err
+		return EmbyMissingPosterReport{}, err
 	}
 	var raw struct {
 		Items []struct {
-			ID   string `json:"Id"`
-			Name string `json:"Name"`
-			Type string `json:"Type"`
-			Path string `json:"Path"`
+			ID          string            `json:"Id"`
+			Name        string            `json:"Name"`
+			Type        string            `json:"Type"`
+			Path        string            `json:"Path"`
+			ProviderIDs map[string]string `json:"ProviderIds"`
 		} `json:"Items"`
+		Total int `json:"TotalRecordCount"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode Emby missing-poster list: %w", err)
+		return EmbyMissingPosterReport{}, fmt.Errorf("decode Emby missing-poster list: %w", err)
 	}
-	result := make([]domain.EmbyMediaItem, 0, len(raw.Items))
+	items := make([]domain.EmbyMediaItem, 0, len(raw.Items))
 	for _, item := range raw.Items {
-		result = append(result, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, Type: item.Type, Path: item.Path})
+		items = append(items, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, Type: item.Type, Path: item.Path, ProviderIDs: item.ProviderIDs})
 	}
-	return result, nil
+	return EmbyMissingPosterReport{Items: items, Total: raw.Total, Returned: len(items), Truncated: raw.Total > len(items)}, nil
 }

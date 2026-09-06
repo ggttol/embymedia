@@ -17,14 +17,16 @@ var videoExtensions = map[string]struct{}{
 
 // STRMResult reports observable synchronization and validation counts.
 type STRMResult struct {
-	MediaFiles int      `json:"media_files"`
-	Created    int      `json:"created"`
-	Updated    int      `json:"updated"`
-	Unchanged  int      `json:"unchanged"`
-	Valid      int      `json:"valid"`
-	Missing    int      `json:"missing"`
-	Invalid    int      `json:"invalid"`
-	Examples   []string `json:"examples,omitempty"`
+	MediaFiles  int      `json:"media_files"`
+	Created     int      `json:"created"`
+	Updated     int      `json:"updated"`
+	Unchanged   int      `json:"unchanged"`
+	Removed     int      `json:"removed"`
+	Valid       int      `json:"valid"`
+	Missing     int      `json:"missing"`
+	Invalid     int      `json:"invalid"`
+	Examples    []string `json:"examples,omitempty"`
+	PruneStatus string   `json:"prune_status,omitempty"`
 }
 
 // MediaService synchronizes STRM files from the configured CloudDrive media tree.
@@ -180,9 +182,59 @@ func writeAtomic(path string, content []byte) error {
 	return nil
 }
 
+func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string, expected map[string]struct{}, result *STRMResult) error {
+	canary, err := os.Stat(filepath.Join(mediaRoot, ".embymedia-health-canary"))
+	if err != nil || !canary.Mode().IsRegular() {
+		result.PruneStatus = "skipped_no_mount_canary"
+		return nil
+	}
+	result.PruneStatus = "completed"
+	return filepath.WalkDir(strmBase, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".strm" {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if _, exists := expected[path]; exists {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		target := strings.TrimSpace(string(content))
+		prefix := embyPrefix + "/"
+		if !strings.HasPrefix(target, prefix) {
+			return nil
+		}
+		relative, err := cleanRelative(filepath.FromSlash(strings.TrimPrefix(target, prefix)), "STRM target")
+		if err != nil || relative == "" {
+			return nil
+		}
+		candidate := filepath.Join(mediaRoot, relative)
+		if _, err := filepath.EvalSymlinks(candidate); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		result.Removed++
+		return nil
+	})
+}
+
 // SyncSTRM creates or updates one STRM file for each supported video file and then verifies the result.
 func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult, error) {
-	_, mediaBase, strmBase, embyPrefix, err := s.paths(library)
+	mediaRoot, mediaBase, strmBase, embyPrefix, err := s.paths(library)
 	if err != nil {
 		return STRMResult{}, err
 	}
@@ -196,6 +248,7 @@ func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult
 		return STRMResult{}, fmt.Errorf("STRM library escapes strm_root")
 	}
 	result := STRMResult{}
+	expected := make(map[string]struct{})
 	err = filepath.WalkDir(mediaBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -222,6 +275,7 @@ func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult
 		if err != nil {
 			return err
 		}
+		expected[output] = struct{}{}
 		targetRelative := relative
 		if strings.TrimSpace(library) != "" {
 			targetRelative = filepath.Join(filepath.Clean(library), relative)
@@ -246,6 +300,9 @@ func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult
 		return nil
 	})
 	if err != nil {
+		return result, err
+	}
+	if err := pruneStaleSTRM(ctx, mediaRoot, strmBase, embyPrefix, expected, &result); err != nil {
 		return result, err
 	}
 	verification, err := s.VerifySTRM(ctx, library)

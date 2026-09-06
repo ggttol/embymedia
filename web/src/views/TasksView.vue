@@ -111,7 +111,7 @@ const highlightedTaskId = ref('')
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
 const activeTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'pending' || task.status === 'running').length)
 const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed').length)
-const failedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'failed' || task.status === 'cancelled').length)
+const attentionTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'failed' || task.status === 'cancelled' || taskHasFindings(task)).length)
 let pollTimer: number | undefined
 
 let schedulesGeneration = 0
@@ -158,6 +158,23 @@ function resultRecord(task: AsyncTask): Record<string, unknown> | null {
   return typeof result === 'object' && result !== null && !Array.isArray(result) ? result as Record<string, unknown> : null
 }
 
+function taskHasFindings(task: AsyncTask) {
+  if (task.status === 'failed' || task.status === 'cancelled') return true
+  if (task.status !== 'completed') return false
+  const result = resultRecord(task)
+  if (!result) return false
+  if (task.type === 'emby_missing_posters') return Number(result.total_missing ?? result.returned ?? 0) > 0
+  if (task.type === 'strm_sync' || task.type === 'strm_verify') {
+    const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
+    return Number(strm?.missing || 0) > 0 || Number(strm?.invalid || 0) > 0
+  }
+  return false
+}
+
+function taskStatusLabel(task: AsyncTask) {
+  return task.status === 'completed' && taskHasFindings(task) ? '已完成 · 有发现' : statusLabel(task.status)
+}
+
 function resultSummary(task: AsyncTask) {
   const result = resultRecord(task)
   if (!result) return task.result ? '任务返回了文本结果。' : ''
@@ -166,14 +183,18 @@ function resultSummary(task: AsyncTask) {
       return result.completion_tracked === true
         ? `Emby 全库扫描已完成 · ${formatDuration(String(result.started_at || ''), String(result.completed_at || ''))}`
         : 'Emby 已接受刷新请求；该范围不提供后台完成状态。'
-    case 'emby_missing_posters': return `发现 ${Number(result.returned || 0)} 个缺少海报的条目。`
+    case 'emby_missing_posters': {
+      const total = Number(result.total_missing ?? result.returned ?? 0)
+      const returned = Number(result.returned || 0)
+      return result.truncated === true ? `发现 ${total} 个缺少海报的条目，显示前 ${returned} 个。` : `发现 ${total} 个缺少海报的条目。`
+    }
     case 'emby_match': return `已向 Emby 提交 TMDB ${String(result.tmdb_id || '')} 的匹配结果。`
     case 'c115_save_share': return `已转存 ${Number(result.count || 0)} 个项目${result.title ? ` · ${String(result.title)}` : ''}。`
     case 'c115_offline_download': return `已提交 ${Array.isArray(result.task_ids) ? result.task_ids.length : 0} 个离线任务。`
     case 'strm_sync':
     case 'strm_verify': {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
-      return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}` : 'STRM 操作已完成。'
+      return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}${Number(strm.removed || 0) > 0 ? ` · 已清理 ${Number(strm.removed)} 个旧 STRM` : ''}` : 'STRM 操作已完成。'
     }
     default: return '任务已保存执行结果。'
   }
@@ -426,6 +447,12 @@ function formatLog(line: string) {
   if (line === 'Emby accepted the item refresh; this endpoint does not expose completion state') return 'Emby 已接受指定媒体库刷新；该接口不提供后台完成状态。'
   const progress = /^Emby scan progress (\d+)%$/.exec(line)
   if (progress) return `Emby 扫描进度：${progress[1]}%`
+  const posterFindings = /^Emby missing-poster findings total=(\d+) returned=(\d+) truncated=(true|false)$/.exec(line)
+  if (posterFindings) return `Emby 缺失海报：共 ${posterFindings[1]} 个，本次返回 ${posterFindings[2]} 个${posterFindings[3] === 'true' ? '，结果已截断' : ''}。`
+  const sync = /^STRM sync media=(\d+) created=(\d+) updated=(\d+) removed=(\d+) prune=(\S+)$/.exec(line)
+  if (sync) return `STRM 同步：媒体 ${sync[1]} 个，新建 ${sync[2]} 个，更新 ${sync[3]} 个，清理旧文件 ${sync[4]} 个；清理状态 ${sync[5]}。`
+  const findings = /^STRM findings valid=(\d+) missing=(\d+) invalid=(\d+)$/.exec(line)
+  if (findings) return `STRM 校验：有效 ${findings[1]} 个，缺失 ${findings[2]} 个，无效 ${findings[3]} 个。`
   if (line.startsWith('failed: ')) return `执行失败：${userError(line.slice(8))}`
   return line
 }
@@ -464,10 +491,11 @@ async function createSchedule() {
   }
 }
 
-function asyncTone(status: string) {
-  if (status === 'completed') return 'bg-ok'
-  if (status === 'running') return 'bg-warn animate-pulse'
-  if (status === 'failed' || status === 'cancelled') return 'bg-danger'
+function asyncTone(task: AsyncTask) {
+  if (task.status === 'completed' && taskHasFindings(task)) return 'bg-warn'
+  if (task.status === 'completed') return 'bg-ok'
+  if (task.status === 'running') return 'bg-warn animate-pulse'
+  if (task.status === 'failed' || task.status === 'cancelled') return 'bg-danger'
   return 'bg-text-faint'
 }
 
@@ -505,8 +533,8 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
 
     <div class="grid grid-cols-3 border border-border bg-surface">
       <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-text">{{ executionsLoaded ? activeTaskCount : '—' }}</strong><span class="text-xs text-text-muted">正在处理</span></div>
-      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-ok">{{ executionsLoaded ? completedTaskCount : '—' }}</strong><span class="text-xs text-text-muted">已完成</span></div>
-      <div class="p-4 sm:p-5"><strong class="block font-serif text-2xl" :class="failedTaskCount ? 'text-danger' : 'text-text'">{{ executionsLoaded ? failedTaskCount : '—' }}</strong><span class="text-xs text-text-muted">需要处理</span></div>
+      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-ok">{{ executionsLoaded ? completedTaskCount : '—' }}</strong><span class="text-xs text-text-muted">执行完成</span></div>
+      <div class="p-4 sm:p-5"><strong class="block font-serif text-2xl" :class="attentionTaskCount ? 'text-warn' : 'text-text'">{{ executionsLoaded ? attentionTaskCount : '—' }}</strong><span class="text-xs text-text-muted">结果需处理</span></div>
     </div>
     <p v-if="!executionsLoaded" class="text-xs text-text-muted">{{ executionsError ? '执行记录尚未读取成功，暂时无法统计任务。' : '正在读取执行记录与任务统计…' }}</p>
 
@@ -583,10 +611,10 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       <article v-for="task in asyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 border bg-surface shadow-sm space-y-4 transition-colors" :class="highlightedTaskId === task.id ? 'border-accent' : 'border-border'">
         <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
           <div class="flex items-start gap-3 min-w-0">
-            <span class="w-2.5 h-2.5 mt-1.5 rounded-full shrink-0" :class="asyncTone(task.status)"></span>
+            <span class="w-2.5 h-2.5 mt-1.5 rounded-full shrink-0" :class="asyncTone(task)"></span>
             <div><h3 class="font-serif text-lg font-semibold text-text">{{ taskDefinition(task.type).label }}</h3><p class="mt-1 text-sm text-text-muted">{{ taskDefinition(task.type).description }}</p></div>
           </div>
-          <span class="self-start px-2.5 py-1 text-xs font-semibold" :class="{ 'bg-ok/10 text-ok': task.status === 'completed', 'bg-warn/10 text-warn': task.status === 'running', 'bg-danger/10 text-danger': task.status === 'failed' || task.status === 'cancelled', 'bg-bg-muted text-text-faint': task.status === 'pending' }">{{ statusLabel(task.status) }}</span>
+          <span class="self-start px-2.5 py-1 text-xs font-semibold" :class="{ 'bg-ok/10 text-ok': task.status === 'completed' && !taskHasFindings(task), 'bg-warn/10 text-warn': task.status === 'running' || (task.status === 'completed' && taskHasFindings(task)), 'bg-danger/10 text-danger': task.status === 'failed' || task.status === 'cancelled', 'bg-bg-muted text-text-faint': task.status === 'pending' }">{{ taskStatusLabel(task) }}</span>
         </div>
 
         <div class="grid sm:grid-cols-[1fr_auto] gap-3 p-3 border border-border/70 bg-bg text-sm">
@@ -595,14 +623,14 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         </div>
 
         <div v-if="task.status === 'running' || task.progress > 0" class="flex items-center gap-3">
-          <div class="flex-1 h-1.5 rounded-full bg-bg-muted overflow-hidden"><div class="h-full rounded-full transition-all" :class="task.status === 'failed' ? 'bg-danger' : 'bg-accent'" :style="{ width: Math.min(100, task.progress || 0) + '%' }"></div></div>
+          <div class="flex-1 h-1.5 rounded-full bg-bg-muted overflow-hidden"><div class="h-full rounded-full transition-all" :class="task.status === 'failed' ? 'bg-danger' : taskHasFindings(task) ? 'bg-warn' : 'bg-accent'" :style="{ width: Math.min(100, task.progress || 0) + '%' }"></div></div>
           <span class="text-xs font-mono text-text-muted w-12 text-right">{{ Math.round(task.progress || 0) }}%</span>
         </div>
 
         <div v-if="task.error" class="p-3 border-l-2 border-danger bg-danger/5 text-sm text-danger">{{ userError(task.error) }}</div>
 
-        <div v-if="task.result" class="p-3 border-l-2 border-ok bg-ok/5 text-sm">
-          <p class="font-medium text-ok">{{ resultSummary(task) }}</p>
+        <div v-if="task.result" class="p-3 border-l-2 text-sm" :class="taskHasFindings(task) ? 'border-warn bg-warn/5' : 'border-ok bg-ok/5'">
+          <p class="font-medium" :class="taskHasFindings(task) ? 'text-warn' : 'text-ok'">{{ resultSummary(task) }}</p>
           <details class="mt-2"><summary class="min-h-11 cursor-pointer py-3 text-xs text-text-muted">查看完整执行结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border bg-bg p-3 text-xs">{{ resultDetails(task) }}</pre></details>
         </div>
 
