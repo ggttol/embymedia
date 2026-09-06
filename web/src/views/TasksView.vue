@@ -486,7 +486,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
 </script>
 
 <template>
-  <div class="space-y-7 max-w-6xl">
+  <div class="task-center-page space-y-7 max-w-6xl">
     <header class="flex flex-col sm:flex-row sm:items-end justify-between gap-5 pb-7 border-b border-border">
       <div class="max-w-2xl">
         <p class="text-[10px] font-mono font-bold tracking-[0.18em] text-annotation mb-2">AUTOMATION / EXECUTION HISTORY</p>
@@ -648,6 +648,8 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       </article>
     </section>
 
+    <footer class="task-list-end" aria-label="任务列表结束"><span>END OF TASK HISTORY</span><strong>已显示全部执行记录与自动任务</strong></footer>
+
     <UiDialog v-if="retryTarget" title="重新执行任务" :busy="Boolean(actionBusyId)" @close="closeRetry">
       <form class="space-y-5" @submit.prevent="retryTask">
         <p class="text-sm leading-6 text-text-muted">确认重新执行“{{ taskDefinition(retryTarget.type).label }}”？系统会创建一条新的执行记录。</p>
@@ -661,3 +663,11 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
     </UiDialog>
   </div>
 </template>
+
+<style scoped>
+.task-center-page { padding-bottom: max(10rem, 18vh); }
+.task-list-end { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-faint); }
+.task-list-end span { font: 700 10px/1.4 "SFMono-Regular", Consolas, monospace; letter-spacing: .14em; }
+.task-list-end strong { font-size: 12px; font-weight: 500; }
+@media (max-width: 639px) { .task-center-page { padding-bottom: 6rem; } .task-list-end { align-items: flex-start; flex-direction: column; gap: 6px; } }
+</style>
