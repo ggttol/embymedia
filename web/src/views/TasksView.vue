@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Activity, CalendarClock, FileText, ListTodo, Loader2, Play, Plus, RotateCcw, X } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
@@ -8,11 +8,16 @@ type TaskType = 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'c115_s
 interface AsyncTask {
   id: string
   type: string
+  schedule_id?: string
   payload: Record<string, unknown>
   status: string
   progress: number
   error?: string
+  result?: string
+  attempts: number
+  max_attempts: number
   created_at: string
+  updated_at: string
 }
 
 interface ScheduledTask {
@@ -22,6 +27,7 @@ interface ScheduledTask {
   cron_expr: string
   params?: string
   status: string
+  result?: string
   error?: string
   last_run_at?: string
   next_run_at?: string
@@ -33,8 +39,10 @@ interface TaskRun {
   status: string
   progress: number
   logs?: string[]
+  error?: string
+  started_at: string
+  completed_at?: string
 }
-
 interface TaskDefinition {
   label: string
   description: string
@@ -43,7 +51,7 @@ interface TaskDefinition {
 
 const taskTypeOrder: TaskType[] = ['emby_refresh', 'emby_missing_posters', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
 const taskDefinitions: Record<TaskType, TaskDefinition> = {
-  emby_refresh: { label: '刷新 Emby 媒体库', description: '让 Emby 重新扫描全部媒体库，或只刷新指定媒体库。', defaultName: '每日刷新媒体库' },
+  emby_refresh: { label: '刷新 Emby 媒体库', description: '全库刷新会跟踪 Emby 的真实扫描进度直到结束；指定媒体库刷新会记录 Emby 已接受请求。', defaultName: '每日刷新媒体库' },
   emby_missing_posters: { label: '检查缺失海报', description: '找出没有主海报的 Emby 条目，结果会保存在执行记录中。', defaultName: '每日检查缺失海报' },
   emby_match: { label: '修正媒体匹配', description: '把一个 Emby 条目明确匹配到指定 TMDB 条目。', defaultName: '修正媒体匹配' },
   strm_sync: { label: '同步 STRM 文件', description: '根据媒体源目录创建或更新 STRM 文件。', defaultName: '每日同步 STRM' },
@@ -99,12 +107,15 @@ const showScheduleForm = ref(false)
 const scheduleForm = ref(newScheduleForm())
 const savingSchedule = ref(false)
 const scheduleError = ref('')
+const highlightedTaskId = ref('')
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
 const activeTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'pending' || task.status === 'running').length)
 const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed').length)
 const failedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'failed' || task.status === 'cancelled').length)
 let pollTimer: number | undefined
 
+let schedulesGeneration = 0
+let executionsGeneration = 0
 function taskDefinition(type: string): TaskDefinition {
   return taskDefinitions[type as TaskType] ?? { label: '未知任务', description: '该任务类型不受当前页面支持。', defaultName: '未知任务' }
 }
@@ -119,6 +130,66 @@ function frequencyLabel(cron: string) {
 
 function formatTime(value?: string) {
   return value ? new Date(value).toLocaleString() : '尚未执行'
+}
+
+function formatDuration(start?: string, end?: string) {
+  if (!start) return '尚未开始'
+  if (!end) return '进行中'
+  const milliseconds = new Date(end).getTime() - new Date(start).getTime()
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '时间无效'
+  if (milliseconds < 1000) return `${milliseconds} 毫秒`
+  const seconds = milliseconds / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes} 分 ${Math.round(seconds % 60)} 秒`
+}
+
+function parsedResult(task: AsyncTask): unknown {
+  if (!task.result) return null
+  try {
+    return JSON.parse(task.result)
+  } catch {
+    return task.result
+  }
+}
+
+function resultRecord(task: AsyncTask): Record<string, unknown> | null {
+  const result = parsedResult(task)
+  return typeof result === 'object' && result !== null && !Array.isArray(result) ? result as Record<string, unknown> : null
+}
+
+function resultSummary(task: AsyncTask) {
+  const result = resultRecord(task)
+  if (!result) return task.result ? '任务返回了文本结果。' : ''
+  switch (task.type) {
+    case 'emby_refresh':
+      return result.completion_tracked === true
+        ? `Emby 全库扫描已完成 · ${formatDuration(String(result.started_at || ''), String(result.completed_at || ''))}`
+        : 'Emby 已接受刷新请求；该范围不提供后台完成状态。'
+    case 'emby_missing_posters': return `发现 ${Number(result.returned || 0)} 个缺少海报的条目。`
+    case 'emby_match': return `已向 Emby 提交 TMDB ${String(result.tmdb_id || '')} 的匹配结果。`
+    case 'c115_save_share': return `已转存 ${Number(result.count || 0)} 个项目${result.title ? ` · ${String(result.title)}` : ''}。`
+    case 'c115_offline_download': return `已提交 ${Array.isArray(result.task_ids) ? result.task_ids.length : 0} 个离线任务。`
+    case 'strm_sync':
+    case 'strm_verify': {
+      const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
+      return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}` : 'STRM 操作已完成。'
+    }
+    default: return '任务已保存执行结果。'
+  }
+}
+
+function resultDetails(task: AsyncTask) {
+  const result = parsedResult(task)
+  return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+}
+
+function scheduleName(task: AsyncTask) {
+  return task.schedule_id ? tasks.value.find((schedule) => schedule.id === task.schedule_id)?.name : undefined
+}
+
+function activeExecution(schedule: ScheduledTask) {
+  return asyncTasks.value.find((task) => (task.schedule_id === schedule.id || task.id === schedule.result) && (task.status === 'pending' || task.status === 'running'))
 }
 
 function userError(error?: string) {
@@ -188,28 +259,33 @@ function selectTaskType() {
 }
 
 async function fetchSchedules() {
+  const generation = ++schedulesGeneration
   try {
     const response = await fetch('/api/v1/tasks')
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '读取自动任务失败')
+    if (generation !== schedulesGeneration) return
     tasks.value = data.tasks ?? []
     schedulesLoaded.value = true
     schedulesError.value = ''
   } catch (error) {
-    schedulesError.value = error instanceof Error ? error.message : '读取自动任务失败'
+    if (generation === schedulesGeneration) schedulesError.value = error instanceof Error ? error.message : '读取自动任务失败'
   }
 }
 
 async function fetchExecutions() {
+  const generation = ++executionsGeneration
   try {
     const response = await fetch('/api/v1/async-tasks')
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '读取执行记录失败')
+    if (generation !== executionsGeneration) return
     asyncTasks.value = data.tasks ?? []
     executionsLoaded.value = true
     executionsError.value = ''
+    await Promise.all(Object.keys(taskRuns.value).map((id) => fetchTaskRuns(id, true)))
   } catch (error) {
-    executionsError.value = error instanceof Error ? error.message : '读取执行记录失败'
+    if (generation === executionsGeneration) executionsError.value = error instanceof Error ? error.message : '读取执行记录失败'
   }
 }
 
@@ -224,7 +300,7 @@ async function fetchTasks() {
 }
 
 async function runTask(task: ScheduledTask) {
-  if (executingId.value) return
+  if (executingId.value || activeExecution(task)) return
   executingId.value = task.id
   actionMessage.value = ''
   scheduleErrors.value[task.id] = ''
@@ -232,8 +308,19 @@ async function runTask(task: ScheduledTask) {
     const response = await fetch(`/api/v1/tasks/${encodeURIComponent(task.id)}/run`, { method: 'POST' })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '启动任务失败')
-    actionMessage.value = `“${task.name}”已加入执行队列。`
-    await fetchTasks()
+    if (!data.task?.id || data.task.schedule_id !== task.id || !data.schedule?.id) throw new Error('服务未返回可跟踪的执行记录')
+    const queued = data.task as AsyncTask
+    schedulesGeneration++
+    executionsGeneration++
+    asyncTasks.value = [queued, ...asyncTasks.value.filter((item) => item.id !== queued.id)]
+    tasks.value = tasks.value.map((item) => item.id === data.schedule.id ? data.schedule as ScheduledTask : item)
+    executionsLoaded.value = true
+    taskRuns.value = { ...taskRuns.value, [queued.id]: [] }
+    highlightedTaskId.value = queued.id
+    actionMessage.value = `“${task.name}”已创建真实执行记录，正在跟踪后台状态。`
+    schedulePoll(250)
+    await nextTick()
+    document.getElementById(`execution-${queued.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   } catch (error) {
     scheduleErrors.value[task.id] = error instanceof Error ? error.message : '启动任务失败'
   } finally {
@@ -279,9 +366,20 @@ async function retryTask() {
     const response = await fetch(`/api/v1/async-tasks/${encodeURIComponent(task.id)}/retry`, { method: 'POST' })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '重新执行失败')
-    actionMessage.value = `“${taskDefinition(task.type).label}”已重新加入队列。`
+    if (!data.id) throw new Error('服务未返回可跟踪的执行记录')
+    const queued = data as AsyncTask
+    schedulesGeneration++
+    executionsGeneration++
+    asyncTasks.value = [queued, ...asyncTasks.value.filter((item) => item.id !== queued.id)]
+    executionsLoaded.value = true
+    taskRuns.value = { ...taskRuns.value, [queued.id]: [] }
+    highlightedTaskId.value = queued.id
+    actionMessage.value = `“${taskDefinition(task.type).label}”已创建新的执行记录。`
     retryTarget.value = null
-    await fetchTasks()
+    await fetchSchedules()
+    schedulePoll(250)
+    await nextTick()
+    document.getElementById(`execution-${queued.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   } catch (error) {
     retryError.value = error instanceof Error ? error.message : '重新执行失败'
   } finally {
@@ -289,16 +387,10 @@ async function retryTask() {
   }
 }
 
-async function toggleTaskRuns(id: string) {
-  if (runsLoading.value[id]) return
+async function fetchTaskRuns(id: string, background = false) {
+  if (runsLoading.value[id] && !background) return
+  if (!background) runsLoading.value[id] = true
   runsErrors.value[id] = ''
-  if (taskRuns.value[id]) {
-    const next = { ...taskRuns.value }
-    delete next[id]
-    taskRuns.value = next
-    return
-  }
-  runsLoading.value[id] = true
   try {
     const response = await fetch(`/api/v1/async-tasks/${encodeURIComponent(id)}/runs`)
     const data = await response.json()
@@ -307,15 +399,34 @@ async function toggleTaskRuns(id: string) {
   } catch (error) {
     runsErrors.value[id] = error instanceof Error ? error.message : '读取执行记录失败'
   } finally {
-    runsLoading.value[id] = false
+    if (!background) runsLoading.value[id] = false
   }
+}
+
+async function toggleTaskRuns(id: string) {
+  if (runsLoading.value[id]) return
+  if (taskRuns.value[id]) {
+    const next = { ...taskRuns.value }
+    delete next[id]
+    taskRuns.value = next
+    return
+  }
+  await fetchTaskRuns(id)
 }
 
 function formatLog(line: string) {
   const [verb, type] = line.split(' ', 2)
   if (verb === 'started') return `开始执行：${taskDefinition(type).label}`
-  if (verb === 'completed') return `执行完成：${taskDefinition(type).label}`
+  if (verb === 'completed') return `执行记录完成：${taskDefinition(type).label}`
   if (verb === 'cancelled') return `已停止：${taskDefinition(type).label}`
+  if (line === 'Emby accepted the full-library scan') return 'Emby 已接受全库扫描任务。'
+  if (line === 'Emby full-library scan started') return 'Emby 已开始扫描媒体库。'
+  if (line === 'Emby full-library scan reached its recorded terminal state') return 'Emby 已记录扫描完成。'
+  if (line === 'Emby full-library scan was already running; tracking the existing run') return 'Emby 全库扫描已在运行，当前执行会继续跟踪它。'
+  if (line === 'Emby accepted the item refresh; this endpoint does not expose completion state') return 'Emby 已接受指定媒体库刷新；该接口不提供后台完成状态。'
+  const progress = /^Emby scan progress (\d+)%$/.exec(line)
+  if (progress) return `Emby 扫描进度：${progress[1]}%`
+  if (line.startsWith('failed: ')) return `执行失败：${userError(line.slice(8))}`
   return line
 }
 
@@ -360,9 +471,14 @@ function asyncTone(status: string) {
   return 'bg-text-faint'
 }
 
+function schedulePoll(delay: number) {
+  if (pollTimer) window.clearTimeout(pollTimer)
+  pollTimer = window.setTimeout(pollTasks, delay)
+}
+
 async function pollTasks() {
   await fetchTasks()
-  pollTimer = window.setTimeout(pollTasks, 5000)
+  schedulePoll(activeTaskCount.value > 0 ? 1000 : 5000)
 }
 
 onMounted(() => { void pollTasks() })
@@ -456,7 +572,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
 
     <section class="space-y-3" aria-labelledby="execution-heading">
       <div class="flex items-center justify-between gap-3 px-1">
-        <div><div class="flex items-center gap-2"><Activity class="w-4 h-4 text-annotation" /><h2 id="execution-heading" class="font-serif font-semibold text-xl text-text">最近执行</h2></div><p class="mt-1 text-xs text-text-faint">每 5 秒自动更新；失败任务会保留原因和重新执行入口。</p></div>
+        <div><div class="flex items-center gap-2"><Activity class="w-4 h-4 text-annotation" /><h2 id="execution-heading" class="font-serif font-semibold text-xl text-text">最近执行</h2></div><p class="mt-1 text-xs text-text-faint">执行中每秒更新，空闲时每 5 秒更新；开始、结束、耗时、进度、日志与结果均保留。</p></div>
         <span class="text-xs font-mono text-text-faint">{{ executionsLoaded ? `${asyncTasks.length} 条` : '—' }}</span>
       </div>
 
@@ -464,7 +580,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       <div v-else-if="!executionsLoaded" role="status" class="flex items-center justify-center gap-2 p-8 border border-border bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取执行记录</div>
       <div v-else-if="asyncTasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-text-faint text-sm">还没有执行记录。创建自动任务并选择“立即执行”后，进度会显示在这里。</div>
 
-      <article v-for="task in asyncTasks" :key="task.id" class="p-5 border border-border bg-surface shadow-sm space-y-4">
+      <article v-for="task in asyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 border bg-surface shadow-sm space-y-4 transition-colors" :class="highlightedTaskId === task.id ? 'border-accent' : 'border-border'">
         <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
           <div class="flex items-start gap-3 min-w-0">
             <span class="w-2.5 h-2.5 mt-1.5 rounded-full shrink-0" :class="asyncTone(task.status)"></span>
@@ -474,8 +590,8 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         </div>
 
         <div class="grid sm:grid-cols-[1fr_auto] gap-3 p-3 border border-border/70 bg-bg text-sm">
-          <span class="text-text-muted break-words">{{ taskSummary(task.type, task.payload) }}</span>
-          <span class="text-xs font-mono text-text-faint">创建于 {{ formatTime(task.created_at) }}</span>
+          <div><span class="text-text-muted break-words">{{ taskSummary(task.type, task.payload) }}</span><span v-if="scheduleName(task)" class="block mt-1 text-xs text-accent">来源：{{ scheduleName(task) }}</span><span class="block mt-1 font-mono text-[10px] text-text-faint break-all">执行 ID：{{ task.id }}</span></div>
+          <div class="text-xs font-mono text-text-faint sm:text-right"><span class="block">入队：{{ formatTime(task.created_at) }}</span><span class="block mt-1">更新：{{ formatTime(task.updated_at) }}</span></div>
         </div>
 
         <div v-if="task.status === 'running' || task.progress > 0" class="flex items-center gap-3">
@@ -484,6 +600,11 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         </div>
 
         <div v-if="task.error" class="p-3 border-l-2 border-danger bg-danger/5 text-sm text-danger">{{ userError(task.error) }}</div>
+
+        <div v-if="task.result" class="p-3 border-l-2 border-ok bg-ok/5 text-sm">
+          <p class="font-medium text-ok">{{ resultSummary(task) }}</p>
+          <details class="mt-2"><summary class="min-h-11 cursor-pointer py-3 text-xs text-text-muted">查看完整执行结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border bg-bg p-3 text-xs">{{ resultDetails(task) }}</pre></details>
+        </div>
 
         <div class="flex flex-wrap gap-2">
           <button type="button" :disabled="runsLoading[task.id]" :aria-expanded="Boolean(taskRuns[task.id])" class="inline-flex min-h-11 items-center gap-1.5 border border-border px-3 text-xs font-medium disabled:opacity-50" @click="toggleTaskRuns(task.id)"><Loader2 v-if="runsLoading[task.id]" class="w-3.5 h-3.5 animate-spin" /><FileText v-else class="w-3.5 h-3.5" />{{ runsLoading[task.id] ? '正在读取记录' : taskRuns[task.id] ? '收起执行记录' : runsErrors[task.id] ? '重试读取记录' : '查看执行记录' }}</button>
@@ -494,11 +615,13 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         <p v-if="runsErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ runsErrors[task.id] }}</p>
 
         <div v-if="taskRuns[task.id]" class="border-t border-border pt-4 space-y-3">
-          <p v-if="taskRuns[task.id].length === 0" class="text-sm text-text-faint">任务尚未开始，没有执行记录。</p>
-          <div v-for="run in taskRuns[task.id]" :key="run.id" class="bg-bg p-4 text-sm">
-            <div class="flex justify-between gap-3"><span class="font-medium">第 {{ run.attempt }} 次执行 · {{ statusLabel(run.status) }}</span><span class="font-mono text-xs text-text-muted">{{ Math.round(run.progress) }}%</span></div>
-            <ul v-if="run.logs?.length" class="mt-3 space-y-1 break-words text-xs text-text-muted"><li v-for="(line, index) in run.logs" :key="index">{{ formatLog(line) }}</li></ul>
-            <p v-else class="mt-3 text-xs text-text-faint">没有详细日志。</p>
+          <p v-if="taskRuns[task.id].length === 0" class="text-sm text-text-faint">任务正在等待 worker 创建执行记录。</p>
+          <div v-for="run in taskRuns[task.id]" :key="run.id" class="border border-border/70 bg-bg p-4 text-sm space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3"><span class="font-medium">第 {{ run.attempt }} 次执行 · {{ statusLabel(run.status) }}</span><span class="font-mono text-xs text-text-muted">{{ Math.round(run.progress) }}%</span></div>
+            <dl class="grid gap-2 text-xs sm:grid-cols-3"><div><dt class="text-text-faint">开始时间</dt><dd class="mt-1 font-mono break-all">{{ formatTime(run.started_at) }}</dd></div><div><dt class="text-text-faint">结束时间</dt><dd class="mt-1 font-mono break-all">{{ run.completed_at ? formatTime(run.completed_at) : '尚未结束' }}</dd></div><div><dt class="text-text-faint">执行耗时</dt><dd class="mt-1 font-mono">{{ formatDuration(run.started_at, run.completed_at) }}</dd></div></dl>
+            <p v-if="run.error" class="border-l-2 border-danger bg-danger/5 p-3 text-xs text-danger">{{ userError(run.error) }}</p>
+            <ol v-if="run.logs?.length" class="space-y-2 break-words text-xs text-text-muted"><li v-for="(line, index) in run.logs" :key="index" class="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2"><span class="font-mono text-text-faint">{{ index + 1 }}.</span><span>{{ formatLog(line) }}</span></li></ol>
+            <p v-else class="text-xs text-text-faint">暂时没有日志；执行中会自动更新。</p>
           </div>
         </div>
       </article>
@@ -514,13 +637,13 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       <div v-else-if="tasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
       <article v-for="task in tasks" :key="task.id" class="p-5 border border-border bg-surface shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-5">
         <div class="space-y-3 min-w-0">
-          <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="{ 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-warn animate-pulse': task.status === 'running', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2 py-0.5 bg-accent-soft text-xs font-medium text-accent">{{ frequencyLabel(task.cron_expr) }}</span></div>
+          <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="activeExecution(task) ? 'bg-warn animate-pulse' : { 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2 py-0.5 bg-accent-soft text-xs font-medium text-accent">{{ frequencyLabel(task.cron_expr) }}</span></div>
           <div><strong class="text-sm text-text">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>
-          <div class="flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-faint"><span>上次：{{ formatTime(task.last_run_at) }}</span><span v-if="task.next_run_at">下次：{{ formatTime(task.next_run_at) }}</span><span v-if="task.error" class="text-danger">{{ userError(task.error) }}</span></div>
+          <div class="flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-faint"><span>最近启动：{{ formatTime(task.last_run_at) }}</span><span v-if="task.next_run_at">下次：{{ formatTime(task.next_run_at) }}</span><span v-if="activeExecution(task)" class="font-semibold text-warn">本次：{{ statusLabel(activeExecution(task)?.status || '') }} · {{ Math.round(activeExecution(task)?.progress || 0) }}%</span><span v-if="task.error" class="text-danger">{{ userError(task.error) }}</span></div>
           <p v-if="scheduleErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ scheduleErrors[task.id] }}</p>
         </div>
-        <button type="button" @click="runTask(task)" :disabled="Boolean(executingId)" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 border border-accent bg-bg text-sm font-medium text-accent disabled:opacity-50">
-          <Loader2 v-if="executingId === task.id" class="w-4 h-4 animate-spin" /><Play v-else class="w-4 h-4" /><span>{{ executingId === task.id ? '正在加入队列' : '立即执行' }}</span>
+        <button type="button" @click="runTask(task)" :disabled="Boolean(executingId) || Boolean(activeExecution(task))" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 border border-accent bg-bg text-sm font-medium text-accent disabled:opacity-50">
+          <Loader2 v-if="executingId === task.id || activeExecution(task)" class="w-4 h-4 animate-spin" /><Play v-else class="w-4 h-4" /><span>{{ executingId === task.id ? '正在创建执行' : activeExecution(task)?.status === 'pending' ? '等待执行' : activeExecution(task) ? `执行中 ${Math.round(activeExecution(task)?.progress || 0)}%` : '立即执行' }}</span>
         </button>
       </article>
     </section>

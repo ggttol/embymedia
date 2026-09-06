@@ -56,6 +56,26 @@ func TestAPIRoutes(t *testing.T) {
 	authorizer := security.NewAgentAuthorizer(db)
 	server := NewServer(e, db, drive, emby, cloudDrive, taskQueue, cron, settings, authorizer)
 	defer server.Close()
+	schedule := domain.ScheduledTask{ID: "manual-run", Name: "Refresh Emby", Type: "emby_refresh", Enabled: false, Params: `{}`}
+	if err := cron.ScheduleTask(&schedule); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/manual-run/run", nil)
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("immediate run returned %d: %s", response.Code, response.Body.String())
+	}
+	var launched struct {
+		Task     domain.AsyncTask     `json:"task"`
+		Schedule domain.ScheduledTask `json:"schedule"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &launched); err != nil {
+		t.Fatal(err)
+	}
+	if launched.Task.Status != "pending" || launched.Task.ScheduleID != schedule.ID || launched.Schedule.Result != launched.Task.ID || launched.Schedule.LastRunAt == nil {
+		t.Fatalf("immediate run response omitted durable execution: %+v", launched)
+	}
 
 	// Test OpenAPI endpoint
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)

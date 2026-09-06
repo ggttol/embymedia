@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/embymedia/embymedia/internal/storage"
@@ -13,6 +16,9 @@ import (
 func TestEmbyAndCloudDriveServices(t *testing.T) {
 	// Mock Emby server
 	embyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Emby-Token") != "test-key" || r.URL.Query().Has("api_key") {
+			t.Errorf("Emby authentication must use the token header: %s", r.URL.String())
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/System/Info" {
 			w.Write([]byte(`{"ServerName":"Test Emby","Version":"4.8.0.0"}`))
@@ -92,5 +98,52 @@ func TestEmbyAndCloudDriveServices(t *testing.T) {
 	mounts, err := cdSrv.GetMounts(context.Background())
 	if err != nil || len(mounts) == 0 {
 		t.Fatalf("unexpected mounts: %v, err: %v", mounts, err)
+	}
+}
+
+func TestRunLibraryScanCancellationStopsStartedEmbyTask(t *testing.T) {
+	polled := make(chan struct{})
+	var pollOnce sync.Once
+	var stopped atomic.Bool
+	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/ScheduledTasks":
+			_, _ = response.Write([]byte(`[{"Id":"scan","Key":"RefreshLibrary","State":"Idle"}]`))
+		case request.Method == http.MethodPost && request.URL.Path == "/ScheduledTasks/Running/scan":
+			response.WriteHeader(http.StatusNoContent)
+		case request.Method == http.MethodGet && request.URL.Path == "/ScheduledTasks/scan":
+			pollOnce.Do(func() { close(polled) })
+			_, _ = response.Write([]byte(`{"Id":"scan","Key":"RefreshLibrary","State":"Running","CurrentProgressPercentage":25}`))
+		case request.Method == http.MethodDelete && request.URL.Path == "/ScheduledTasks/Running/scan":
+			stopped.Store(true)
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer embyServer.Close()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSetting("emby_url", embyServer.URL); err != nil {
+		t.Fatal(err)
+	}
+	service := NewEmbyService(db)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.RunLibraryScanCtx(ctx, func(float64, string) error { return nil })
+		result <- err
+	}()
+	<-polled
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled scan returned %v", err)
+	}
+	if !stopped.Load() {
+		t.Fatal("cancelling the local task did not stop the Emby scan")
 	}
 }

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -197,5 +198,54 @@ func TestOpenRepairsLegacyDefaultAccount(t *testing.T) {
 	}
 	if accounts[0].Type != "115" || accounts[0].Cookie != "current-cookie" {
 		t.Fatalf("legacy account not repaired: %+v", accounts[0])
+	}
+}
+
+func TestListAsyncTasksReadsLegacyNullSchedule(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now()
+	if _, err := db.db.Exec(`
+		INSERT INTO async_tasks (id, type, payload, status, progress, attempts, max_attempts, created_at, updated_at)
+		VALUES ('legacy', 'emby_refresh', '{}', 'completed', 100, 1, 1, ?, ?)
+	`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := db.ListAsyncTasks("", 0)
+	if err != nil || len(tasks) != 1 || tasks[0].ScheduleID != "" {
+		t.Fatalf("legacy task was not readable: %+v, err=%v", tasks, err)
+	}
+}
+
+func TestOpenAddsScheduleLinkToExistingAsyncTasks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-async.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+		CREATE TABLE async_tasks (
+			id TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL,
+			progress REAL NOT NULL DEFAULT 0, result TEXT, error TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 1, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+		);
+		INSERT INTO async_tasks (id, type, status, created_at, updated_at) VALUES ('legacy', 'emby_refresh', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("migrate existing task database: %v", err)
+	}
+	defer db.Close()
+	tasks, err := db.ListAsyncTasks("", 0)
+	if err != nil || len(tasks) != 1 || tasks[0].ScheduleID != "" {
+		t.Fatalf("migrated legacy task was not readable: %+v, err=%v", tasks, err)
 	}
 }

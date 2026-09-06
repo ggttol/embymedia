@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -547,21 +548,14 @@ func (s *Server) handleCreateTask(c echo.Context) error {
 }
 
 func (s *Server) handleRunTask(c echo.Context) error {
-	task, err := s.db.GetTask(c.Param("id"))
+	queued, schedule, err := s.cron.RunTask(c.Param("id"))
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]any{"error": "scheduled task not found"})
-	}
-	payload := map[string]any{}
-	if task.Params != "" {
-		if err := json.Unmarshal([]byte(task.Params), &payload); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]any{"error": "scheduled task params are invalid JSON"})
+		if errors.Is(err, sql.ErrNoRows) {
+			return c.JSON(http.StatusNotFound, map[string]any{"error": "scheduled task not found"})
 		}
-	}
-	queued, err := s.taskQueue.Enqueue(task.Type, payload)
-	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusAccepted, map[string]any{"async_task_id": queued.ID, "status": queued.Status})
+	return c.JSON(http.StatusAccepted, map[string]any{"task": queued, "schedule": schedule})
 }
 
 func (s *Server) handleBatchTasks(c echo.Context) error {

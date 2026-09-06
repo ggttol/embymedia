@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,13 +26,36 @@ func waitForTaskStatus(t *testing.T, db *storage.DB, id, status string) {
 	t.Fatalf("task did not reach %s: %+v, err=%v", status, task, err)
 }
 
-func TestTaskQueuePersistsRealExecutionAndLogs(t *testing.T) {
-	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/Library/Refresh" {
-			http.NotFound(response, request)
-			return
-		}
+func handleTrackedEmbyScan(response http.ResponseWriter, request *http.Request, starts, polls *atomic.Int32) bool {
+	response.Header().Set("Content-Type", "application/json")
+	switch {
+	case request.Method == http.MethodGet && request.URL.Path == "/ScheduledTasks":
+		_, _ = response.Write([]byte(`[{"Id":"scan","Key":"RefreshLibrary","State":"Idle"}]`))
+	case request.Method == http.MethodPost && request.URL.Path == "/ScheduledTasks/Running/scan":
+		starts.Add(1)
+		polls.Store(0)
 		response.WriteHeader(http.StatusNoContent)
+	case request.Method == http.MethodGet && request.URL.Path == "/ScheduledTasks/scan":
+		switch polls.Add(1) {
+		case 1:
+			_, _ = response.Write([]byte(`{"Id":"scan","Key":"RefreshLibrary","State":"Running","CurrentProgressPercentage":10}`))
+		case 2:
+			_, _ = response.Write([]byte(`{"Id":"scan","Key":"RefreshLibrary","State":"Running","CurrentProgressPercentage":60}`))
+		default:
+			_, _ = response.Write([]byte(`{"Id":"scan","Key":"RefreshLibrary","State":"Idle","LastExecutionResult":{"StartTimeUtc":"2026-09-06T00:19:56.1594483Z","EndTimeUtc":"2026-09-06T00:20:18.9853086Z","Status":"Completed"}}`))
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+func TestTaskQueuePersistsRealExecutionAndLogs(t *testing.T) {
+	var starts, polls atomic.Int32
+	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !handleTrackedEmbyScan(response, request, &starts, &polls) {
+			http.NotFound(response, request)
+		}
 	}))
 	defer embyServer.Close()
 	db, err := storage.Open(":memory:")
@@ -54,11 +79,19 @@ func TestTaskQueuePersistsRealExecutionAndLogs(t *testing.T) {
 	}
 	waitForTaskStatus(t, db, task.ID, "completed")
 	runs, err := db.ListTaskRuns(task.ID)
-	if err != nil || len(runs) != 1 || len(runs[0].Logs) != 2 {
-		t.Fatalf("task run logs not persisted: %+v, err=%v", runs, err)
+	if err != nil || len(runs) != 1 || runs[0].CompletedAt == nil || !runs[0].CompletedAt.After(runs[0].StartedAt) {
+		t.Fatalf("task run timing not persisted: %+v, err=%v", runs, err)
 	}
-	if runs[0].Logs[0] != "started emby_refresh" || runs[0].Logs[1] != "completed emby_refresh" {
-		t.Fatalf("unexpected task logs: %+v", runs[0].Logs)
+	if starts.Load() != 1 || len(runs[0].Logs) < 6 || runs[0].Logs[0] != "started emby_refresh" || runs[0].Logs[len(runs[0].Logs)-1] != "completed emby_refresh" {
+		t.Fatalf("tracked Emby scan details not persisted: starts=%d runs=%+v", starts.Load(), runs)
+	}
+	stored, err := db.GetAsyncTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stored.Result), &result); err != nil || result["completion_tracked"] != true || result["emby_status"] != "Completed" {
+		t.Fatalf("tracked Emby result missing: %s, err=%v", stored.Result, err)
 	}
 }
 

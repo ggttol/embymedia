@@ -192,8 +192,17 @@ func ValidateTask(taskType string, payload map[string]any) error {
 	return validateTask(strings.TrimSpace(taskType), payload)
 }
 
-// Enqueue validates and persists one task for asynchronous execution.
+// Enqueue validates and persists one standalone task for asynchronous execution.
 func (s *TaskQueueService) Enqueue(taskType string, payload map[string]any) (*domain.AsyncTask, error) {
+	return s.enqueue(taskType, payload, "")
+}
+
+// EnqueueScheduled atomically links an execution to the schedule that launched it.
+func (s *TaskQueueService) EnqueueScheduled(scheduleID, taskType string, payload map[string]any) (*domain.AsyncTask, error) {
+	return s.enqueue(taskType, payload, scheduleID)
+}
+
+func (s *TaskQueueService) enqueue(taskType string, payload map[string]any, scheduleID string) (*domain.AsyncTask, error) {
 	taskType = strings.TrimSpace(taskType)
 	if payload == nil {
 		payload = map[string]any{}
@@ -205,13 +214,20 @@ func (s *TaskQueueService) Enqueue(taskType string, payload map[string]any) (*do
 	task := &domain.AsyncTask{
 		ID:          uuid.NewString(),
 		Type:        taskType,
+		ScheduleID:  scheduleID,
 		Payload:     payload,
 		Status:      "pending",
 		MaxAttempts: 1,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if err := s.db.CreateAsyncTask(task); err != nil {
+	var err error
+	if scheduleID == "" {
+		err = s.db.CreateAsyncTask(task)
+	} else {
+		err = s.db.CreateScheduledAsyncTask(task, scheduleID)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return task, nil
@@ -308,10 +324,36 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 	switch task.Type {
 	case "emby_refresh":
 		libraryID, _ := stringPayload(task.Payload, "library_id", false)
-		if err := s.embySvc.RefreshLibraryCtx(ctx, libraryID); err != nil {
+		if libraryID != "" {
+			if err := s.embySvc.RefreshLibraryCtx(ctx, libraryID); err != nil {
+				return nil, err
+			}
+			if err := s.db.AppendTaskLog(task.ID, "Emby accepted the item refresh; this endpoint does not expose completion state"); err != nil {
+				return nil, err
+			}
+			return map[string]any{"library_id": libraryID, "accepted": true, "completion_tracked": false}, nil
+		}
+		scan, err := s.embySvc.RunLibraryScanCtx(ctx, func(providerProgress float64, message string) error {
+			progress := min(99, 10+providerProgress*0.89)
+			if err := s.db.UpdateAsyncTaskProgress(task.ID, progress); err != nil {
+				return err
+			}
+			if message != "" {
+				return s.db.AppendTaskLog(task.ID, message)
+			}
+			return nil
+		})
+		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"library_id": libraryID, "refreshed": true}, nil
+		if err := s.db.AppendTaskLog(task.ID, "Emby full-library scan reached its recorded terminal state"); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"library_id": "", "accepted": true, "completion_tracked": true,
+			"emby_task_id": scan.TaskID, "emby_status": scan.Status,
+			"started_at": scan.StartedAt, "completed_at": scan.CompletedAt,
+		}, nil
 	case "emby_match":
 		itemID, _ := stringPayload(task.Payload, "item_id", true)
 		tmdbID, _ := stringPayload(task.Payload, "tmdb_id", true)
@@ -404,5 +446,5 @@ func (s *TaskQueueService) Retry(taskID string) (*domain.AsyncTask, error) {
 	if task.Status != "failed" && task.Status != "cancelled" {
 		return nil, fmt.Errorf("task %s is %s, not failed or cancelled", taskID, task.Status)
 	}
-	return s.Enqueue(task.Type, task.Payload)
+	return s.enqueue(task.Type, task.Payload, task.ScheduleID)
 }

@@ -80,7 +80,7 @@ func (cm *CronManager) registerTask(task domain.ScheduledTask) error {
 		}
 		now := time.Now()
 		task.LastRunAt = &now
-		queued, enqueueErr := cm.queue.Enqueue(task.Type, payload)
+		queued, enqueueErr := cm.queue.EnqueueScheduled(task.ID, task.Type, payload)
 		if enqueueErr != nil {
 			task.Status = "failed"
 			task.Error = enqueueErr.Error()
@@ -107,6 +107,28 @@ func (cm *CronManager) registerTask(task domain.ScheduledTask) error {
 		return err
 	}
 	return nil
+}
+
+// RunTask atomically queues one manual execution and records it on the schedule.
+func (cm *CronManager) RunTask(id string) (*domain.AsyncTask, *domain.ScheduledTask, error) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	task, err := cm.db.GetTask(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	payload, err := taskPayload(*task)
+	if err != nil {
+		return nil, nil, err
+	}
+	queued, err := cm.queue.EnqueueScheduled(task.ID, task.Type, payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	task.LastRunAt = &queued.CreatedAt
+	task.Result = queued.ID
+	task.Error = ""
+	return queued, task, nil
 }
 
 // ScheduleTask validates, persists, and activates a scheduled task.

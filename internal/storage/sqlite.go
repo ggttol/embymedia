@@ -95,6 +95,7 @@ func (d *DB) migrate() error {
 	CREATE TABLE IF NOT EXISTS async_tasks (
 		id TEXT PRIMARY KEY,
 		type TEXT NOT NULL,
+		schedule_id TEXT,
 		payload TEXT NOT NULL DEFAULT '{}',
 		status TEXT NOT NULL,
 		progress REAL NOT NULL DEFAULT 0,
@@ -204,12 +205,16 @@ func (d *DB) migrate() error {
 	}
 	for _, migration := range []struct{ table, column, definition string }{
 		{"agent_tokens", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"async_tasks", "schedule_id", "TEXT"},
 		{"drive_accounts", "vip_level", "INTEGER NOT NULL DEFAULT 0"},
 		{"drive_accounts", "vip_expires_at", "DATETIME"},
 	} {
 		if err := d.ensureColumn(migration.table, migration.column, migration.definition); err != nil {
 			return err
 		}
+	}
+	if _, err := d.db.Exec(`CREATE INDEX IF NOT EXISTS async_tasks_schedule_id_idx ON async_tasks(schedule_id, created_at DESC)`); err != nil {
+		return err
 	}
 	if _, err := d.db.Exec(`
 		UPDATE drive_accounts
@@ -449,12 +454,15 @@ type rowScanner interface {
 
 func scanAsyncTask(row rowScanner) (*domain.AsyncTask, error) {
 	var task domain.AsyncTask
-	var payload, result, errText sql.NullString
+	var scheduleID, payload, result, errText sql.NullString
 	if err := row.Scan(
-		&task.ID, &task.Type, &payload, &task.Status, &task.Progress, &result, &errText,
+		&task.ID, &task.Type, &scheduleID, &payload, &task.Status, &task.Progress, &result, &errText,
 		&task.Attempts, &task.MaxAttempts, &task.CreatedAt, &task.UpdatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if scheduleID.Valid {
+		task.ScheduleID = scheduleID.String
 	}
 	if payload.Valid && payload.String != "" {
 		if err := json.Unmarshal([]byte(payload.String), &task.Payload); err != nil {
@@ -470,12 +478,14 @@ func scanAsyncTask(row rowScanner) (*domain.AsyncTask, error) {
 	return &task, nil
 }
 
-func (d *DB) CreateAsyncTask(task *domain.AsyncTask) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func prepareAsyncTask(task *domain.AsyncTask) (string, error) {
 	payload, err := json.Marshal(task.Payload)
 	if err != nil {
-		return fmt.Errorf("encode async task payload: %w", err)
+		return "", fmt.Errorf("encode async task payload: %w", err)
 	}
 	if task.Status == "" {
 		task.Status = "pending"
@@ -487,23 +497,71 @@ func (d *DB) CreateAsyncTask(task *domain.AsyncTask) error {
 		task.CreatedAt = time.Now()
 	}
 	task.UpdatedAt = task.CreatedAt
-	_, err = d.db.Exec(`
-		INSERT INTO async_tasks (id, type, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, task.ID, task.Type, string(payload), task.Status, task.Progress, task.Result, task.Error, task.Attempts, task.MaxAttempts, task.CreatedAt, task.UpdatedAt)
+	return string(payload), nil
+}
+
+func insertAsyncTask(execer sqlExecer, task *domain.AsyncTask, payload string) error {
+	_, err := execer.Exec(`
+		INSERT INTO async_tasks (id, type, schedule_id, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, task.ID, task.Type, task.ScheduleID, payload, task.Status, task.Progress, task.Result, task.Error, task.Attempts, task.MaxAttempts, task.CreatedAt, task.UpdatedAt)
 	return err
+}
+
+// CreateAsyncTask persists one standalone background execution.
+func (d *DB) CreateAsyncTask(task *domain.AsyncTask) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	payload, err := prepareAsyncTask(task)
+	if err != nil {
+		return err
+	}
+	return insertAsyncTask(d.db, task, payload)
+}
+
+// CreateScheduledAsyncTask atomically creates one execution and records it as the schedule's latest launch.
+func (d *DB) CreateScheduledAsyncTask(task *domain.AsyncTask, scheduleID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	task.ScheduleID = scheduleID
+	payload, err := prepareAsyncTask(task)
+	if err != nil {
+		return err
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertAsyncTask(tx, task, payload); err != nil {
+		return err
+	}
+	updated, err := tx.Exec(`
+		UPDATE scheduled_tasks SET last_run_at = ?, result = ?, error = '', updated_at = ? WHERE id = ?
+	`, task.CreatedAt, task.ID, task.CreatedAt, scheduleID)
+	if err != nil {
+		return err
+	}
+	changed, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("scheduled task %s not found", scheduleID)
+	}
+	return tx.Commit()
 }
 
 func (d *DB) ListAsyncTasks(status string, limit int) ([]domain.AsyncTask, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	query := `SELECT id, type, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at FROM async_tasks`
+	query := `SELECT id, type, schedule_id, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at FROM async_tasks`
 	var args []any
 	if status != "" {
 		query += ` WHERE status = ?`
 		args = append(args, status)
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY created_at DESC, id DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -528,7 +586,7 @@ func (d *DB) GetAsyncTask(id string) (*domain.AsyncTask, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return scanAsyncTask(d.db.QueryRow(`
-		SELECT id, type, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at
+		SELECT id, type, schedule_id, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at
 		FROM async_tasks WHERE id = ?
 	`, id))
 }

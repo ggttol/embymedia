@@ -121,7 +121,7 @@ func openAPISchema() map[string]any {
 				"cron_expr": stringSchema("Cron expression with seconds"), "enabled": map[string]any{"type": "boolean"}, "params": stringSchema("JSON object encoded as a string"),
 			})),
 		},
-		"/api/v1/tasks/{id}/run": map[string]any{"post": apiOperation("runSchedule", "Run a scheduled task immediately", []any{pathParameter("id", "Schedule ID")}, nil)},
+		"/api/v1/tasks/{id}/run": map[string]any{"post": apiOperation("runSchedule", "Create and return a schedule-linked execution immediately", []any{pathParameter("id", "Schedule ID")}, nil)},
 		"/api/v1/tasks/batch": map[string]any{"post": apiOperation("submitTaskBatch", "Submit 1 to 100 validated background tasks", nil, schemaObject([]string{"operations"}, map[string]any{
 			"operations": map[string]any{"type": "array", "minItems": 1, "maxItems": 100, "items": schemaObject([]string{"action", "payload"}, map[string]any{"action": stringSchema("Supported background task type"), "payload": map[string]any{"type": "object"}})},
 		}))},
@@ -129,7 +129,7 @@ func openAPISchema() map[string]any {
 		"/api/v1/async-tasks/{id}":        map[string]any{"get": apiOperation("getAsyncTask", "Read one background task", []any{pathParameter("id", "Task ID")}, nil)},
 		"/api/v1/async-tasks/{id}/cancel": map[string]any{"post": apiOperation("cancelAsyncTask", "Cancel pending or running work", []any{pathParameter("id", "Task ID")}, nil)},
 		"/api/v1/async-tasks/{id}/retry":  map[string]any{"post": apiOperation("retryAsyncTask", "Create a reviewed retry from failed or cancelled work", []any{pathParameter("id", "Task ID")}, nil)},
-		"/api/v1/async-tasks/{id}/runs":   map[string]any{"get": apiOperation("listTaskRuns", "List durable execution attempts and logs", []any{pathParameter("id", "Task ID")}, nil)},
+		"/api/v1/async-tasks/{id}/runs":   map[string]any{"get": apiOperation("listTaskRuns", "List durable attempts with start time, end time, progress, errors and logs", []any{pathParameter("id", "Task ID")}, nil)},
 		"/api/v1/settings": map[string]any{
 			"get":  apiOperation("getSettings", "Read redacted settings and live dependency health", nil, nil),
 			"post": apiOperation("updateSettings", "Atomically update validated settings", nil, map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}),

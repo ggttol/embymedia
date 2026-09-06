@@ -50,12 +50,25 @@ func requireEmbyResponse(response *http.Response, operation string) error {
 	return nil
 }
 
+func (s *EmbyService) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	baseURL, apiKey, _ := s.getURLAndKey()
+	request, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != "" {
+		request.Header.Set("X-Emby-Token", apiKey)
+	}
+	return request, nil
+}
+
 // GetSystemInfo retrieves Emby server status and version
 func (s *EmbyService) GetSystemInfo() (map[string]any, error) {
-	baseURL, apiKey, _ := s.getURLAndKey()
-	reqURL := fmt.Sprintf("%s/System/Info?api_key=%s", baseURL, apiKey)
-
-	resp, err := s.client.Get(reqURL)
+	req, err := s.newRequest(context.Background(), http.MethodGet, "/System/Info", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("emby connect: %w", err)
 	}
@@ -78,10 +91,7 @@ func (s *EmbyService) ListLibraries() ([]domain.EmbyLibrary, error) {
 
 // ListLibrariesCtx fetches all media libraries with cancellation.
 func (s *EmbyService) ListLibrariesCtx(ctx context.Context) ([]domain.EmbyLibrary, error) {
-	baseURL, apiKey, _ := s.getURLAndKey()
-	reqURL := fmt.Sprintf("%s/Library/VirtualFolders?api_key=%s", baseURL, apiKey)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	req, err := s.newRequest(ctx, http.MethodGet, "/Library/VirtualFolders", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -124,14 +134,11 @@ func (s *EmbyService) RefreshLibrary(libraryID string) error {
 
 // RefreshLibraryCtx initiates a cancellable library scan in Emby.
 func (s *EmbyService) RefreshLibraryCtx(ctx context.Context, libraryID string) error {
-	baseURL, apiKey, _ := s.getURLAndKey()
-	var reqURL string
-	if libraryID == "" {
-		reqURL = fmt.Sprintf("%s/Library/Refresh?api_key=%s", baseURL, url.QueryEscape(apiKey))
-	} else {
-		reqURL = fmt.Sprintf("%s/Items/%s/Refresh?Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default&api_key=%s", baseURL, url.PathEscape(libraryID), url.QueryEscape(apiKey))
+	path := "/Library/Refresh"
+	if libraryID != "" {
+		path = fmt.Sprintf("/Items/%s/Refresh?Recursive=true&ImageRefreshMode=Default&MetadataRefreshMode=Default", url.PathEscape(libraryID))
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
+	req, err := s.newRequest(ctx, http.MethodPost, path, nil)
 	if err != nil {
 		return err
 	}
@@ -140,10 +147,189 @@ func (s *EmbyService) RefreshLibraryCtx(ctx context.Context, libraryID string) e
 		return fmt.Errorf("refresh Emby library: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("Emby refresh returned HTTP %d", resp.StatusCode)
+	if err := requireEmbyResponse(resp, "Emby refresh"); err != nil {
+		return err
 	}
 	return nil
+}
+
+type embyTaskResult struct {
+	StartTimeUTC time.Time `json:"StartTimeUtc"`
+	EndTimeUTC   time.Time `json:"EndTimeUtc"`
+	Status       string    `json:"Status"`
+	ErrorMessage string    `json:"ErrorMessage"`
+}
+
+type embyScheduledTask struct {
+	ID                        string          `json:"Id"`
+	Key                       string          `json:"Key"`
+	State                     string          `json:"State"`
+	CurrentProgressPercentage *float64        `json:"CurrentProgressPercentage"`
+	LastExecutionResult       *embyTaskResult `json:"LastExecutionResult"`
+}
+
+func (s *EmbyService) listScheduledTasks(ctx context.Context) ([]embyScheduledTask, error) {
+	req, err := s.newRequest(ctx, http.MethodGet, "/ScheduledTasks", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list Emby scheduled tasks: %w", err)
+	}
+	defer resp.Body.Close()
+	if err := requireEmbyResponse(resp, "Emby scheduled task list"); err != nil {
+		return nil, err
+	}
+	var tasks []embyScheduledTask
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&tasks); err != nil {
+		return nil, fmt.Errorf("decode Emby scheduled task list: %w", err)
+	}
+	return tasks, nil
+}
+
+func (s *EmbyService) getScheduledTask(ctx context.Context, id string) (*embyScheduledTask, error) {
+	req, err := s.newRequest(ctx, http.MethodGet, "/ScheduledTasks/"+url.PathEscape(id), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("read Emby scheduled task: %w", err)
+	}
+	defer resp.Body.Close()
+	if err := requireEmbyResponse(resp, "Emby scheduled task"); err != nil {
+		return nil, err
+	}
+	var task embyScheduledTask
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&task); err != nil {
+		return nil, fmt.Errorf("decode Emby scheduled task: %w", err)
+	}
+	return &task, nil
+}
+
+type embyLibraryScanResult struct {
+	TaskID      string
+	Status      string
+	StartedAt   time.Time
+	CompletedAt time.Time
+}
+
+func (s *EmbyService) stopScheduledTask(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := s.newRequest(ctx, http.MethodDelete, "/ScheduledTasks/Running/"+url.PathEscape(id), nil)
+	if err != nil {
+		return
+	}
+	resp, err := s.client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+// RunLibraryScanCtx starts Emby's full-library task and waits for its recorded terminal state.
+func (s *EmbyService) RunLibraryScanCtx(ctx context.Context, update func(float64, string) error) (*embyLibraryScanResult, error) {
+	tasks, err := s.listScheduledTasks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var scan *embyScheduledTask
+	for index := range tasks {
+		if tasks[index].Key == "RefreshLibrary" {
+			scan = &tasks[index]
+			break
+		}
+	}
+	if scan == nil {
+		return nil, fmt.Errorf("Emby did not expose the RefreshLibrary scheduled task")
+	}
+	baseline := time.Time{}
+	if scan.LastExecutionResult != nil {
+		baseline = scan.LastExecutionResult.StartTimeUTC
+	}
+	startedByUs := scan.State != "Running"
+	if startedByUs {
+		req, err := s.newRequest(ctx, http.MethodPost, "/ScheduledTasks/Running/"+url.PathEscape(scan.ID), nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("start Emby library scan: %w", err)
+		}
+		responseErr := requireEmbyResponse(resp, "start Emby library scan")
+		resp.Body.Close()
+		if responseErr != nil {
+			return nil, responseErr
+		}
+	}
+	finished := false
+	if startedByUs {
+		defer func() {
+			if !finished {
+				s.stopScheduledTask(scan.ID)
+			}
+		}()
+	}
+	message := "Emby accepted the full-library scan"
+	if !startedByUs {
+		message = "Emby full-library scan was already running; tracking the existing run"
+	}
+	if err := update(0, message); err != nil {
+		return nil, err
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	reportedRunning := false
+	lastBucket := -1
+	lastProgress := -1.0
+	for {
+		current, err := s.getScheduledTask(ctx, scan.ID)
+		if err != nil {
+			return nil, err
+		}
+		if current.State == "Running" {
+			progress := 0.0
+			if current.CurrentProgressPercentage != nil {
+				progress = min(100, max(0, *current.CurrentProgressPercentage))
+			}
+			message := ""
+			if !reportedRunning {
+				message = "Emby full-library scan started"
+				reportedRunning = true
+			}
+			bucket := int(progress) / 10
+			if bucket > lastBucket {
+				lastBucket = bucket
+				if message == "" && bucket > 0 {
+					message = fmt.Sprintf("Emby scan progress %d%%", bucket*10)
+				}
+			}
+			if progress != lastProgress || message != "" {
+				if err := update(progress, message); err != nil {
+					return nil, err
+				}
+				lastProgress = progress
+			}
+		}
+		result := current.LastExecutionResult
+		if current.State != "Running" && result != nil && !result.StartTimeUTC.IsZero() && result.StartTimeUTC.After(baseline) {
+			finished = true
+			if result.Status != "Completed" {
+				if result.ErrorMessage != "" {
+					return nil, fmt.Errorf("Emby library scan %s: %s", result.Status, result.ErrorMessage)
+				}
+				return nil, fmt.Errorf("Emby library scan ended with status %s", result.Status)
+			}
+			return &embyLibraryScanResult{TaskID: scan.ID, Status: result.Status, StartedAt: result.StartTimeUTC, CompletedAt: result.EndTimeUTC}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // ListSessions returns active playback sessions.
@@ -153,9 +339,7 @@ func (s *EmbyService) ListSessions() ([]domain.EmbyPlaybackSession, error) {
 
 // ListSessionsCtx returns active playback sessions with cancellation.
 func (s *EmbyService) ListSessionsCtx(ctx context.Context) ([]domain.EmbyPlaybackSession, error) {
-	baseURL, apiKey, _ := s.getURLAndKey()
-	reqURL := fmt.Sprintf("%s/Sessions?api_key=%s", baseURL, url.QueryEscape(apiKey))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	req, err := s.newRequest(ctx, http.MethodGet, "/Sessions", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -229,10 +413,8 @@ func (s *EmbyService) GetItemCtx(ctx context.Context, itemID string) (*domain.Em
 	if itemID == "" {
 		return nil, fmt.Errorf("Emby item ID is required")
 	}
-	baseURL, apiKey, _ := s.getURLAndKey()
-	query := url.Values{"Ids": {itemID}, "Recursive": {"true"}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}, "api_key": {apiKey}}
-	reqURL := fmt.Sprintf("%s/Items?%s", baseURL, query.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	query := url.Values{"Ids": {itemID}, "Recursive": {"true"}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}}
+	req, err := s.newRequest(ctx, http.MethodGet, "/Items?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -292,13 +474,12 @@ func (s *EmbyService) MatchMediaCtx(ctx context.Context, itemID, tmdbID string) 
 	if itemID == "" || tmdbID == "" {
 		return fmt.Errorf("Emby item ID and TMDB ID are required")
 	}
-	baseURL, apiKey, _ := s.getURLAndKey()
-	reqURL := fmt.Sprintf("%s/Items/RemoteSearch/Apply/%s?ReplaceAllImages=true&api_key=%s", baseURL, url.PathEscape(itemID), url.QueryEscape(apiKey))
+	path := fmt.Sprintf("/Items/RemoteSearch/Apply/%s?ReplaceAllImages=true", url.PathEscape(itemID))
 	body, err := json.Marshal(map[string]any{"ProviderIds": map[string]string{"Tmdb": tmdbID}})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(string(body)))
+	req, err := s.newRequest(ctx, http.MethodPost, path, strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}
@@ -331,9 +512,8 @@ func (s *EmbyService) SearchMediaCtx(ctx context.Context, term string, limit int
 	if limit > 100 {
 		limit = 100
 	}
-	baseURL, apiKey, _ := s.getURLAndKey()
-	query := url.Values{"SearchTerm": {term}, "Recursive": {"true"}, "Limit": {fmt.Sprint(limit)}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}, "api_key": {apiKey}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/Items?"+query.Encode(), nil)
+	query := url.Values{"SearchTerm": {term}, "Recursive": {"true"}, "Limit": {fmt.Sprint(limit)}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}}
+	req, err := s.newRequest(ctx, http.MethodGet, "/Items?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -371,9 +551,7 @@ func (s *EmbyService) GetMediaWithoutPosters() ([]domain.EmbyMediaItem, error) {
 
 // GetMediaWithoutPostersCtx returns missing-poster items with cancellation.
 func (s *EmbyService) GetMediaWithoutPostersCtx(ctx context.Context) ([]domain.EmbyMediaItem, error) {
-	baseURL, apiKey, _ := s.getURLAndKey()
-	reqURL := fmt.Sprintf("%s/Items?Recursive=true&IncludeItemTypes=Movie,Series&ImageTypes=None&api_key=%s", baseURL, url.QueryEscape(apiKey))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	req, err := s.newRequest(ctx, http.MethodGet, "/Items?Recursive=true&IncludeItemTypes=Movie,Series&ImageTypes=None", nil)
 	if err != nil {
 		return nil, err
 	}

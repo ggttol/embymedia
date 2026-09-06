@@ -16,14 +16,11 @@ import (
 )
 
 func TestCronManagerQueuesRealOperation(t *testing.T) {
-	var refreshes atomic.Int32
+	var refreshes, polls atomic.Int32
 	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodPost && request.URL.Path == "/Library/Refresh" {
-			refreshes.Add(1)
-			response.WriteHeader(http.StatusNoContent)
-			return
+		if !handleTrackedEmbyScan(response, request, &refreshes, &polls) {
+			http.NotFound(response, request)
 		}
-		http.NotFound(response, request)
 	}))
 	defer embyServer.Close()
 	db, err := storage.Open(":memory:")
@@ -65,6 +62,38 @@ func TestCronManagerQueuesRealOperation(t *testing.T) {
 	stored, err := db.GetTask(task.ID)
 	if err != nil || stored.LastRunAt == nil || stored.Result == "" {
 		t.Fatalf("scheduled task did not persist its queued run: %+v, err=%v", stored, err)
+	}
+}
+
+func TestCronManagerRunTaskLinksDurableExecution(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	queue := NewTaskQueueService(db, NewDriveService(db, "", ""), NewEmbyService(db))
+	manager := NewCronManager(db, queue)
+	schedule := domain.ScheduledTask{ID: "manual", Name: "Refresh Emby", Type: "emby_refresh", Enabled: false, Params: `{}`}
+	if err := manager.ScheduleTask(&schedule); err != nil {
+		t.Fatal(err)
+	}
+	queued, updated, err := manager.RunTask(schedule.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.ScheduleID != schedule.ID || updated.Result != queued.ID || updated.LastRunAt == nil || !updated.LastRunAt.Equal(queued.CreatedAt) {
+		t.Fatalf("immediate run was not linked to schedule: queued=%+v schedule=%+v", queued, updated)
+	}
+	stored, err := db.GetTask(schedule.ID)
+	if err != nil || stored.Result != queued.ID || stored.LastRunAt == nil {
+		t.Fatalf("schedule launch metadata was not persisted: %+v, err=%v", stored, err)
+	}
+	if _, _, err := manager.RunTask("missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing schedule returned %v", err)
+	}
+	tasks, err := db.ListAsyncTasks("", 0)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("missing schedule created an execution: %+v, err=%v", tasks, err)
 	}
 }
 
