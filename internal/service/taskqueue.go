@@ -394,7 +394,15 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 		return map[string]any{"task_ids": ids, "target_cid": targetCID}, nil
 	case "strm_sync":
 		library, _ := stringPayload(task.Payload, "library", false)
-		result, err := s.mediaSvc.SyncSTRM(ctx, library)
+		result, err := s.mediaSvc.SyncSTRMWithProgress(ctx, library, func(progress float64, message string) error {
+			if err := s.db.UpdateAsyncTaskProgress(task.ID, min(99, max(10, progress))); err != nil {
+				return err
+			}
+			if message != "" {
+				return s.db.AppendTaskLog(task.ID, message)
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -407,7 +415,15 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 		return map[string]any{"strm": result}, nil
 	case "strm_verify":
 		library, _ := stringPayload(task.Payload, "library", false)
-		result, err := s.mediaSvc.VerifySTRM(ctx, library)
+		result, err := s.mediaSvc.VerifySTRMWithProgress(ctx, library, func(progress float64, message string) error {
+			if err := s.db.UpdateAsyncTaskProgress(task.ID, min(99, max(10, progress))); err != nil {
+				return err
+			}
+			if message != "" {
+				return s.db.AppendTaskLog(task.ID, message)
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}

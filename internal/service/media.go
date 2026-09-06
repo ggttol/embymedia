@@ -232,10 +232,25 @@ func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string,
 	})
 }
 
+func reportMediaProgress(update func(float64, string) error, progress float64, message string) error {
+	if update == nil {
+		return nil
+	}
+	return update(progress, message)
+}
+
 // SyncSTRM creates or updates one STRM file for each supported video file and then verifies the result.
 func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult, error) {
+	return s.SyncSTRMWithProgress(ctx, library, nil)
+}
+
+// SyncSTRMWithProgress reports durable phase and processed-item updates while synchronizing.
+func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string, update func(float64, string) error) (STRMResult, error) {
 	mediaRoot, mediaBase, strmBase, embyPrefix, err := s.paths(library)
 	if err != nil {
+		return STRMResult{}, err
+	}
+	if err := reportMediaProgress(update, 5, "STRM source scan started"); err != nil {
 		return STRMResult{}, err
 	}
 	strmRoot, _ := s.db.GetSetting("strm_root")
@@ -266,6 +281,11 @@ func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult
 			return nil
 		}
 		result.MediaFiles++
+		if result.MediaFiles%1000 == 0 {
+			if err := reportMediaProgress(update, 10, fmt.Sprintf("STRM source scan processed %d media files", result.MediaFiles)); err != nil {
+				return err
+			}
+		}
 		relative, err := filepath.Rel(mediaBase, path)
 		if err != nil {
 			return err
@@ -302,10 +322,18 @@ func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult
 	if err != nil {
 		return result, err
 	}
+	if err := reportMediaProgress(update, 60, fmt.Sprintf("STRM source scan completed with %d media files", result.MediaFiles)); err != nil {
+		return result, err
+	}
 	if err := pruneStaleSTRM(ctx, mediaRoot, strmBase, embyPrefix, expected, &result); err != nil {
 		return result, err
 	}
-	verification, err := s.VerifySTRM(ctx, library)
+	if err := reportMediaProgress(update, 70, fmt.Sprintf("STRM stale reconciliation removed %d files with status %s", result.Removed, result.PruneStatus)); err != nil {
+		return result, err
+	}
+	verification, err := s.VerifySTRMWithProgress(ctx, library, func(progress float64, message string) error {
+		return reportMediaProgress(update, 75+progress*0.24, message)
+	})
 	if err != nil {
 		return result, err
 	}
@@ -313,16 +341,28 @@ func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult
 	result.Missing = verification.Missing
 	result.Invalid = verification.Invalid
 	result.Examples = verification.Examples
+	if err := reportMediaProgress(update, 100, "STRM synchronization and verification completed"); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
 // VerifySTRM validates STRM targets against the configured media tree without changing files.
 func (s *MediaService) VerifySTRM(ctx context.Context, library string) (STRMResult, error) {
+	return s.VerifySTRMWithProgress(ctx, library, nil)
+}
+
+// VerifySTRMWithProgress reports processed-item updates while validating every STRM target.
+func (s *MediaService) VerifySTRMWithProgress(ctx context.Context, library string, update func(float64, string) error) (STRMResult, error) {
 	mediaRoot, _, strmBase, embyPrefix, err := s.paths(library)
 	if err != nil {
 		return STRMResult{}, err
 	}
+	if err := reportMediaProgress(update, 0, "STRM verification started"); err != nil {
+		return STRMResult{}, err
+	}
 	result := STRMResult{}
+	checked := 0
 	err = filepath.WalkDir(strmBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -332,6 +372,12 @@ func (s *MediaService) VerifySTRM(ctx context.Context, library string) (STRMResu
 		}
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".strm" {
 			return nil
+		}
+		checked++
+		if checked%2000 == 0 {
+			if err := reportMediaProgress(update, 0, fmt.Sprintf("STRM verification checked %d files", checked)); err != nil {
+				return err
+			}
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			result.Invalid++
@@ -373,5 +419,8 @@ func (s *MediaService) VerifySTRM(ctx context.Context, library string) (STRMResu
 		result.Valid++
 		return nil
 	})
+	if err == nil {
+		err = reportMediaProgress(update, 100, fmt.Sprintf("STRM verification completed after %d files", checked))
+	}
 	return result, err
 }

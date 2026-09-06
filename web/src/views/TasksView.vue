@@ -453,6 +453,19 @@ function formatLog(line: string) {
   if (sync) return `STRM 同步：媒体 ${sync[1]} 个，新建 ${sync[2]} 个，更新 ${sync[3]} 个，清理旧文件 ${sync[4]} 个；清理状态 ${sync[5]}。`
   const findings = /^STRM findings valid=(\d+) missing=(\d+) invalid=(\d+)$/.exec(line)
   if (findings) return `STRM 校验：有效 ${findings[1]} 个，缺失 ${findings[2]} 个，无效 ${findings[3]} 个。`
+  if (line === 'STRM source scan started') return '开始扫描媒体源文件。'
+  const sourceProgress = /^STRM source scan processed (\d+) media files$/.exec(line)
+  if (sourceProgress) return `已扫描 ${sourceProgress[1]} 个媒体文件。`
+  const sourceComplete = /^STRM source scan completed with (\d+) media files$/.exec(line)
+  if (sourceComplete) return `媒体源扫描完成，共 ${sourceComplete[1]} 个视频文件。`
+  const reconciliation = /^STRM stale reconciliation removed (\d+) files with status (\S+)$/.exec(line)
+  if (reconciliation) return `旧 STRM 协调完成：清理 ${reconciliation[1]} 个；状态 ${reconciliation[2]}。`
+  if (line === 'STRM verification started') return '开始逐项验证 STRM 目标。'
+  const verified = /^STRM verification checked (\d+) files$/.exec(line)
+  if (verified) return `已验证 ${verified[1]} 个 STRM 文件。`
+  const verificationComplete = /^STRM verification completed after (\d+) files$/.exec(line)
+  if (verificationComplete) return `STRM 验证完成，共检查 ${verificationComplete[1]} 个文件。`
+  if (line === 'STRM synchronization and verification completed') return 'STRM 同步和验证全部完成。'
   if (line.startsWith('failed: ')) return `执行失败：${userError(line.slice(8))}`
   return line
 }
@@ -534,7 +547,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
     <div class="grid grid-cols-3 border border-border bg-surface">
       <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-text">{{ executionsLoaded ? activeTaskCount : '—' }}</strong><span class="text-xs text-text-muted">正在处理</span></div>
       <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-ok">{{ executionsLoaded ? completedTaskCount : '—' }}</strong><span class="text-xs text-text-muted">执行完成</span></div>
-      <div class="p-4 sm:p-5"><strong class="block font-serif text-2xl" :class="attentionTaskCount ? 'text-warn' : 'text-text'">{{ executionsLoaded ? attentionTaskCount : '—' }}</strong><span class="text-xs text-text-muted">结果需处理</span></div>
+      <div class="p-4 sm:p-5"><strong class="block font-serif text-2xl" :class="attentionTaskCount ? 'text-warn' : 'text-text'">{{ executionsLoaded ? attentionTaskCount : '—' }}</strong><span class="text-xs text-text-muted">历史异常 / 发现</span></div>
     </div>
     <p v-if="!executionsLoaded" class="text-xs text-text-muted">{{ executionsError ? '执行记录尚未读取成功，暂时无法统计任务。' : '正在读取执行记录与任务统计…' }}</p>
 
