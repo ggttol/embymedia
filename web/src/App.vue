@@ -118,40 +118,54 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
     <aside class="desktop-rail" aria-label="主导航">
       <RouterLink to="/" class="brand-lockup">
         <span class="brand-mark"><Tv aria-hidden="true" /></span>
-        <span>
-          <strong>EmbyMedia</strong>
-          <small>MEDIA OPERATIONS</small>
+        <span class="brand-copy">
+          <strong class="brand-title">EmbyMedia</strong>
+          <small class="brand-subtitle">MEDIA OPERATIONS</small>
         </span>
       </RouterLink>
 
-      <nav class="desktop-nav">
+      <nav class="desktop-nav" aria-label="系统主功能">
         <RouterLink
           v-for="item in navItems"
           :key="item.path"
           :to="item.path"
+          class="nav-link"
           :class="{ active: activeItem?.path === item.path }"
         >
-          <component :is="item.icon" aria-hidden="true" />
-          <span>{{ item.desktopName }}</span>
+          <component :is="item.icon" aria-hidden="true" class="nav-icon" />
+          <span class="nav-label">{{ item.desktopName }}</span>
           <span v-if="item.badge && item.badge() > 0" class="nav-badge">{{ item.badge() }}</span>
         </RouterLink>
       </nav>
 
       <div class="rail-footer">
-		<div v-if="currentUser" class="session-panel">
-			<UserRound aria-hidden="true" />
-			<span><strong>{{ currentUser.username }}</strong><small>{{ currentUser.role === 'admin' ? '管理员' : '操作员' }}</small></span>
-			<a href="/logout" aria-label="退出登录" title="退出登录"><LogOut aria-hidden="true" /></a>
-		</div>
-      <div class="service-indicator">
-        <span class="status-dot" :data-state="coreState" aria-hidden="true"></span>
-        <span role="status">
-          <strong>{{ coreLabel }}</strong>
-          <small>{{ endpointLabel }}</small>
-          <small v-if="checkedAt">检测于 {{ checkedAt }}</small>
-        </span>
-        <button type="button" class="status-refresh" aria-label="重新检测核心服务" :disabled="checkingCore" @click="probeCore"><RefreshCw aria-hidden="true" :class="{ 'animate-spin': checkingCore }" /></button>
-      </div>
+        <div v-if="currentUser" class="session-panel">
+          <span class="session-avatar"><UserRound aria-hidden="true" /></span>
+          <span class="session-meta">
+            <strong>{{ currentUser.username }}</strong>
+            <small>{{ currentUser.role === 'admin' ? '系统管理员' : '操作员' }}</small>
+          </span>
+          <a href="/logout" class="session-action" aria-label="退出登录" title="退出登录">
+            <LogOut aria-hidden="true" />
+          </a>
+        </div>
+        <div class="service-indicator">
+          <span class="status-dot" :data-state="coreState" aria-hidden="true"></span>
+          <span class="service-meta" role="status">
+            <strong>{{ coreLabel }}</strong>
+            <small class="service-endpoint">{{ endpointLabel }}</small>
+            <small v-if="checkedAt" class="service-checked">检测于 {{ checkedAt }}</small>
+          </span>
+          <button
+            type="button"
+            class="status-refresh"
+            aria-label="重新检测核心服务"
+            :disabled="checkingCore"
+            @click="probeCore"
+          >
+            <RefreshCw aria-hidden="true" :class="{ 'animate-spin': checkingCore }" />
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -159,12 +173,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
       <header class="mobile-header">
         <RouterLink to="/" class="mobile-brand">
           <span class="brand-mark"><Tv aria-hidden="true" /></span>
-          <strong>EmbyMedia</strong>
+          <span class="mobile-brand-name">EmbyMedia</span>
         </RouterLink>
-		<div class="mobile-session"><span class="mobile-title">{{ currentTitle }}</span><a v-if="currentUser" href="/logout" aria-label="退出登录" title="退出登录"><LogOut aria-hidden="true" /></a></div>
+        <div class="mobile-session">
+          <span class="mobile-title">{{ currentTitle }}</span>
+          <a v-if="currentUser" href="/logout" aria-label="退出登录" title="退出登录">
+            <LogOut aria-hidden="true" />
+          </a>
+        </div>
       </header>
 
-      <nav class="mobile-nav" aria-label="主导航">
+      <nav class="mobile-nav" aria-label="移动主导航">
         <RouterLink
           v-for="item in primaryItems"
           :key="item.path"
@@ -174,30 +193,66 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
           <component :is="item.icon" aria-hidden="true" />
           <span>{{ item.name }}</span>
         </RouterLink>
-        <button type="button" :class="{ active: moreActive }" aria-haspopup="dialog" :aria-expanded="showMore" @click="showMore = true"><MoreHorizontal aria-hidden="true" /><span>更多</span></button>
+        <button
+          type="button"
+          :class="{ active: moreActive }"
+          aria-haspopup="dialog"
+          :aria-expanded="showMore"
+          @click="showMore = true"
+        >
+          <MoreHorizontal aria-hidden="true" />
+          <span>更多</span>
+        </button>
       </nav>
 
       <header class="desktop-header">
-        <p class="header-location"><span>控制台</span><span aria-hidden="true">/</span><span>{{ currentTitle }}</span></p>
+        <p class="header-location">
+          <span class="location-context">控制台</span>
+          <span class="location-divider" aria-hidden="true">/</span>
+          <span class="location-current">{{ currentTitle }}</span>
+        </p>
         <button type="button" class="global-search" @click="focusGlobalSearch">
-          <Search aria-hidden="true" />
-          <span>搜索资源</span>
-          <kbd>{{ searchShortcut }}</kbd>
+          <Search aria-hidden="true" class="search-icon" />
+          <span class="search-placeholder">全局资源快速检索</span>
+          <kbd class="search-kbd">{{ searchShortcut }}</kbd>
         </button>
       </header>
 
       <main class="view-canvas">
-		<RouterView :key="route.fullPath" />
+        <RouterView :key="route.fullPath" />
       </main>
     </div>
+
     <UiDialog v-if="showMore" title="更多功能" @close="showMore = false">
       <nav class="more-nav" aria-label="更多导航">
-        <RouterLink v-for="item in secondaryItems" :key="item.path" :to="item.path" :class="{ active: activeItem?.path === item.path }" @click="showMore = false">
-          <component :is="item.icon" aria-hidden="true" /><span>{{ item.desktopName }}</span>
+        <RouterLink
+          v-for="item in secondaryItems"
+          :key="item.path"
+          :to="item.path"
+          :class="{ active: activeItem?.path === item.path }"
+          @click="showMore = false"
+        >
+          <component :is="item.icon" aria-hidden="true" />
+          <span>{{ item.desktopName }}</span>
           <span v-if="item.badge && item.badge() > 0" class="nav-badge">{{ item.badge() }}</span>
         </RouterLink>
       </nav>
-      <div class="more-status"><span class="status-dot" :data-state="coreState" aria-hidden="true"></span><span role="status">{{ coreLabel }}<small v-if="checkedAt"> · {{ checkedAt }}</small></span><button class="status-refresh" type="button" :disabled="checkingCore" aria-label="重新检测核心服务" @click="probeCore"><RefreshCw aria-hidden="true" /></button></div>
+      <div class="more-status">
+        <span class="status-dot" :data-state="coreState" aria-hidden="true"></span>
+        <span role="status">
+          {{ coreLabel }}
+          <small v-if="checkedAt"> · {{ checkedAt }}</small>
+        </span>
+        <button
+          class="status-refresh"
+          type="button"
+          :disabled="checkingCore"
+          aria-label="重新检测核心服务"
+          @click="probeCore"
+        >
+          <RefreshCw aria-hidden="true" :class="{ 'animate-spin': checkingCore }" />
+        </button>
+      </div>
     </UiDialog>
   </div>
 </template>

@@ -143,31 +143,31 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
 
 <template>
   <div class="space-y-7 max-w-5xl">
-    <header class="flex flex-col sm:flex-row sm:items-end justify-between gap-5 pb-7 border-b border-border">
+    <header class="flex flex-col sm:flex-row sm:items-end justify-between gap-5 pb-7 border-b border-border/80">
       <div class="max-w-2xl">
         <p class="text-[10px] font-mono font-bold tracking-[0.18em] text-annotation mb-2">CONFIGURATION / PERSISTED STATE</p>
-        <h1 class="font-serif text-3xl font-bold text-text">系统设置</h1>
+        <h1 class="font-serif text-3xl font-bold text-text tracking-tight">系统设置</h1>
         <p class="text-sm text-text-muted mt-2">管理服务地址与凭据。秘密值读取时始终保持隐藏。</p>
       </div>
-        <div class="flex flex-wrap items-center justify-end gap-3 text-sm">
-          <span class="font-mono text-xs text-text-faint">{{ loaded ? `${configuredCount} / 4 已配置` : '配置状态未知' }}</span>
-          <span class="w-2 h-2 rounded-full" :class="loaded ? (configuredCount === 4 ? 'bg-ok' : 'bg-warn') : 'bg-text-faint'"></span>
-        </div>
+      <div class="flex flex-wrap items-center justify-end gap-3 text-sm">
+        <span class="font-mono text-xs text-text-faint">{{ loaded ? `${configuredCount} / 4 已配置` : '配置状态未知' }}</span>
+        <span class="w-2 h-2 rounded-full" :class="loaded ? (configuredCount === 4 ? 'bg-ok' : 'bg-warn') : 'bg-text-faint'"></span>
+      </div>
     </header>
-    <div v-if="readError" role="alert" class="border-l-2 border-danger bg-danger/5 p-4 text-sm text-danger">
-      <p>{{ readError }}</p>
+    <div v-if="readError" role="alert" class="rounded-xl border-l-4 border-danger bg-danger/5 p-4 text-sm text-danger shadow-xs">
+      <p class="font-medium">{{ readError }}</p>
       <p class="mt-1 text-text-muted">为避免覆盖已保存的设置，读取成功前不能编辑或检查连接。</p>
-      <button type="button" :disabled="saveState === 'saving'" class="mt-3 min-h-11 border border-danger/40 px-4 disabled:opacity-50" @click="fetchSettings">{{ saveState === 'saving' ? '正在重试' : '重新读取设置' }}</button>
+      <button type="button" :disabled="saveState === 'saving'" class="mt-3 min-h-10 rounded-lg border border-danger/40 px-4 text-sm font-medium hover:bg-danger/10 transition-colors disabled:opacity-50" @click="fetchSettings">{{ saveState === 'saving' ? '正在重试' : '重新读取设置' }}</button>
     </div>
-    <div v-else-if="!loaded" role="status" class="flex items-center gap-2 border border-border bg-surface p-4 text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取系统设置</div>
+    <div v-else-if="!loaded" role="status" class="flex items-center gap-2 rounded-xl border border-border/70 bg-surface p-4 text-sm text-text-muted shadow-xs"><Loader2 class="w-4 h-4 animate-spin text-accent" />正在读取系统设置…</div>
 
-    <div class="grid grid-cols-2 lg:grid-cols-4 border border-border bg-surface rounded-xl overflow-hidden">
-      <div v-for="item in integrationItems" :key="item.key" class="p-4 border-b border-r border-border last:border-r-0 lg:border-b-0 flex flex-col justify-between">
+    <div class="grid grid-cols-2 lg:grid-cols-4 border border-border/70 bg-surface rounded-2xl overflow-hidden shadow-xs">
+      <div v-for="item in integrationItems" :key="item.key" class="p-4 border-b border-r border-border/60 last:border-r-0 lg:border-b-0 flex flex-col justify-between">
         <div class="flex items-center justify-between">
-          <span class="text-xs font-medium text-text-muted">{{ item.label }}</span>
-          <button type="button" :disabled="!loaded || checking[item.key]" class="inline-flex min-h-11 min-w-11 items-center justify-center text-text-faint hover:text-text rounded transition-colors disabled:opacity-45" :aria-label="`测试${item.label}连接`" @click="checkComponent(item.key)">
-            <Loader2 v-if="checking[item.key]" class="w-3 h-3 animate-spin text-accent" />
-            <RefreshCw v-else class="w-3 h-3" />
+          <span class="text-xs font-mono uppercase tracking-wider text-text-muted font-medium">{{ item.label }}</span>
+          <button type="button" :disabled="!loaded || checking[item.key]" class="inline-flex min-h-8 min-w-8 items-center justify-center text-text-faint hover:text-text rounded-lg hover:bg-bg-muted transition-colors disabled:opacity-45" :aria-label="`测试${item.label}连接`" @click="checkComponent(item.key)">
+            <Loader2 v-if="checking[item.key]" class="w-3.5 h-3.5 animate-spin text-accent" />
+            <RefreshCw v-else class="w-3.5 h-3.5" />
           </button>
         </div>
         <div class="mt-2.5">
@@ -202,87 +202,87 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
       </div>
     </div>
 
-	<form id="settings-form" class="border border-border bg-surface rounded-xl" @submit.prevent="saveSettings">
+    <form id="settings-form" class="border border-border/70 bg-surface rounded-2xl shadow-xs overflow-hidden" @submit.prevent="saveSettings">
       <fieldset :disabled="!loaded || saveState === 'saving'">
-      <div class="border-b border-border bg-bg-muted/50 px-5 py-4 sm:px-7"><h2 class="font-serif text-xl font-semibold text-text">服务连接</h2><p class="mt-1 text-sm text-text-muted">配置网盘、媒体服务器、挂载服务与资源索引的访问方式。</p></div>
-      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
+      <div class="border-b border-border/60 bg-bg-muted/40 px-5 py-4 sm:px-7"><h2 class="font-serif text-xl font-semibold text-text tracking-tight">服务连接</h2><p class="mt-1 text-sm text-text-muted">配置网盘、媒体服务器、挂载服务与资源索引的访问方式。</p></div>
+      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border/60">
         <div>
-          <div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">115 网盘</h3></div>
+          <div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg text-text">115 网盘</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">用于账号鉴权。保存后不会再次返回明文。</p>
         </div>
         <div>
-          <label for="c115-cookie" class="block text-xs font-mono text-text-muted mb-2">账号浏览器凭据</label>
-          <input id="c115-cookie" v-model="settings['115_cookie']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('c115', c115Placeholder)" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" />
+          <label for="c115-cookie" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">账号浏览器凭据</label>
+          <input id="c115-cookie" v-model="settings['115_cookie']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('c115', c115Placeholder)" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" />
         </div>
       </section>
 
-      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
+      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border/60">
         <div>
-          <div class="flex items-center gap-2"><Tv class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">Emby</h3></div>
+          <div class="flex items-center gap-2"><Tv class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg text-text">Emby</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">媒体库读取与刷新所需的服务地址和密钥。</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div><label for="emby-url" class="block text-xs font-mono text-text-muted mb-2">服务端地址</label><input id="emby-url" v-model="settings['emby_url']" type="url" placeholder="http://127.0.0.1:8096" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="emby-key" class="block text-xs font-mono text-text-muted mb-2">接口密钥</label><input id="emby-key" v-model="settings['emby_api_key']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('emby', embyKeyPlaceholder)" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="emby-url" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">服务端地址</label><input id="emby-url" v-model="settings['emby_url']" type="url" placeholder="http://127.0.0.1:8096" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+          <div><label for="emby-key" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">接口密钥</label><input id="emby-key" v-model="settings['emby_api_key']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('emby', embyKeyPlaceholder)" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
         </div>
       </section>
 
-      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
+      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border/60">
         <div>
-          <div class="flex items-center gap-2"><Radio class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">CloudDrive2 连接</h3></div>
+          <div class="flex items-center gap-2"><Radio class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg text-text">CloudDrive2 连接</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">使用官方 gRPC API 读取和重新挂载；API Token 读取时不会返回明文。</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div><label for="clouddrive-url" class="block text-xs font-mono text-text-muted mb-2">gRPC 地址</label><input id="clouddrive-url" v-model="settings['clouddrive_url']" type="url" placeholder="http://127.0.0.1:19798" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="clouddrive-token" class="block text-xs font-mono text-text-muted mb-2">API Token</label><input id="clouddrive-token" v-model="settings['clouddrive_api_token']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 CloudDrive2 API Token')" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="clouddrive-url" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">gRPC 地址</label><input id="clouddrive-url" v-model="settings['clouddrive_url']" type="url" placeholder="http://127.0.0.1:19798" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+          <div><label for="clouddrive-token" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">API Token</label><input id="clouddrive-token" v-model="settings['clouddrive_api_token']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 CloudDrive2 API Token')" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
         </div>
       </section>
 
-      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border">
-        <div><div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg">媒体与路径映射</h3></div><p class="mt-2 text-xs leading-5 text-text-faint">对应 CloudDrive 来源、本地挂载、STRM 输出与 Emby 可见路径。</p></div>
+      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border/60">
+        <div><div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg text-text">媒体与路径映射</h3></div><p class="mt-2 text-xs leading-5 text-text-faint">对应 CloudDrive 来源、本地挂载、STRM 输出与 Emby 可见路径。</p></div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div><label for="mount-path" class="block text-xs font-mono text-text-muted mb-2">本地挂载目录</label><input id="mount-path" v-model="settings['clouddrive_mount_path']" type="text" placeholder="/srv/clouddrive/CloudDrive" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="source-path" class="block text-xs font-mono text-text-muted mb-2">CloudDrive 源目录</label><input id="source-path" v-model="settings['clouddrive_source_path']" type="text" placeholder="115://Media" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="media-root" class="block text-xs font-mono text-text-muted mb-2">媒体源根目录</label><input id="media-root" v-model="settings['media_root']" type="text" placeholder="/srv/embymedia/data/clouddrive/CloudNAS/CloudDrive" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="strm-root" class="block text-xs font-mono text-text-muted mb-2">STRM 输出根目录</label><input id="strm-root" v-model="settings['strm_root']" type="text" placeholder="/srv/embymedia/data/strm" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div class="md:col-span-2"><label for="emby-media-prefix" class="block text-xs font-mono text-text-muted mb-2">Emby 媒体路径前缀</label><input id="emby-media-prefix" v-model="settings['emby_media_prefix']" type="text" placeholder="/media" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="mount-path" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">本地挂载目录</label><input id="mount-path" v-model="settings['clouddrive_mount_path']" type="text" placeholder="/srv/clouddrive/CloudDrive" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+          <div><label for="source-path" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">CloudDrive 源目录</label><input id="source-path" v-model="settings['clouddrive_source_path']" type="text" placeholder="115://Media" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+          <div><label for="media-root" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">媒体源根目录</label><input id="media-root" v-model="settings['media_root']" type="text" placeholder="/srv/embymedia/data/clouddrive/CloudNAS/CloudDrive" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+          <div><label for="strm-root" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">STRM 输出根目录</label><input id="strm-root" v-model="settings['strm_root']" type="text" placeholder="/srv/embymedia/data/strm" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+          <div class="md:col-span-2"><label for="emby-media-prefix" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">Emby 媒体路径前缀</label><input id="emby-media-prefix" v-model="settings['emby_media_prefix']" type="text" placeholder="/media" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
         </div>
       </section>
 
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7">
         <div>
-          <div class="flex items-center gap-2"><FileCode class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg">公共资源索引</h3></div>
+          <div class="flex items-center gap-2"><FileCode class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg text-text">公共资源索引</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">资源搜索上游地址；授权令牌按部署需要选填。</p>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div><label for="resource-url" class="block text-xs font-mono text-text-muted mb-2">服务地址</label><input id="resource-url" v-model="settings['resource_api_url']" type="url" placeholder="http://gaotao.cc:8100" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-          <div><label for="resource-token" class="block text-xs font-mono text-text-muted mb-2">授权令牌（可选）</label><input id="resource-token" v-model="settings['resource_api_token']" type="password" autocomplete="new-password" :placeholder="resourceTokenPlaceholder" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+          <div><label for="resource-url" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">服务地址</label><input id="resource-url" v-model="settings['resource_api_url']" type="url" placeholder="http://gaotao.cc:8100" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+          <div><label for="resource-token" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">授权令牌（可选）</label><input id="resource-token" v-model="settings['resource_api_token']" type="password" autocomplete="new-password" :placeholder="resourceTokenPlaceholder" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
         </div>
       </section>
 
-      <details class="border-t border-border">
-        <summary class="flex min-h-11 cursor-pointer items-center px-5 py-4 font-serif text-lg font-semibold text-text sm:px-7">高级设置</summary>
-        <div class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 border-t border-border p-5 sm:p-7">
-          <div><div class="flex items-center gap-2"><Radio class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg">Webhook 与调优</h3></div><p class="mt-2 text-xs leading-5 text-text-faint">仅在 CloudDrive2 主动通知文件变化时需要。防抖用于合并短时间内连续到达的通知。</p></div>
+      <details class="border-t border-border/60">
+        <summary class="flex min-h-11 cursor-pointer items-center px-5 py-4 font-serif text-lg font-semibold text-text sm:px-7 hover:bg-bg-muted/30 transition-colors">高级设置</summary>
+        <div class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 border-t border-border/60 p-5 sm:p-7">
+          <div><div class="flex items-center gap-2"><Radio class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg text-text">Webhook 与调优</h3></div><p class="mt-2 text-xs leading-5 text-text-faint">仅在 CloudDrive2 主动通知文件变化时需要。防抖用于合并短时间内连续到达的通知。</p></div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><label for="webhook-secret" class="block text-xs font-mono text-text-muted mb-2">Webhook Secret</label><input id="webhook-secret" v-model="settings['clouddrive_webhook_secret']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 Webhook Secret')" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
-            <div><label for="webhook-delay" class="block text-xs font-mono text-text-muted mb-2">防抖秒数</label><input id="webhook-delay" v-model="settings['clouddrive_webhook_debounce_seconds']" type="number" min="1" max="300" class="w-full min-h-11 px-3 border border-border bg-bg text-sm font-mono focus:border-accent" /></div>
+            <div><label for="webhook-secret" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">Webhook Secret</label><input id="webhook-secret" v-model="settings['clouddrive_webhook_secret']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('clouddrive', '输入 Webhook Secret')" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
+            <div><label for="webhook-delay" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">防抖秒数</label><input id="webhook-delay" v-model="settings['clouddrive_webhook_debounce_seconds']" type="number" min="1" max="300" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
           </div>
         </div>
-      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-t border-border">
+      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-t border-border/60">
         <div>
-          <div class="flex items-center gap-2"><CircleAlert class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg">破坏性操作</h3></div>
+          <div class="flex items-center gap-2"><CircleAlert class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg text-text">破坏性操作</h3></div>
           <p class="mt-2 text-xs leading-5 text-text-faint">关闭时，文件删除 API 会以 403 拒绝，不会触达 115。</p>
         </div>
-        <label class="inline-flex min-h-11 items-center gap-3 text-sm">
-          <input v-model="settings['dangerous_actions_enabled']" type="checkbox" true-value="true" false-value="false" class="accent-accent" />
+        <label class="inline-flex min-h-11 items-center gap-3 text-sm text-text cursor-pointer">
+          <input v-model="settings['dangerous_actions_enabled']" type="checkbox" true-value="true" false-value="false" class="w-4 h-4 accent-accent" />
           <span>允许将 115 文件移入回收站</span>
         </label>
       </section>
       </details>
       </fieldset>
 
-		<footer class="action-dock sticky bottom-0 z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-7 border-t border-border bg-bg-muted shadow-[0_-8px_24px_rgba(67,56,36,0.08)]">
+      <footer class="action-dock sticky bottom-0 z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:px-7 border-t border-border/80 bg-surface/95 backdrop-blur-md shadow-[0_-8px_24px_rgba(31,30,29,0.06)]">
         <div class="min-h-6 text-sm">
           <span v-if="saveState === 'saved'" class="inline-flex items-start gap-2 text-ok"><Check class="w-4 h-4 mt-0.5 shrink-0" />{{ feedback }}</span>
           <span v-else-if="saveState === 'error'" class="inline-flex items-start gap-2 text-danger"><CircleAlert class="w-4 h-4 mt-0.5 shrink-0" />{{ feedback }}</span>
@@ -290,7 +290,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
           <span v-else-if="!loaded" class="text-text-faint">读取设置后可编辑和保存。</span>
           <span v-else class="text-text-faint">当前页面与已保存设置一致。</span>
         </div>
-        <button type="submit" :disabled="!loaded || !dirty || saveState === 'saving'" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-5 bg-accent text-accent-contrast text-sm font-medium disabled:cursor-not-allowed disabled:opacity-45" :title="!loaded ? '设置尚未读取成功' : !dirty ? '没有需要保存的修改' : undefined">
+        <button type="submit" :disabled="!loaded || !dirty || saveState === 'saving'" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-6 rounded-xl bg-accent hover:bg-accent-strong text-accent-contrast text-sm font-medium shadow-xs hover:shadow-sm transition-all disabled:cursor-not-allowed disabled:opacity-45" :title="!loaded ? '设置尚未读取成功' : !dirty ? '没有需要保存的修改' : undefined">
           <Loader2 v-if="saveState === 'saving'" class="w-4 h-4 animate-spin" />
           <Save v-else class="w-4 h-4" />
           <span>{{ saveState === 'saving' ? '正在保存' : '保存修改' }}</span>

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { AlertCircle, Bookmark, Calendar, Download, ExternalLink, FolderInput, Loader2, Radio, Search } from 'lucide-vue-next'
 import CopyButton from '@/components/CopyButton.vue'
 import { useFavorites } from '@/stores/favorites'
-import { getHealthLabel } from '@/utils/resourceMeta'
+import { getDiskColor, getDiskLabel, getHealthLabel } from '@/utils/resourceMeta'
 import { getResourceSnapshot, resourceCanvas, resourceQueryKey, resourceReturnTo, restoreResourceScroll, setResourceSnapshot } from '@/stores/resourceSearch'
 import { saveResource, useTransferTarget } from '@/stores/transferTarget'
 
@@ -142,42 +142,219 @@ function detailTo(id: number) {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <header>
-      <h1 class="font-serif text-3xl font-bold text-text">115 资源检索</h1>
-      <p class="mt-2 text-sm text-text-muted">筛选公开分享资源并转存到指定目录。</p>
+  <div class="space-y-7">
+    <header class="pb-6 border-b border-border/70">
+      <h1 class="font-serif text-3xl sm:text-4xl font-normal text-text tracking-tight">115 资源检索</h1>
+      <p class="mt-2 text-sm text-text-muted leading-relaxed">筛选公开分享资源，一键转存至云端指定目录或本地挂载媒体源。</p>
     </header>
-    <section class="p-6 rounded-xl border border-border bg-surface shadow-sm" aria-labelledby="resource-search-heading">
-      <h2 id="resource-search-heading" class="font-serif text-lg font-semibold text-text">检索条件</h2>
-      <form @submit.prevent="handleSearchSubmit" class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-        <label class="md:col-span-3 text-sm text-text"><span class="block mb-1.5 font-medium">关键词</span><span class="relative flex items-center"><Search class="w-5 h-5 absolute left-4 text-text-faint"/><input v-model="keyword" data-global-search-input type="search" class="w-full min-h-11 pl-12 pr-4 rounded-lg border border-border bg-bg text-text" placeholder="电影、剧集或资源名称"></span></label>
-        <label class="text-sm text-text"><span class="block mb-1.5 font-medium">来源频道</span><input v-model="selectedChannel" class="w-full min-h-11 px-3 rounded-lg border border-border bg-bg" placeholder="全部频道"></label>
-        <label class="text-sm text-text"><span class="block mb-1.5 font-medium">资源健康状态</span><select v-model="healthFilter" class="w-full min-h-11 px-3 rounded-lg border border-border bg-bg"><option value="">全部状态</option><option value="valid">有效</option><option value="invalid">失效</option><option value="unknown">未检测</option></select></label>
-        <button type="submit" :disabled="loading" class="self-end min-h-11 px-5 rounded-lg bg-accent text-accent-contrast flex items-center justify-center gap-2 disabled:opacity-60"><Loader2 v-if="loading" class="w-4 h-4 animate-spin"/>检索</button>
+
+    <section class="p-6 sm:p-7 rounded-2xl border border-border/80 bg-surface shadow-xs" aria-labelledby="resource-search-heading">
+      <div class="flex items-center justify-between pb-3 mb-4 border-b border-border/60">
+        <h2 id="resource-search-heading" class="font-serif text-lg font-medium text-text">检索条件</h2>
+        <span class="text-xs font-mono text-text-faint">DISK / 115 INDEX</span>
+      </div>
+
+      <form @submit.prevent="handleSearchSubmit" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <label class="md:col-span-3 text-sm text-text">
+          <span class="block mb-2 text-xs font-medium text-text-secondary">检索关键词</span>
+          <span class="relative flex items-center">
+            <Search class="w-5 h-5 absolute left-4 text-text-faint pointer-events-none" />
+            <input
+              v-model="keyword"
+              data-global-search-input
+              type="search"
+              class="w-full min-h-12 pl-12 pr-4 rounded-xl border border-border/80 bg-bg/70 hover:bg-bg focus:bg-surface text-text text-sm sm:text-base placeholder:text-text-faint transition-all duration-200 focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/15"
+              placeholder="搜索电影、剧集名称、导演或演员…"
+            />
+          </span>
+        </label>
+
+        <label class="text-sm text-text">
+          <span class="block mb-2 text-xs font-medium text-text-secondary">来源频道</span>
+          <input
+            v-model="selectedChannel"
+            class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm placeholder:text-text-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all"
+            placeholder="全部频道（支持模糊匹配）"
+          />
+        </label>
+
+        <label class="text-sm text-text">
+          <span class="block mb-2 text-xs font-medium text-text-secondary">资源健康状态</span>
+          <select
+            v-model="healthFilter"
+            class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all"
+          >
+            <option value="">全部状态</option>
+            <option value="valid">有效可用</option>
+            <option value="invalid">已失效</option>
+            <option value="unknown">未检测</option>
+          </select>
+        </label>
+
+        <button
+          type="submit"
+          :disabled="loading"
+          class="self-end min-h-11 px-6 rounded-xl bg-accent text-accent-contrast font-medium text-sm flex items-center justify-center gap-2 hover:bg-accent-strong disabled:opacity-60 shadow-xs transition-all duration-200 cursor-pointer"
+        >
+          <Loader2 v-if="loading" class="w-4 h-4 animate-spin" />
+          <span>{{ loading ? '检索中…' : '执行检索' }}</span>
+        </button>
       </form>
-      <div class="mt-5 pt-4 border-t border-border">
-        <label class="text-sm font-medium text-text flex items-center gap-2"><FolderInput class="w-4 h-4"/>转存目标目录</label>
-        <select aria-label="转存目标目录" v-model="target.targetCid.value" :disabled="target.loading.value" class="mt-2 w-full md:w-auto min-h-11 px-3 rounded-lg border border-border bg-bg"><option value="0">根目录（CID: 0）</option><option v-for="option in target.options.value" :key="option.cid" :value="option.cid">{{ option.name }}（CID: {{ option.cid }}）</option></select>
-        <p v-if="target.error.value" class="mt-2 text-sm text-danger">无法读取目录配置。转存已停用，避免误存到根目录。<button type="button" class="underline ml-1" @click="target.loadTargets">重试</button></p>
-        <p v-else-if="!target.available.value" class="mt-2 text-sm text-danger">已保存的目标 {{ target.targetLabel.value }} 当前不可用。请重新选择后再转存。</p>
-        <p v-else class="mt-2 text-xs text-text-muted">当前目标：{{ target.targetLabel.value }}</p>
-        <p v-if="target.storageError.value" role="status" class="mt-2 text-sm text-warn">{{ target.storageError.value }}</p>
+
+      <div class="mt-6 pt-5 border-t border-border/70">
+        <label class="text-sm font-medium text-text flex items-center gap-2" for="resources-transfer-target">
+          <FolderInput class="w-4 h-4 text-accent" />
+          <span>转存目标目录</span>
+        </label>
+        <div class="mt-2 flex flex-col sm:flex-row sm:items-center gap-3">
+          <select
+            id="resources-transfer-target"
+            aria-label="转存目标目录"
+            v-model="target.targetCid.value"
+            :disabled="target.loading.value"
+            class="w-full sm:w-auto min-w-[240px] min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all"
+          >
+            <option value="0">根目录（CID: 0）</option>
+            <option v-for="option in target.options.value" :key="option.cid" :value="option.cid">{{ option.name }}（CID: {{ option.cid }}）</option>
+          </select>
+          <span v-if="target.ready.value" class="text-xs text-text-muted">当前选择：{{ target.targetLabel.value }}</span>
+        </div>
+
+        <p v-if="target.error.value" class="mt-2.5 text-sm text-danger flex items-center gap-1.5">
+          <span>无法读取目录配置。转存已停用，避免误存到根目录。</span>
+          <button type="button" class="underline hover:text-danger/80" @click="target.loadTargets">重试</button>
+        </p>
+        <p v-else-if="!target.available.value" class="mt-2.5 text-sm text-danger">已保存的目标 {{ target.targetLabel.value }} 当前不可用。请重新选择后再转存。</p>
+        <p v-if="target.storageError.value" role="status" class="mt-2.5 text-sm text-warn">{{ target.storageError.value }}</p>
       </div>
     </section>
 
     <section class="space-y-4" aria-labelledby="resource-results-heading">
-      <div class="flex items-center justify-between gap-3"><h2 id="resource-results-heading" class="font-serif text-xl font-semibold text-text">检索结果</h2><span class="text-xs font-mono text-text-muted">{{ receivedAt && !searchError ? `共 ${totalHits} 条` : '数量未知' }}</span></div>
-      <p v-if="restored" role="status" class="text-sm text-text-muted">已恢复上次结果（{{ receivedAt }}）。<button type="button" class="underline min-h-11" :disabled="loading" @click="doSearch(true)">刷新结果</button></p>
-      <div v-if="searchError" role="alert" class="p-5 rounded-lg border border-danger/30 bg-surface"><p class="text-sm text-danger">{{ searchError }}</p><button class="mt-3 min-h-11 px-4 border border-border rounded-lg" @click="doSearch(true)">重新检索</button><details v-if="searchTechnical" class="mt-3 text-xs text-text-muted"><summary>技术详情</summary><pre class="mt-2 whitespace-pre-wrap">{{ searchTechnical }}</pre></details></div>
-      <div v-else-if="loading && results.length === 0" class="p-12 border border-dashed border-border text-center"><Loader2 class="w-6 h-6 animate-spin mx-auto"/><p class="mt-2 text-sm">正在检索索引库…</p></div>
-      <div v-else-if="results.length === 0" class="p-12 rounded-xl border border-dashed border-border text-center bg-surface"><AlertCircle class="w-8 h-8 mx-auto text-text-faint"/><h3 class="mt-3 font-serif font-semibold">未检索到匹配资源</h3><p class="mt-1 text-sm text-text-muted">调整关键词或筛选条件后重试。</p></div>
-      <article v-for="item in results" :key="item.id" class="p-5 rounded-xl border border-border bg-surface shadow-sm">
-        <div class="flex flex-col md:flex-row md:items-start justify-between gap-5">
-          <div class="min-w-0 flex-1"><RouterLink :to="detailTo(item.id)" class="font-serif text-lg font-semibold text-text hover:text-accent break-words">{{ item.title }}</RouterLink><div class="mt-2 flex flex-wrap gap-2"><span class="px-2 py-1 text-xs text-white" style="background:var(--disk-115)">115</span><span class="px-2 py-1 text-xs bg-bg-muted">{{ getHealthLabel(item.health_status) }}</span><span v-if="item.first_source" class="text-xs text-text-muted flex items-center gap-1"><Radio class="w-3.5 h-3.5"/>{{ item.first_source }}</span></div><div class="mt-3 flex flex-wrap gap-3 text-xs text-text-faint"><span v-if="item.last_seen_at" class="flex items-center gap-1"><Calendar class="w-3.5 h-3.5"/>{{ new Date(item.last_seen_at).toLocaleDateString() }}</span><span v-if="item.password">提取码：{{ item.password }}</span></div><p v-if="importMessage && importMessage.id === item.id" role="status" class="mt-3 text-sm" :class="importMessage.ok ? 'text-ok' : 'text-danger'">{{ importMessage.text }}</p></div>
-          <div class="flex flex-wrap gap-2 md:justify-end"><CopyButton :text="item.url" label="复制链接"/><button class="min-h-11 px-3 border border-border rounded-lg" :aria-pressed="isFavorite(item.id)" @click="toggleFavorite({ id:item.id,title:item.title,url:item.url,disk_type:item.disk_type,password:item.password,first_source:item.first_source })"><Bookmark class="w-4 h-4" :class="{ 'fill-current text-annotation': isFavorite(item.id) }"/><span class="sr-only">{{ isFavorite(item.id) ? '取消收藏' : '收藏' }} {{ item.title }}</span></button><button :disabled="importingId === item.id || !target.ready.value" class="min-h-11 px-4 rounded-lg bg-accent text-accent-contrast flex items-center gap-2 disabled:opacity-50" @click="triggerSave(item)"><Loader2 v-if="importingId === item.id" class="w-4 h-4 animate-spin"/><Download v-else class="w-4 h-4"/>转存至 {{ target.targetLabel.value }}</button><RouterLink :to="detailTo(item.id)" class="min-h-11 px-3 border border-border rounded-lg flex items-center"><ExternalLink class="w-4 h-4"/><span class="sr-only">查看 {{ item.title }} 详情</span></RouterLink></div>
+      <div class="flex items-center justify-between gap-3 px-1">
+        <div>
+          <h2 id="resource-results-heading" class="font-serif text-xl font-medium text-text">检索结果</h2>
+          <p v-if="restored" role="status" class="text-xs text-text-muted mt-0.5">
+            已恢复上次快照（{{ receivedAt }}）
+            <button type="button" class="underline ml-1 hover:text-accent" :disabled="loading" @click="doSearch(true)">刷新</button>
+          </p>
         </div>
-      </article>
-      <button v-if="hasMore && !searchError" :disabled="loading" class="min-h-11 px-6 border border-border bg-surface rounded-lg disabled:opacity-60" @click="loadMore">{{ loading ? '加载中…' : '加载更多资源' }}</button>
+        <span class="text-xs font-mono text-text-muted">{{ receivedAt && !searchError ? `共 ${totalHits} 条` : '数量未知' }}</span>
+      </div>
+
+      <div v-if="searchError" role="alert" class="p-6 rounded-2xl border border-danger/30 bg-danger/5">
+        <p class="text-sm font-medium text-danger">{{ searchError }}</p>
+        <button class="mt-3 min-h-10 px-4 border border-danger/40 text-xs font-medium rounded-xl hover:bg-danger/10 text-danger transition-colors" @click="doSearch(true)">重新检索</button>
+        <details v-if="searchTechnical" class="mt-3 text-xs text-text-muted">
+          <summary class="cursor-pointer">查看技术详情</summary>
+          <pre class="mt-2 p-3 rounded-lg border border-border/60 bg-bg font-mono text-xs whitespace-pre-wrap">{{ searchTechnical }}</pre>
+        </details>
+      </div>
+
+      <div v-else-if="loading && results.length === 0" class="p-14 rounded-2xl border border-dashed border-border/80 text-center bg-surface">
+        <Loader2 class="w-6 h-6 animate-spin mx-auto text-accent" />
+        <p class="mt-3 text-sm text-text-muted">正在检索索引库…</p>
+      </div>
+
+      <div v-else-if="results.length === 0" class="p-14 rounded-2xl border border-dashed border-border/80 text-center bg-surface">
+        <AlertCircle class="w-8 h-8 mx-auto text-text-faint" />
+        <h3 class="mt-3 font-serif font-medium text-text">未检索到匹配资源</h3>
+        <p class="mt-1 text-sm text-text-muted">请调整关键词、频道过滤或健康筛选后重试。</p>
+      </div>
+
+      <div class="space-y-4">
+        <article
+          v-for="item in results"
+          :key="item.id"
+          class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs transition-all duration-300 hover:shadow-card hover:-translate-y-0.5 hover:border-border-strong group"
+        >
+          <div class="flex flex-col md:flex-row md:items-start justify-between gap-5">
+            <div class="min-w-0 flex-1">
+              <RouterLink :to="detailTo(item.id)" class="font-serif text-lg font-medium text-text hover:text-accent break-words transition-colors leading-snug">
+                {{ item.title }}
+              </RouterLink>
+
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <!-- 微光网盘胶囊 -->
+                <span
+                  class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border shadow-xs"
+                  :style="{
+                    backgroundColor: getDiskColor(item.disk_type || '115') + '15',
+                    borderColor: getDiskColor(item.disk_type || '115') + '38',
+                    color: getDiskColor(item.disk_type || '115')
+                  }"
+                >
+                  <span class="w-1.5 h-1.5 rounded-full" :style="{ backgroundColor: getDiskColor(item.disk_type || '115') }"></span>
+                  {{ getDiskLabel(item.disk_type || '115') }}
+                </span>
+
+                <!-- 健康状态胶囊 -->
+                <span
+                  class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border"
+                  :class="{
+                    'bg-[#edf4ee] text-[#2e5e43] border-[#d3e3d7]': item.health_status === 'valid',
+                    'bg-[#faeeee] text-[#9e3939] border-[#f3d3d3]': item.health_status === 'invalid',
+                    'bg-bg-muted/70 text-text-muted border-border/60': item.health_status !== 'valid' && item.health_status !== 'invalid'
+                  }"
+                >
+                  {{ getHealthLabel(item.health_status) }}
+                </span>
+
+                <span v-if="item.first_source" class="text-xs text-text-muted flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-bg-muted/40">
+                  <Radio class="w-3.5 h-3.5 text-text-faint" />
+                  <span>{{ item.first_source }}</span>
+                </span>
+              </div>
+
+              <div class="mt-3 flex flex-wrap gap-3.5 text-xs text-text-faint font-mono">
+                <span v-if="item.last_seen_at" class="flex items-center gap-1">
+                  <Calendar class="w-3.5 h-3.5" />
+                  <span>{{ new Date(item.last_seen_at).toLocaleDateString() }}</span>
+                </span>
+                <span v-if="item.password" class="px-2 py-0.5 rounded bg-bg-muted/60 text-text-secondary">提取码：{{ item.password }}</span>
+              </div>
+
+              <p v-if="importMessage && importMessage.id === item.id" role="status" class="mt-3 text-sm font-medium" :class="importMessage.ok ? 'text-ok' : 'text-danger'">
+                {{ importMessage.text }}
+              </p>
+            </div>
+
+            <div class="flex flex-wrap gap-2 md:justify-end items-center shrink-0">
+              <CopyButton :text="item.url" label="复制链接" />
+              <button
+                class="min-h-10 px-3 border border-border/80 bg-surface hover:bg-bg-muted rounded-xl transition-colors"
+                :aria-pressed="isFavorite(item.id)"
+                @click="toggleFavorite({ id: item.id, title: item.title, url: item.url, disk_type: item.disk_type, password: item.password, first_source: item.first_source })"
+              >
+                <Bookmark class="w-4 h-4" :class="{ 'fill-current text-annotation': isFavorite(item.id) }" />
+                <span class="sr-only">{{ isFavorite(item.id) ? '取消收藏' : '收藏' }} {{ item.title }}</span>
+              </button>
+              <button
+                :disabled="importingId === item.id || !target.ready.value"
+                class="min-h-10 px-4 rounded-xl bg-accent text-accent-contrast text-xs font-medium flex items-center gap-2 hover:bg-accent-strong disabled:opacity-50 shadow-xs transition-colors cursor-pointer"
+                @click="triggerSave(item)"
+              >
+                <Loader2 v-if="importingId === item.id" class="w-3.5 h-3.5 animate-spin" />
+                <Download v-else class="w-3.5 h-3.5" />
+                <span>转存至 {{ target.targetLabel.value }}</span>
+              </button>
+              <RouterLink :to="detailTo(item.id)" class="min-h-10 px-3 border border-border/80 bg-surface hover:bg-bg-muted rounded-xl flex items-center transition-colors">
+                <ExternalLink class="w-4 h-4 text-text-secondary" />
+                <span class="sr-only">查看 {{ item.title }} 详情</span>
+              </RouterLink>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="pt-2 text-center" v-if="hasMore && !searchError">
+        <button
+          :disabled="loading"
+          class="min-h-11 px-7 border border-border/80 bg-surface hover:bg-bg-muted rounded-xl text-sm font-medium shadow-xs disabled:opacity-60 transition-all duration-200 cursor-pointer"
+          @click="loadMore"
+        >
+          {{ loading ? '加载中…' : '加载更多资源' }}
+        </button>
+      </div>
     </section>
   </div>
 </template>

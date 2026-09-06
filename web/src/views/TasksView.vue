@@ -108,10 +108,17 @@ const scheduleForm = ref(newScheduleForm())
 const savingSchedule = ref(false)
 const scheduleError = ref('')
 const highlightedTaskId = ref('')
+const executionFilter = ref<'all' | 'running' | 'completed' | 'attention'>('all')
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
 const activeTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'pending' || task.status === 'running').length)
-const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed').length)
+const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed' && !taskHasFindings(task)).length)
 const attentionTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'failed' || task.status === 'cancelled' || taskHasFindings(task)).length)
+const filteredAsyncTasks = computed(() => {
+  if (executionFilter.value === 'running') return asyncTasks.value.filter((t) => t.status === 'pending' || t.status === 'running')
+  if (executionFilter.value === 'completed') return asyncTasks.value.filter((t) => t.status === 'completed' && !taskHasFindings(t))
+  if (executionFilter.value === 'attention') return asyncTasks.value.filter((t) => t.status === 'failed' || t.status === 'cancelled' || taskHasFindings(t))
+  return asyncTasks.value
+})
 let pollTimer: number | undefined
 
 let schedulesGeneration = 0
@@ -547,123 +554,183 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       </div>
     </header>
 
-    <div class="grid grid-cols-3 border border-border bg-surface">
-      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-text">{{ executionsLoaded ? activeTaskCount : '—' }}</strong><span class="text-xs text-text-muted">正在处理</span></div>
-      <div class="p-4 sm:p-5 border-r border-border"><strong class="block font-serif text-2xl text-ok">{{ executionsLoaded ? completedTaskCount : '—' }}</strong><span class="text-xs text-text-muted">执行完成</span></div>
-      <div class="p-4 sm:p-5"><strong class="block font-serif text-2xl" :class="attentionTaskCount ? 'text-warn' : 'text-text'">{{ executionsLoaded ? attentionTaskCount : '—' }}</strong><span class="text-xs text-text-muted">历史异常 / 发现</span></div>
+    <div class="flex flex-wrap items-center gap-2 p-1.5 rounded-2xl border border-border/80 bg-surface/80 backdrop-blur-xs shadow-xs">
+      <button
+        type="button"
+        @click="executionFilter = 'all'"
+        class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border"
+        :class="executionFilter === 'all' ? 'bg-text text-bg border-text shadow-xs' : 'bg-transparent text-text-secondary border-transparent hover:bg-bg-muted hover:text-text'"
+      >
+        <span>全部记录</span>
+        <span class="font-mono text-[11px] px-1.5 py-0.2 rounded-full" :class="executionFilter === 'all' ? 'bg-bg/20 text-bg' : 'bg-bg-muted text-text-faint'">{{ executionsLoaded ? asyncTasks.length : '—' }}</span>
+      </button>
+
+      <button
+        type="button"
+        @click="executionFilter = 'running'"
+        class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border"
+        :class="executionFilter === 'running' ? 'bg-warn text-white border-warn shadow-xs' : 'bg-transparent text-text-secondary border-transparent hover:bg-bg-muted hover:text-text'"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-warn" :class="{ 'bg-white animate-pulse': executionFilter === 'running' }"></span>
+        <span>正在处理</span>
+        <span class="font-mono text-[11px] px-1.5 py-0.2 rounded-full" :class="executionFilter === 'running' ? 'bg-white/20 text-white' : 'bg-bg-muted text-text-faint'">{{ executionsLoaded ? activeTaskCount : '—' }}</span>
+      </button>
+
+      <button
+        type="button"
+        @click="executionFilter = 'completed'"
+        class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border"
+        :class="executionFilter === 'completed' ? 'bg-ok text-white border-ok shadow-xs' : 'bg-transparent text-text-secondary border-transparent hover:bg-bg-muted hover:text-text'"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-ok" :class="{ 'bg-white': executionFilter === 'completed' }"></span>
+        <span>执行完成</span>
+        <span class="font-mono text-[11px] px-1.5 py-0.2 rounded-full" :class="executionFilter === 'completed' ? 'bg-white/20 text-white' : 'bg-bg-muted text-text-faint'">{{ executionsLoaded ? completedTaskCount : '—' }}</span>
+      </button>
+
+      <button
+        type="button"
+        @click="executionFilter = 'attention'"
+        class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200 border"
+        :class="executionFilter === 'attention' ? 'bg-danger text-white border-danger shadow-xs' : 'bg-transparent text-text-secondary border-transparent hover:bg-bg-muted hover:text-text'"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-danger" :class="{ 'bg-white': executionFilter === 'attention' }"></span>
+        <span>异常 / 发现</span>
+        <span class="font-mono text-[11px] px-1.5 py-0.2 rounded-full" :class="executionFilter === 'attention' ? 'bg-white/20 text-white' : 'bg-bg-muted text-text-faint'">{{ executionsLoaded ? attentionTaskCount : '—' }}</span>
+      </button>
     </div>
     <p v-if="!executionsLoaded" class="text-xs text-text-muted">{{ executionsError ? '执行记录尚未读取成功，暂时无法统计任务。' : '正在读取执行记录与任务统计…' }}</p>
 
-    <p v-if="actionMessage" role="status" class="p-3 border-l-2 border-ok bg-ok/5 text-sm text-ok">{{ actionMessage }}</p>
+    <p v-if="actionMessage" role="status" class="p-3.5 rounded-xl border border-ok/30 bg-ok/5 text-sm text-ok flex items-center gap-2">{{ actionMessage }}</p>
 
-    <form v-if="showScheduleForm" class="border border-border bg-surface shadow-sm" @submit.prevent="createSchedule">
+    <form v-if="showScheduleForm" class="rounded-2xl border border-border/80 bg-surface shadow-card overflow-hidden" @submit.prevent="createSchedule">
       <fieldset :disabled="savingSchedule">
-      <div class="p-5 sm:p-7 border-b border-border">
+      <div class="p-5 sm:p-7 border-b border-border/70 bg-bg-muted/30">
         <div class="flex items-center gap-2 mb-1"><CalendarClock class="w-4 h-4 text-annotation" /><h2 class="font-serif text-xl font-semibold text-text">创建自动任务</h2></div>
         <p class="text-sm text-text-muted">先选择要完成的工作，再填写这项工作需要的信息和执行时间。</p>
       </div>
 
-      <div class="grid lg:grid-cols-[220px_minmax(0,1fr)] gap-5 p-5 sm:p-7 border-b border-border">
+      <div class="grid lg:grid-cols-[220px_minmax(0,1fr)] gap-5 p-5 sm:p-7 border-b border-border/70">
         <div><h3 class="font-serif font-semibold text-text">一、选择工作</h3><p class="mt-1 text-xs leading-5 text-text-faint">这里显示业务名称，不需要记住内部工具名。</p></div>
         <div>
           <label for="schedule-type" class="block mb-2 text-xs font-medium text-text-muted">要执行什么</label>
-          <select id="schedule-type" v-model="scheduleForm.type" class="w-full min-h-11 border border-border bg-bg px-3 text-sm" @change="selectTaskType">
+          <select id="schedule-type" v-model="scheduleForm.type" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" @change="selectTaskType">
             <option v-for="type in taskTypeOrder" :key="type" :value="type">{{ taskDefinitions[type].label }}</option>
           </select>
           <p class="mt-3 border-l-2 border-accent pl-3 text-sm leading-6 text-text-muted">{{ selectedDefinition.description }}</p>
         </div>
       </div>
 
-      <div class="grid lg:grid-cols-[220px_minmax(0,1fr)] gap-5 p-5 sm:p-7 border-b border-border">
+      <div class="grid lg:grid-cols-[220px_minmax(0,1fr)] gap-5 p-5 sm:p-7 border-b border-border/70">
         <div><h3 class="font-serif font-semibold text-text">二、填写范围</h3><p class="mt-1 text-xs leading-5 text-text-faint">留空的可选项会使用系统设置中的默认值。</p></div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div v-if="scheduleForm.type === 'emby_refresh'" class="md:col-span-2"><label for="library-id" class="block mb-2 text-xs font-medium text-text-muted">媒体库 ID（可选）</label><input id="library-id" v-model="scheduleForm.library_id" placeholder="留空时刷新全部媒体库" class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
+          <div v-if="scheduleForm.type === 'emby_refresh'" class="md:col-span-2"><label for="library-id" class="block mb-2 text-xs font-medium text-text-muted">媒体库 ID（可选）</label><input id="library-id" v-model="scheduleForm.library_id" placeholder="留空时刷新全部媒体库" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           <template v-else-if="scheduleForm.type === 'emby_match'">
-            <div><label for="item-id" class="block mb-2 text-xs font-medium text-text-muted">Emby 条目 ID</label><input id="item-id" v-model="scheduleForm.item_id" required class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
-            <div><label for="tmdb-id" class="block mb-2 text-xs font-medium text-text-muted">TMDB ID</label><input id="tmdb-id" v-model="scheduleForm.tmdb_id" required class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
+            <div><label for="item-id" class="block mb-2 text-xs font-medium text-text-muted">Emby 条目 ID</label><input id="item-id" v-model="scheduleForm.item_id" required class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+            <div><label for="tmdb-id" class="block mb-2 text-xs font-medium text-text-muted">TMDB ID</label><input id="tmdb-id" v-model="scheduleForm.tmdb_id" required class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           </template>
-          <div v-else-if="scheduleForm.type === 'strm_sync' || scheduleForm.type === 'strm_verify'" class="md:col-span-2"><label for="library-path" class="block mb-2 text-xs font-medium text-text-muted">媒体目录（可选）</label><input id="library-path" v-model="scheduleForm.library" placeholder="例如：Movies；留空时处理全部目录" class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
+          <div v-else-if="scheduleForm.type === 'strm_sync' || scheduleForm.type === 'strm_verify'" class="md:col-span-2"><label for="library-path" class="block mb-2 text-xs font-medium text-text-muted">媒体目录（可选）</label><input id="library-path" v-model="scheduleForm.library" placeholder="例如：Movies；留空时处理全部目录" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           <template v-else-if="scheduleForm.type === 'c115_save_share'">
-            <div class="md:col-span-2"><label for="share-url" class="block mb-2 text-xs font-medium text-text-muted">115 分享链接</label><input id="share-url" v-model="scheduleForm.share_url" type="url" required placeholder="https://115.com/s/..." class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
-            <div><label for="share-password" class="block mb-2 text-xs font-medium text-text-muted">提取码（可选）</label><input id="share-password" v-model="scheduleForm.share_password" class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
+            <div class="md:col-span-2"><label for="share-url" class="block mb-2 text-xs font-medium text-text-muted">115 分享链接</label><input id="share-url" v-model="scheduleForm.share_url" type="url" required placeholder="https://115.com/s/..." class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+            <div><label for="share-password" class="block mb-2 text-xs font-medium text-text-muted">提取码（可选）</label><input id="share-password" v-model="scheduleForm.share_password" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           </template>
-          <div v-else-if="scheduleForm.type === 'c115_offline_download'" class="md:col-span-2"><label for="download-urls" class="block mb-2 text-xs font-medium text-text-muted">下载地址</label><textarea id="download-urls" v-model="scheduleForm.urls" required rows="5" placeholder="每行填写一个 HTTP、HTTPS、磁力或电驴地址" class="w-full border border-border bg-bg px-3 py-3 text-sm"></textarea></div>
+          <div v-else-if="scheduleForm.type === 'c115_offline_download'" class="md:col-span-2"><label for="download-urls" class="block mb-2 text-xs font-medium text-text-muted">下载地址</label><textarea id="download-urls" v-model="scheduleForm.urls" required rows="5" placeholder="每行填写一个 HTTP、HTTPS、磁力或电驴地址" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 py-3 text-sm focus:border-accent focus:outline-none"></textarea></div>
           <template v-if="scheduleForm.type === 'c115_save_share' || scheduleForm.type === 'c115_offline_download'">
-            <div><label for="target-cid" class="block mb-2 text-xs font-medium text-text-muted">保存目录 CID（可选）</label><input id="target-cid" v-model="scheduleForm.target_cid" placeholder="留空时使用根目录" class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
-            <div><label for="account-id" class="block mb-2 text-xs font-medium text-text-muted">115 账号 ID（可选）</label><input id="account-id" v-model="scheduleForm.account_id" placeholder="留空时使用默认账号" class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
+            <div><label for="target-cid" class="block mb-2 text-xs font-medium text-text-muted">保存目录 CID（可选）</label><input id="target-cid" v-model="scheduleForm.target_cid" placeholder="留空时使用根目录" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+            <div><label for="account-id" class="block mb-2 text-xs font-medium text-text-muted">115 账号 ID（可选）</label><input id="account-id" v-model="scheduleForm.account_id" placeholder="留空时使用默认账号" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           </template>
-          <p v-if="scheduleForm.type === 'emby_missing_posters'" class="md:col-span-2 p-4 border border-border bg-bg text-sm text-text-muted">无需额外参数。系统会检查全部 Emby 媒体条目。</p>
+          <p v-if="scheduleForm.type === 'emby_missing_posters'" class="md:col-span-2 p-4 rounded-xl border border-border/70 bg-bg text-sm text-text-muted">无需额外参数。系统会检查全部 Emby 媒体条目。</p>
         </div>
       </div>
 
       <div class="grid lg:grid-cols-[220px_minmax(0,1fr)] gap-5 p-5 sm:p-7">
         <div><h3 class="font-serif font-semibold text-text">三、设置时间</h3><p class="mt-1 text-xs leading-5 text-text-faint">任务创建后也可以随时手动执行。</p></div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div><label for="schedule-name" class="block mb-2 text-xs font-medium text-text-muted">任务名称</label><input id="schedule-name" v-model="scheduleForm.name" required class="w-full min-h-11 border border-border bg-bg px-3 text-sm" /></div>
-          <div><label for="schedule-frequency" class="block mb-2 text-xs font-medium text-text-muted">执行频率</label><select id="schedule-frequency" v-model="scheduleForm.frequency" class="w-full min-h-11 border border-border bg-bg px-3 text-sm"><option v-for="option in frequencyOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
-          <div v-if="scheduleForm.frequency === 'custom'" class="md:col-span-2"><label for="schedule-cron" class="block mb-2 text-xs font-medium text-text-muted">自定义 Cron 表达式（秒 分 时 日 月 周）</label><input id="schedule-cron" v-model="scheduleForm.cron_expr" required placeholder="0 0 3 * * *" class="w-full min-h-11 border border-border bg-bg px-3 font-mono text-sm" /></div>
-          <label class="inline-flex min-h-11 items-center gap-2 text-sm"><input v-model="scheduleForm.enabled" type="checkbox" />创建后自动按计划执行</label>
+          <div><label for="schedule-name" class="block mb-2 text-xs font-medium text-text-muted">任务名称</label><input id="schedule-name" v-model="scheduleForm.name" required class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+          <div><label for="schedule-frequency" class="block mb-2 text-xs font-medium text-text-muted">执行频率</label><select id="schedule-frequency" v-model="scheduleForm.frequency" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none"><option v-for="option in frequencyOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div>
+          <div v-if="scheduleForm.frequency === 'custom'" class="md:col-span-2"><label for="schedule-cron" class="block mb-2 text-xs font-medium text-text-muted">自定义 Cron 表达式（秒 分 时 日 月 周）</label><input id="schedule-cron" v-model="scheduleForm.cron_expr" required placeholder="0 0 3 * * *" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 font-mono text-sm focus:border-accent focus:outline-none" /></div>
+          <label class="inline-flex min-h-11 items-center gap-2.5 text-sm cursor-pointer"><input v-model="scheduleForm.enabled" type="checkbox" class="rounded border-border accent-accent" />创建后自动按计划执行</label>
         </div>
       </div>
       </fieldset>
-      <p v-if="scheduleError" role="alert" class="mx-5 mb-5 border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger sm:mx-7">{{ scheduleError }}</p>
+      <p v-if="scheduleError" role="alert" class="mx-5 mb-5 rounded-xl border border-danger/30 bg-danger/5 p-3.5 text-sm text-danger sm:mx-7">{{ scheduleError }}</p>
 
-      <footer class="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 p-5 sm:px-7 border-t border-border bg-bg-muted/60">
-        <button type="button" :disabled="savingSchedule" class="min-h-11 px-5 border border-border bg-surface text-sm disabled:opacity-50" @click="showScheduleForm = false">取消</button>
-        <button type="submit" :disabled="savingSchedule" class="inline-flex min-h-11 items-center justify-center gap-2 px-5 bg-accent text-accent-contrast text-sm font-medium disabled:opacity-50"><Loader2 v-if="savingSchedule" class="w-4 h-4 animate-spin" />{{ savingSchedule ? '正在保存' : '保存自动任务' }}</button>
+      <footer class="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2.5 p-5 sm:px-7 border-t border-border/70 bg-bg-muted/40">
+        <button type="button" :disabled="savingSchedule" class="min-h-11 px-5 rounded-xl border border-border/80 bg-surface hover:bg-bg-muted text-sm font-medium disabled:opacity-50 transition-colors" @click="showScheduleForm = false">取消</button>
+        <button type="submit" :disabled="savingSchedule" class="inline-flex min-h-11 items-center justify-center gap-2 px-5 rounded-xl bg-accent text-accent-contrast text-sm font-medium hover:bg-accent-strong disabled:opacity-50 shadow-xs transition-colors"><Loader2 v-if="savingSchedule" class="w-4 h-4 animate-spin" />{{ savingSchedule ? '正在保存' : '保存自动任务' }}</button>
       </footer>
     </form>
 
-    <section class="space-y-3" aria-labelledby="execution-heading">
+    <section class="space-y-4" aria-labelledby="execution-heading">
       <div class="flex items-center justify-between gap-3 px-1">
         <div><div class="flex items-center gap-2"><Activity class="w-4 h-4 text-annotation" /><h2 id="execution-heading" class="font-serif font-semibold text-xl text-text">最近执行</h2></div><p class="mt-1 text-xs text-text-faint">执行中每秒更新，空闲时每 5 秒更新；开始、结束、耗时、进度、日志与结果均保留。</p></div>
-        <span class="text-xs font-mono text-text-faint">{{ executionsLoaded ? `${asyncTasks.length} 条` : '—' }}</span>
+        <span class="text-xs font-mono text-text-faint">{{ executionsLoaded ? `显示 ${filteredAsyncTasks.length} / 共 ${asyncTasks.length} 条` : '—' }}</span>
       </div>
 
-      <div v-if="executionsError" role="alert" class="border-l-2 border-danger bg-danger/5 p-4 text-sm text-danger"><p>{{ executionsError }}</p><p v-if="executionsLoaded" class="mt-1">以下为上次读取的执行记录。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
-      <div v-else-if="!executionsLoaded" role="status" class="flex items-center justify-center gap-2 p-8 border border-border bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取执行记录</div>
-      <div v-else-if="asyncTasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-text-faint text-sm">还没有执行记录。创建自动任务并选择“立即执行”后，进度会显示在这里。</div>
+      <div v-if="executionsError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ executionsError }}</p><p v-if="executionsLoaded" class="mt-1">以下为上次读取的执行记录。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
+      <div v-else-if="!executionsLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取执行记录</div>
+      <div v-else-if="filteredAsyncTasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-text-faint text-sm">{{ asyncTasks.length === 0 ? '还没有执行记录。创建自动任务并选择“立即执行”后，进度会显示在这里。' : '当前筛选分类下无执行记录。' }}</div>
 
-      <article v-for="task in asyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 border bg-surface shadow-sm space-y-4 transition-colors" :class="highlightedTaskId === task.id ? 'border-accent' : 'border-border'">
+      <article v-for="task in filteredAsyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 sm:p-6 rounded-2xl border bg-surface shadow-xs space-y-4 transition-all duration-200 hover:shadow-card" :class="highlightedTaskId === task.id ? 'border-accent ring-2 ring-accent/20' : 'border-border/80 hover:border-border-strong'">
         <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-          <div class="flex items-start gap-3 min-w-0">
-            <span class="w-2.5 h-2.5 mt-1.5 rounded-full shrink-0" :class="asyncTone(task)"></span>
-            <div><h3 class="font-serif text-lg font-semibold text-text">{{ taskDefinition(task.type).label }}</h3><p class="mt-1 text-sm text-text-muted">{{ taskDefinition(task.type).description }}</p></div>
+          <div class="flex items-start gap-3.5 min-w-0">
+            <span class="w-2.5 h-2.5 mt-2 rounded-full shrink-0" :class="asyncTone(task)"></span>
+            <div><h3 class="font-serif text-lg font-semibold text-text tracking-tight">{{ taskDefinition(task.type).label }}</h3><p class="mt-1 text-sm text-text-muted">{{ taskDefinition(task.type).description }}</p></div>
           </div>
-          <span class="self-start px-2.5 py-1 text-xs font-semibold" :class="{ 'bg-ok/10 text-ok': task.status === 'completed' && !taskHasFindings(task), 'bg-warn/10 text-warn': task.status === 'running' || (task.status === 'completed' && taskHasFindings(task)), 'bg-danger/10 text-danger': task.status === 'failed' || task.status === 'cancelled', 'bg-bg-muted text-text-faint': task.status === 'pending' }">{{ taskStatusLabel(task) }}</span>
+          <span
+            class="self-start px-3 py-1 rounded-full text-xs font-medium border"
+            :class="{
+              'bg-[#edf4ee] text-[#2e5e43] border-[#d3e3d7]': task.status === 'completed' && !taskHasFindings(task),
+              'bg-[#f8f3ec] text-[#9b6228] border-[#ebd8bc]': task.status === 'running',
+              'bg-[#faf3e8] text-[#9b6826] border-[#ebd8bc]': task.status === 'completed' && taskHasFindings(task),
+              'bg-[#faeeee] text-[#9e3939] border-[#f3d3d3]': task.status === 'failed' || task.status === 'cancelled',
+              'bg-[#f4f2ee] text-[#78726b] border-[#e2ded6]': task.status === 'pending'
+            }"
+          >
+            {{ taskStatusLabel(task) }}
+          </span>
         </div>
 
-        <div class="grid sm:grid-cols-[1fr_auto] gap-3 p-3 border border-border/70 bg-bg text-sm">
+        <div class="grid sm:grid-cols-[1fr_auto] gap-3 p-3.5 rounded-xl border border-border/60 bg-bg-muted/40 text-sm">
           <div><span class="text-text-muted break-words">{{ taskSummary(task.type, task.payload) }}</span><span v-if="scheduleName(task)" class="block mt-1 text-xs text-accent">来源：{{ scheduleName(task) }}</span><span class="block mt-1 font-mono text-[10px] text-text-faint break-all">执行 ID：{{ task.id }}</span></div>
           <div class="text-xs font-mono text-text-faint sm:text-right"><span class="block">入队：{{ formatTime(task.created_at) }}</span><span class="block mt-1">更新：{{ formatTime(task.updated_at) }}</span></div>
         </div>
 
         <div v-if="task.status === 'running' || task.progress > 0" class="flex items-center gap-3">
-          <div class="flex-1 h-1.5 rounded-full bg-bg-muted overflow-hidden"><div class="h-full rounded-full transition-all" :class="task.status === 'failed' ? 'bg-danger' : taskHasFindings(task) ? 'bg-warn' : 'bg-accent'" :style="{ width: Math.min(100, task.progress || 0) + '%' }"></div></div>
-          <span class="text-xs font-mono text-text-muted w-12 text-right">{{ Math.round(task.progress || 0) }}%</span>
+          <div class="flex-1 h-2 rounded-full bg-bg-muted/80 p-0.5 border border-border/40 overflow-hidden">
+            <div
+              class="h-full rounded-full transition-all duration-300"
+              :class="{
+                'progress-streamer-danger bg-danger': task.status === 'failed',
+                'progress-streamer-warn bg-warn': taskHasFindings(task),
+                'progress-streamer bg-accent': task.status !== 'failed' && !taskHasFindings(task)
+              }"
+              :style="{ width: Math.min(100, task.progress || 0) + '%' }"
+            ></div>
+          </div>
+          <span class="text-xs font-mono font-medium text-text-muted w-12 text-right">{{ Math.round(task.progress || 0) }}%</span>
         </div>
 
-        <div v-if="task.error" class="p-3 border-l-2 border-danger bg-danger/5 text-sm text-danger">{{ userError(task.error) }}</div>
+        <div v-if="task.error" class="p-3.5 rounded-xl border border-danger/30 bg-danger/5 text-sm text-danger">{{ userError(task.error) }}</div>
 
-        <div v-if="task.result" class="p-3 border-l-2 text-sm" :class="taskHasFindings(task) ? 'border-warn bg-warn/5' : 'border-ok bg-ok/5'">
+        <div v-if="task.result" class="p-3.5 rounded-xl border text-sm" :class="taskHasFindings(task) ? 'border-warn/30 bg-warn/5' : 'border-ok/30 bg-ok/5'">
           <p class="font-medium" :class="taskHasFindings(task) ? 'text-warn' : 'text-ok'">{{ resultSummary(task) }}</p>
-          <details class="mt-2"><summary class="min-h-11 cursor-pointer py-3 text-xs text-text-muted">查看完整执行结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border bg-bg p-3 text-xs">{{ resultDetails(task) }}</pre></details>
+          <details class="mt-2"><summary class="min-h-11 cursor-pointer py-2 text-xs text-text-muted hover:text-text">查看完整执行结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-bg p-3 font-mono text-xs">{{ resultDetails(task) }}</pre></details>
         </div>
 
-        <div class="flex flex-wrap gap-2">
-          <button type="button" :disabled="runsLoading[task.id]" :aria-expanded="Boolean(taskRuns[task.id])" class="inline-flex min-h-11 items-center gap-1.5 border border-border px-3 text-xs font-medium disabled:opacity-50" @click="toggleTaskRuns(task.id)"><Loader2 v-if="runsLoading[task.id]" class="w-3.5 h-3.5 animate-spin" /><FileText v-else class="w-3.5 h-3.5" />{{ runsLoading[task.id] ? '正在读取记录' : taskRuns[task.id] ? '收起执行记录' : runsErrors[task.id] ? '重试读取记录' : '查看执行记录' }}</button>
-          <button v-if="task.status === 'pending' || task.status === 'running'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-11 border border-danger/40 px-3 text-xs font-medium text-danger disabled:opacity-50" @click="cancelTask(task)">{{ actionBusyId === task.id ? '正在提交' : '停止任务' }}</button>
-          <button v-if="task.status === 'failed' || task.status === 'cancelled'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-11 border border-accent px-3 text-xs font-medium text-accent disabled:opacity-50" @click="openRetry(task)">重新执行</button>
+        <div class="flex flex-wrap gap-2 pt-1">
+          <button type="button" :disabled="runsLoading[task.id]" :aria-expanded="Boolean(taskRuns[task.id])" class="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-border/80 bg-surface px-3.5 text-xs font-medium hover:bg-bg-muted disabled:opacity-50 transition-colors" @click="toggleTaskRuns(task.id)"><Loader2 v-if="runsLoading[task.id]" class="w-3.5 h-3.5 animate-spin" /><FileText v-else class="w-3.5 h-3.5" />{{ runsLoading[task.id] ? '正在读取记录' : taskRuns[task.id] ? '收起执行记录' : runsErrors[task.id] ? '重试读取记录' : '查看执行记录' }}</button>
+          <button v-if="task.status === 'pending' || task.status === 'running'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-10 rounded-xl border border-danger/40 px-3.5 text-xs font-medium text-danger hover:bg-danger/5 disabled:opacity-50 transition-colors" @click="cancelTask(task)">{{ actionBusyId === task.id ? '正在提交' : '停止任务' }}</button>
+          <button v-if="task.status === 'failed' || task.status === 'cancelled'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-10 rounded-xl border border-accent px-3.5 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-50 transition-colors" @click="openRetry(task)">重新执行</button>
         </div>
-        <p v-if="taskErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ taskErrors[task.id] }}</p>
-        <p v-if="runsErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ runsErrors[task.id] }}</p>
+        <p v-if="taskErrors[task.id]" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ taskErrors[task.id] }}</p>
+        <p v-if="runsErrors[task.id]" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ runsErrors[task.id] }}</p>
 
-        <div v-if="taskRuns[task.id]" class="border-t border-border pt-4 space-y-3">
+        <div v-if="taskRuns[task.id]" class="border-t border-border/70 pt-4 space-y-3">
           <p v-if="taskRuns[task.id].length === 0" class="text-sm text-text-faint">任务正在等待 worker 创建执行记录。</p>
-          <div v-for="run in taskRuns[task.id]" :key="run.id" class="border border-border/70 bg-bg p-4 text-sm space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-3"><span class="font-medium">第 {{ run.attempt }} 次执行 · {{ statusLabel(run.status) }}</span><span class="font-mono text-xs text-text-muted">{{ Math.round(run.progress) }}%</span></div>
+          <div v-for="run in taskRuns[task.id]" :key="run.id" class="rounded-xl border border-border/60 bg-bg-muted/30 p-4 text-sm space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3"><span class="font-medium text-text">第 {{ run.attempt }} 次执行 · {{ statusLabel(run.status) }}</span><span class="font-mono text-xs text-text-muted">{{ Math.round(run.progress) }}%</span></div>
             <dl class="grid gap-2 text-xs sm:grid-cols-3"><div><dt class="text-text-faint">开始时间</dt><dd class="mt-1 font-mono break-all">{{ formatTime(run.started_at) }}</dd></div><div><dt class="text-text-faint">结束时间</dt><dd class="mt-1 font-mono break-all">{{ run.completed_at ? formatTime(run.completed_at) : '尚未结束' }}</dd></div><div><dt class="text-text-faint">执行耗时</dt><dd class="mt-1 font-mono">{{ formatDuration(run.started_at, run.completed_at) }}</dd></div></dl>
-            <p v-if="run.error" class="border-l-2 border-danger bg-danger/5 p-3 text-xs text-danger">{{ userError(run.error) }}</p>
+            <p v-if="run.error" class="rounded-lg border border-danger/30 bg-danger/5 p-3 text-xs text-danger">{{ userError(run.error) }}</p>
             <ol v-if="run.logs?.length" class="space-y-2 break-words text-xs text-text-muted"><li v-for="(line, index) in run.logs" :key="index" class="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2"><span class="font-mono text-text-faint">{{ index + 1 }}.</span><span>{{ formatLog(line) }}</span></li></ol>
             <p v-else class="text-xs text-text-faint">暂时没有日志；执行中会自动更新。</p>
           </div>
@@ -671,22 +738,22 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       </article>
     </section>
 
-    <section class="space-y-3" aria-labelledby="schedule-heading">
+    <section class="space-y-4" aria-labelledby="schedule-heading">
       <div class="flex items-center justify-between gap-3 px-1">
         <div><div class="flex items-center gap-2"><ListTodo class="w-4 h-4 text-accent" /><h2 id="schedule-heading" class="font-serif font-semibold text-xl text-text">自动任务</h2></div><p class="mt-1 text-xs text-text-faint">系统会按计划执行；也可以随时手动启动一次。</p></div>
         <span class="text-xs font-mono text-text-faint">{{ schedulesLoaded ? `${tasks.length} 个` : '—' }}</span>
       </div>
-      <div v-if="schedulesError" role="alert" class="border-l-2 border-danger bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
-      <div v-else-if="!schedulesLoaded" role="status" class="flex items-center justify-center gap-2 p-8 border border-border bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取自动任务</div>
-      <div v-else-if="tasks.length === 0" class="p-8 border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
-      <article v-for="task in tasks" :key="task.id" class="p-5 border border-border bg-surface shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+      <div v-if="schedulesError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
+      <div v-else-if="!schedulesLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取自动任务</div>
+      <div v-else-if="tasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
+      <article v-for="task in tasks" :key="task.id" class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs hover:shadow-card hover:border-border-strong transition-all duration-200 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
         <div class="space-y-3 min-w-0">
-          <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="activeExecution(task) ? 'bg-warn animate-pulse' : { 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2 py-0.5 bg-accent-soft text-xs font-medium text-accent">{{ frequencyLabel(task.cron_expr) }}</span></div>
-          <div><strong class="text-sm text-text">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>
+          <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="activeExecution(task) ? 'bg-warn animate-pulse' : { 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2.5 py-0.5 rounded-full bg-accent-soft text-xs font-medium text-accent border border-accent/20">{{ frequencyLabel(task.cron_expr) }}</span></div>
+          <div><strong class="text-sm text-text font-medium">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>
           <div class="flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-faint"><span>最近启动：{{ formatTime(task.last_run_at) }}</span><span v-if="task.next_run_at">下次：{{ formatTime(task.next_run_at) }}</span><span v-if="activeExecution(task)" class="font-semibold text-warn">本次：{{ statusLabel(activeExecution(task)?.status || '') }} · {{ Math.round(activeExecution(task)?.progress || 0) }}%</span><span v-if="task.error" class="text-danger">{{ userError(task.error) }}</span></div>
-          <p v-if="scheduleErrors[task.id]" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ scheduleErrors[task.id] }}</p>
+          <p v-if="scheduleErrors[task.id]" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ scheduleErrors[task.id] }}</p>
         </div>
-        <button type="button" @click="runTask(task)" :disabled="Boolean(executingId) || Boolean(activeExecution(task))" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 border border-accent bg-bg text-sm font-medium text-accent disabled:opacity-50">
+        <button type="button" @click="runTask(task)" :disabled="Boolean(executingId) || Boolean(activeExecution(task))" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 rounded-xl border border-accent/80 bg-surface hover:bg-accent hover:text-accent-contrast text-sm font-medium text-accent shadow-xs disabled:opacity-50 transition-all duration-200">
           <Loader2 v-if="executingId === task.id || activeExecution(task)" class="w-4 h-4 animate-spin" /><Play v-else class="w-4 h-4" /><span>{{ executingId === task.id ? '正在创建执行' : activeExecution(task)?.status === 'pending' ? '等待执行' : activeExecution(task) ? `执行中 ${Math.round(activeExecution(task)?.progress || 0)}%` : '立即执行' }}</span>
         </button>
       </article>
@@ -697,11 +764,11 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
     <UiDialog v-if="retryTarget" title="重新执行任务" :busy="Boolean(actionBusyId)" @close="closeRetry">
       <form class="space-y-5" @submit.prevent="retryTask">
         <p class="text-sm leading-6 text-text-muted">确认重新执行“{{ taskDefinition(retryTarget.type).label }}”？系统会创建一条新的执行记录。</p>
-        <p v-if="retryTarget.error" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ userError(retryTarget.error) }}</p>
-        <p v-if="retryError" role="alert" class="border-l-2 border-danger bg-danger/5 p-3 text-sm text-danger">{{ retryError }}</p>
-        <div class="flex flex-wrap justify-end gap-2">
-          <button type="button" :disabled="Boolean(actionBusyId)" class="min-h-11 border border-border bg-surface px-5 text-sm disabled:opacity-50" @click="closeRetry">取消</button>
-          <button type="submit" :disabled="Boolean(actionBusyId)" class="inline-flex min-h-11 items-center justify-center gap-2 bg-accent px-5 text-sm text-accent-contrast disabled:opacity-50"><Loader2 v-if="actionBusyId" class="w-4 h-4 animate-spin" />{{ actionBusyId ? '正在加入队列' : '确认重新执行' }}</button>
+        <p v-if="retryTarget.error" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ userError(retryTarget.error) }}</p>
+        <p v-if="retryError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ retryError }}</p>
+        <div class="flex flex-wrap justify-end gap-2.5">
+          <button type="button" :disabled="Boolean(actionBusyId)" class="min-h-11 rounded-xl border border-border/80 bg-surface hover:bg-bg-muted px-5 text-sm font-medium disabled:opacity-50 transition-colors" @click="closeRetry">取消</button>
+          <button type="submit" :disabled="Boolean(actionBusyId)" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-accent hover:bg-accent-strong px-5 text-sm text-accent-contrast font-medium disabled:opacity-50 shadow-xs transition-colors"><Loader2 v-if="actionBusyId" class="w-4 h-4 animate-spin" />{{ actionBusyId ? '正在加入队列' : '确认重新执行' }}</button>
         </div>
       </form>
     </UiDialog>
@@ -713,5 +780,24 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
 .task-list-end { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-faint); }
 .task-list-end span { font: 700 10px/1.4 "SFMono-Regular", Consolas, monospace; letter-spacing: .14em; }
 .task-list-end strong { font-size: 12px; font-weight: 500; }
+@keyframes progress-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.progress-streamer {
+  background: linear-gradient(90deg, var(--accent) 0%, #e08b6e 50%, var(--accent) 100%);
+  background-size: 200% 100%;
+  animation: progress-shimmer 2.5s ease-in-out infinite;
+}
+.progress-streamer-warn {
+  background: linear-gradient(90deg, var(--warn) 0%, #d49e52 50%, var(--warn) 100%);
+  background-size: 200% 100%;
+  animation: progress-shimmer 2.5s ease-in-out infinite;
+}
+.progress-streamer-danger {
+  background: linear-gradient(90deg, var(--danger) 0%, #d96e6e 50%, var(--danger) 100%);
+  background-size: 200% 100%;
+  animation: progress-shimmer 2.5s ease-in-out infinite;
+}
 @media (max-width: 639px) { .task-center-page { padding-bottom: 6rem; } .task-list-end { align-items: flex-start; flex-direction: column; gap: 6px; } }
 </style>

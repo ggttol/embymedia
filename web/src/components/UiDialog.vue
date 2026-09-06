@@ -70,13 +70,17 @@ onBeforeUnmount(() => {
   padding: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 16px 64px rgb(29 36 31 / 22%);
+  box-shadow: 0 24px 48px -12px rgba(31, 30, 29, 0.18), 0 8px 24px -4px rgba(31, 30, 29, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
-.ui-dialog::backdrop { background: rgb(29 36 31 / 48%); }
+.ui-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
 .ui-dialog-header {
   position: sticky;
   top: 0;
@@ -85,13 +89,44 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 20px;
+  padding: 18px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
-.ui-dialog-header h2 { margin: 0; font: 600 22px/1.4 "Songti SC", "STSong", serif; overflow-wrap: anywhere; }
-.ui-dialog-header button { display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; border: 1px solid var(--border); border-radius: 4px; }
-.ui-dialog-header button:disabled { opacity: .45; cursor: wait; }
-.ui-dialog-header svg { width: 18px; height: 18px; }
-.ui-dialog-content { padding: 20px; }
+.ui-dialog-header h2 {
+  margin: 0;
+  font: 600 20px/1.4 "Songti SC", "STSong", serif;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.ui-dialog-header button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-muted);
+  color: var(--text-secondary);
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ui-dialog-header button:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+.ui-dialog-header button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+.ui-dialog-header svg {
+  width: 16px;
+  height: 16px;
+}
+.ui-dialog-content {
+  padding: 24px;
+}
 </style>

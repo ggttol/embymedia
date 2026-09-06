@@ -308,16 +308,16 @@ onMounted(() => {
 
 <template>
   <div class="files-view space-y-6">
-    <header class="space-y-4 pb-6 border-b border-border">
+    <header class="space-y-4 pb-6 border-b border-border/80">
       <div>
-        <h1 class="font-serif text-2xl font-bold text-text">115 网盘文件管理</h1>
-        <p class="text-sm text-text-muted mt-1">切换账号浏览目录，将分享链接转存到当前目录，或选择文件进行移动、重命名和删除。</p>
+        <h1 class="font-serif text-2xl sm:text-3xl font-bold text-text tracking-tight">115 网盘文件管理</h1>
+        <p class="text-sm text-text-muted mt-1.5 leading-relaxed">切换账号浏览目录，将分享链接转存到当前目录，或选择文件进行移动、重命名和删除。</p>
       </div>
       <div class="flex flex-wrap items-center gap-3">
-        <div class="flex items-center gap-2 rounded-lg border border-border bg-surface px-3 min-w-0 max-w-full">
+        <div class="flex items-center gap-2 rounded-xl border border-border/80 bg-surface px-3 min-w-0 max-w-full shadow-xs">
           <Users class="w-4 h-4 shrink-0 text-text-muted" aria-hidden="true" />
-          <label for="files-account" class="text-sm shrink-0">账号</label>
-          <select id="files-account" v-model="currentAccountId" :disabled="busy || !!accountsError || !accounts.length" class="min-w-0 bg-transparent text-sm" @change="changeAccount">
+          <label for="files-account" class="text-xs font-mono font-medium text-text-muted shrink-0 uppercase tracking-wider">账号</label>
+          <select id="files-account" v-model="currentAccountId" :disabled="busy || !!accountsError || !accounts.length" class="min-w-0 bg-transparent text-sm font-medium text-text focus:outline-none" @change="changeAccount">
             <option v-if="accountsLoading" value="">正在读取账号…</option>
             <option v-else-if="accountsError" value="">账号状态未知</option>
             <option v-else-if="!accounts.length" value="">尚未添加账号</option>
@@ -325,18 +325,18 @@ onMounted(() => {
           </select>
         </div>
         <button type="button" :disabled="busy" class="file-button" @click="accountError = ''; showAccountModal = true"><UserPlus class="w-4 h-4" aria-hidden="true" />添加账号</button>
-        <button v-if="currentAccountId && !accountsError" type="button" :disabled="busy" class="file-button text-danger" @click="deleteCurrentAccount"><UserMinus class="w-4 h-4" aria-hidden="true" />移除账号</button>
+        <button v-if="currentAccountId && !accountsError" type="button" :disabled="busy" class="file-button text-danger border-danger/30 hover:border-danger" @click="deleteCurrentAccount"><UserMinus class="w-4 h-4" aria-hidden="true" />移除账号</button>
         <button type="button" :disabled="busy || !currentAccountId || !!accountsError || !!filesError" class="file-button" @click="folderError = ''; showNewFolderModal = true"><FolderPlus class="w-4 h-4" aria-hidden="true" />新建文件夹</button>
-        <button type="button" :disabled="busy || !currentAccountId || !!accountsError || !!filesError" class="file-button text-accent border-accent/40" @click="openShareTransfer"><Link2 class="w-4 h-4" aria-hidden="true" />转存分享</button>
+        <button type="button" :disabled="busy || !currentAccountId || !!accountsError || !!filesError" class="file-button text-accent border-accent/40 hover:border-accent" @click="openShareTransfer"><Link2 class="w-4 h-4" aria-hidden="true" />转存分享</button>
         <button type="button" :disabled="busy || !currentAccountId || !!accountsError" class="file-button" @click="fetchFiles"><RefreshCw class="w-4 h-4" :class="{ 'animate-spin': loading }" aria-hidden="true" />刷新目录</button>
       </div>
       <p v-if="accountSuccess" role="status" class="text-sm text-accent break-words">{{ accountSuccess }}</p>
       <p v-if="accountActionError" role="alert" class="text-sm text-danger break-words">移除账号失败：{{ accountActionError }} 请重试移除操作。</p>
     </header>
 
-    <section v-if="Object.keys(cidMap).length || mapError" aria-label="分类目录" class="p-4 rounded-xl border border-border bg-surface space-y-3">
+    <section v-if="Object.keys(cidMap).length || mapError" aria-label="分类目录" class="p-4 rounded-2xl border border-border/70 bg-surface shadow-xs space-y-3">
       <div v-if="Object.keys(cidMap).length" class="flex items-center gap-2 flex-wrap">
-        <h2 class="text-sm text-text-muted">分类目录</h2>
+        <h2 class="text-xs font-mono uppercase tracking-wider text-text-muted font-semibold">分类目录</h2>
         <button v-for="(cid, name) in cidMap" :key="name" type="button" :disabled="busy || !currentAccountId || !!accountsError" class="file-button" :class="currentCid === cid ? 'border-accent text-accent bg-accent-soft' : ''" @click="jumpToCid(String(name), cid)">{{ name }}</button>
       </div>
       <div v-if="mapError" class="space-y-2">
@@ -345,21 +345,21 @@ onMounted(() => {
       </div>
     </section>
 
-    <section aria-label="当前目录" class="p-4 rounded-xl border border-border bg-surface space-y-3">
+    <section aria-label="当前目录" class="p-4 rounded-2xl border border-border/70 bg-surface shadow-xs space-y-3">
       <nav aria-label="目录路径" class="flex items-start gap-2 text-sm text-text-muted">
         <HardDrive class="w-4 h-4 mt-3.5 text-accent shrink-0" aria-hidden="true" />
         <ol class="flex items-center flex-wrap min-w-0">
           <li v-for="(item, index) in breadcrumbs" :key="index" class="flex items-center min-w-0">
-            <span v-if="index" class="px-2" aria-hidden="true">/</span>
-            <button type="button" :disabled="busy || !currentAccountId || !!accountsError" :aria-current="index === breadcrumbs.length - 1 ? 'location' : undefined" class="px-1 text-left break-all hover:text-accent" @click="navigateToBreadcrumb(index)">{{ item.name }}</button>
+            <span v-if="index" class="px-2 text-text-faint" aria-hidden="true">/</span>
+            <button type="button" :disabled="busy || !currentAccountId || !!accountsError" :aria-current="index === breadcrumbs.length - 1 ? 'location' : undefined" class="px-1 text-left break-all font-medium transition-colors hover:text-accent" :class="index === breadcrumbs.length - 1 ? 'text-text font-semibold' : 'text-text-muted'" @click="navigateToBreadcrumb(index)">{{ item.name }}</button>
           </li>
         </ol>
       </nav>
-      <p v-if="currentAccountId && !accountsError" class="text-sm text-text-muted break-words">{{ accountName }} · CID: {{ currentCid }}</p>
+      <p v-if="currentAccountId && !accountsError" class="text-xs font-mono text-text-faint break-words">{{ accountName }} · CID: {{ currentCid }}</p>
       <p v-if="success" role="status" class="text-sm text-accent break-words">{{ success }}</p>
     </section>
 
-    <section aria-label="文件列表" :aria-busy="loading || accountsLoading" class="rounded-xl border border-border bg-surface overflow-hidden shadow-sm">
+    <section aria-label="文件列表" :aria-busy="loading || accountsLoading" class="rounded-2xl border border-border/70 bg-surface overflow-hidden shadow-xs">
       <div v-if="accountsLoading" role="status" class="p-8 text-center text-sm text-text-muted">正在读取账号…</div>
       <div v-else-if="accountsError" class="p-6 space-y-3">
         <h2 class="text-lg font-semibold">无法确认账号状态</h2>
@@ -383,18 +383,18 @@ onMounted(() => {
         <p class="text-sm text-text-muted">可将 115 分享转存到这里、新建文件夹，或切换到其他目录。</p>
       </div>
       <template v-else>
-        <div class="flex items-center justify-between gap-3 px-4 border-b border-border">
-          <label class="inline-flex items-center min-h-11 gap-3 text-sm cursor-pointer"><input type="checkbox" :checked="allSelected" :indeterminate="partlySelected" :disabled="busy" aria-label="选择当前目录全部项目" @change="toggleAll" />全选当前目录</label>
-          <span class="text-sm text-text-muted">{{ files.length }} 个项目</span>
+        <div class="flex items-center justify-between gap-3 px-4 border-b border-border/60 bg-bg-muted/30">
+          <label class="inline-flex items-center min-h-11 gap-3 text-xs font-mono font-medium uppercase tracking-wider text-text-muted cursor-pointer"><input type="checkbox" :checked="allSelected" :indeterminate="partlySelected" :disabled="busy" aria-label="选择当前目录全部项目" @change="toggleAll" />全选当前目录</label>
+          <span class="text-xs font-mono text-text-faint">{{ files.length }} 个项目</span>
         </div>
         <table class="desktop-files w-full text-left text-sm table-fixed">
-          <thead class="border-b border-border bg-bg-muted/50 text-text-muted"><tr><th scope="col" class="w-16"><span class="sr-only">选择</span></th><th scope="col" class="p-3">名称</th><th scope="col" class="p-3 w-28">大小</th><th scope="col" class="p-3 w-32">修改日期</th><th scope="col" class="p-3 w-28 text-right">操作</th></tr></thead>
-          <tbody class="divide-y divide-border/60">
-            <tr v-for="file in files" :key="fileId(file)" :class="selectedFiles.has(fileId(file)) ? 'bg-accent-soft/30' : 'hover:bg-bg-muted/30'">
+          <thead class="border-b border-border/60 bg-bg-muted/40 text-[11px] font-mono uppercase tracking-wider text-text-muted"><tr><th scope="col" class="w-16"><span class="sr-only">选择</span></th><th scope="col" class="p-3 font-semibold text-text-muted">名称</th><th scope="col" class="p-3 w-28 font-semibold text-text-muted">大小</th><th scope="col" class="p-3 w-32 font-semibold text-text-muted">修改日期</th><th scope="col" class="p-3 w-28 text-right font-semibold text-text-muted">操作</th></tr></thead>
+          <tbody class="divide-y divide-border/40">
+            <tr v-for="file in files" :key="fileId(file)" :class="selectedFiles.has(fileId(file)) ? 'bg-accent-soft/30' : 'hover:bg-bg-muted/30 transition-colors'">
               <td class="px-2"><label class="file-selection"><input type="checkbox" :disabled="busy" :checked="selectedFiles.has(fileId(file))" :aria-label="`选择 ${file.name}`" @change="toggleSelection(fileId(file))" /></label></td>
-              <td class="p-3"><div class="flex items-center gap-3 min-w-0"><Folder v-if="file.is_folder" class="w-5 h-5 shrink-0 text-accent" aria-hidden="true" /><File v-else class="w-5 h-5 shrink-0 text-text-muted" aria-hidden="true" /><button v-if="file.is_folder" type="button" :disabled="busy" class="text-left break-all text-text hover:text-accent" @click="enterFolder(file)">{{ file.name }}</button><span v-else class="break-all">{{ file.name }}</span></div></td>
-              <td class="p-3 text-text-muted">{{ fileSize(file) }}</td><td class="p-3 text-text-muted">{{ fileDate(file) }}</td>
-              <td class="p-2"><div class="flex justify-end"><button type="button" :disabled="busy" class="file-icon-button text-text-muted hover:text-accent" :aria-label="`重命名 ${file.name}`" @click="openOperation('rename', file)"><Edit2 class="w-4 h-4" aria-hidden="true" /></button><button type="button" :disabled="busy" class="file-icon-button text-danger" :aria-label="`删除 ${file.name}`" @click="openOperation('delete', file)"><Trash2 class="w-4 h-4" aria-hidden="true" /></button></div></td>
+              <td class="p-3"><div class="flex items-center gap-3 min-w-0"><Folder v-if="file.is_folder" class="w-5 h-5 shrink-0 text-accent" aria-hidden="true" /><File v-else class="w-5 h-5 shrink-0 text-text-muted" aria-hidden="true" /><button v-if="file.is_folder" type="button" :disabled="busy" class="text-left break-all text-text hover:text-accent font-medium transition-colors" @click="enterFolder(file)">{{ file.name }}</button><span v-else class="break-all">{{ file.name }}</span></div></td>
+              <td class="p-3 text-xs font-mono text-text-muted">{{ fileSize(file) }}</td><td class="p-3 text-xs font-mono text-text-muted">{{ fileDate(file) }}</td>
+              <td class="p-2"><div class="flex justify-end gap-1"><button type="button" :disabled="busy" class="file-icon-button text-text-muted hover:text-accent" :aria-label="`重命名 ${file.name}`" @click="openOperation('rename', file)"><Edit2 class="w-4 h-4" aria-hidden="true" /></button><button type="button" :disabled="busy" class="file-icon-button text-danger/80 hover:text-danger" :aria-label="`删除 ${file.name}`" @click="openOperation('delete', file)"><Trash2 class="w-4 h-4" aria-hidden="true" /></button></div></td>
             </tr>
           </tbody>
         </table>
@@ -413,68 +413,68 @@ onMounted(() => {
       </template>
     </section>
 
-    <section v-if="selectedFiles.size" aria-label="批量操作" class="action-dock sticky z-20 rounded-xl border border-accent bg-surface p-4 shadow-lg space-y-3">
-      <div class="flex flex-wrap items-center justify-between gap-2"><p role="status" class="text-sm font-semibold">已选择 {{ selectedFiles.size }} 个项目 · {{ accountName }}</p><button type="button" :disabled="busy" class="file-button" @click="selectedFiles.clear()">取消选择</button></div>
+    <section v-if="selectedFiles.size" aria-label="批量操作" class="action-dock sticky z-20 rounded-2xl border border-accent/40 bg-surface/95 backdrop-blur-md p-4 shadow-lg space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2"><p role="status" class="text-sm font-semibold text-text">已选择 {{ selectedFiles.size }} 个项目 · {{ accountName }}</p><button type="button" :disabled="busy" class="file-button" @click="selectedFiles.clear()">取消选择</button></div>
       <div class="flex flex-wrap items-end gap-3">
-        <div class="min-w-0 flex-1"><label for="files-move-target" class="block text-sm text-text-muted mb-1">移动到当前账号的目录</label><select id="files-move-target" v-model="moveTargetCid" :disabled="busy" class="w-full rounded-lg border border-border bg-bg px-3 text-sm"><option value="0">根目录（CID: 0）</option><option v-for="(cid, name) in cidMap" :key="name" :value="cid">{{ name }}（CID: {{ cid }}）</option></select></div>
-        <button type="button" :disabled="busy || !moveTargetCid || moveTargetCid === currentCid" class="file-button text-accent" @click="openOperation('move')"><FolderInput class="w-4 h-4" aria-hidden="true" />移动所选</button>
-        <button type="button" :disabled="busy" class="file-button text-danger border-danger/30" @click="openOperation('delete')"><Trash2 class="w-4 h-4" aria-hidden="true" />删除所选</button>
+        <div class="min-w-0 flex-1"><label for="files-move-target" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-1.5 font-medium">移动到当前账号的目录</label><select id="files-move-target" v-model="moveTargetCid" :disabled="busy" class="w-full rounded-xl border border-border/80 bg-bg px-3 text-sm focus:border-accent focus:outline-none"><option value="0">根目录（CID: 0）</option><option v-for="(cid, name) in cidMap" :key="name" :value="cid">{{ name }}（CID: {{ cid }}）</option></select></div>
+        <button type="button" :disabled="busy || !moveTargetCid || moveTargetCid === currentCid" class="file-button text-accent border-accent/40 hover:border-accent" @click="openOperation('move')"><FolderInput class="w-4 h-4" aria-hidden="true" />移动所选</button>
+        <button type="button" :disabled="busy" class="file-button text-danger border-danger/30 hover:border-danger" @click="openOperation('delete')"><Trash2 class="w-4 h-4" aria-hidden="true" />删除所选</button>
       </div>
-      <p v-if="moveTargetCid === currentCid" class="text-sm text-text-muted">请选择与当前目录不同的移动目标。</p>
+      <p v-if="moveTargetCid === currentCid" class="text-xs text-text-muted">请选择与当前目录不同的移动目标。</p>
     </section>
 
     <UiDialog v-if="showShareModal" title="转存 115 分享" :busy="shareBusy" @close="showShareModal = false">
       <form class="space-y-4" @submit.prevent="saveSharedContent">
-        <div class="rounded-lg border border-border bg-bg p-4">
-          <p class="text-xs text-text-muted">转存位置</p>
-          <p class="mt-1 text-sm font-semibold break-words">{{ accountName }} / {{ directoryName }}</p>
-          <p class="mt-1 text-xs text-text-faint break-all">目录 CID：{{ currentCid }}</p>
+        <div class="rounded-xl border border-border/70 bg-bg-muted/50 p-4">
+          <p class="text-xs font-mono uppercase tracking-wider text-text-muted">转存位置</p>
+          <p class="mt-1 text-sm font-semibold break-words text-text">{{ accountName }} / {{ directoryName }}</p>
+          <p class="mt-1 text-xs font-mono text-text-faint break-all">目录 CID：{{ currentCid }}</p>
         </div>
         <div>
-          <label for="share-transfer-url" class="block mb-2 text-sm">115 分享链接</label>
-          <input id="share-transfer-url" v-model="shareForm.url" :disabled="shareBusy" type="text" inputmode="url" autocomplete="off" required autofocus placeholder="https://115.com/s/..." class="w-full rounded-lg border border-border bg-bg px-3 text-sm" :aria-invalid="!!shareError" :aria-describedby="shareError ? 'share-transfer-error' : 'share-transfer-help'" />
+          <label for="share-transfer-url" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">115 分享链接</label>
+          <input id="share-transfer-url" v-model="shareForm.url" :disabled="shareBusy" type="text" inputmode="url" autocomplete="off" required autofocus placeholder="https://115.com/s/..." class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" :aria-invalid="!!shareError" :aria-describedby="shareError ? 'share-transfer-error' : 'share-transfer-help'" />
           <p id="share-transfer-help" class="mt-2 text-xs text-text-muted">支持 115.com 与 115cdn.com 分享链接。链接已包含提取码时，下方可以留空。</p>
         </div>
         <div>
-          <label for="share-transfer-password" class="block mb-2 text-sm">提取码（可选）</label>
-          <input id="share-transfer-password" v-model="shareForm.password" :disabled="shareBusy" type="text" autocomplete="off" maxlength="128" class="w-full rounded-lg border border-border bg-bg px-3 text-sm font-mono" />
+          <label for="share-transfer-password" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">提取码（可选）</label>
+          <input id="share-transfer-password" v-model="shareForm.password" :disabled="shareBusy" type="text" autocomplete="off" maxlength="128" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" />
         </div>
         <p v-if="shareError" id="share-transfer-error" role="alert" class="text-sm text-danger break-words">转存失败：{{ shareError }}</p>
-        <div class="flex flex-wrap justify-end gap-2">
+        <div class="flex flex-wrap justify-end gap-2 pt-2">
           <button type="button" :disabled="shareBusy" class="file-button" @click="showShareModal = false">取消</button>
-          <button type="submit" :disabled="shareBusy || !shareForm.url.trim()" class="file-button bg-accent text-accent-contrast"><Loader2 v-if="shareBusy" class="w-4 h-4 animate-spin" aria-hidden="true" />{{ shareBusy ? '正在转存…' : '转存到当前目录' }}</button>
+          <button type="submit" :disabled="shareBusy || !shareForm.url.trim()" class="file-button bg-accent text-accent-contrast hover:bg-accent-strong"><Loader2 v-if="shareBusy" class="w-4 h-4 animate-spin" aria-hidden="true" />{{ shareBusy ? '正在转存…' : '转存到当前目录' }}</button>
         </div>
       </form>
     </UiDialog>
 
     <UiDialog v-if="showNewFolderModal" title="新建文件夹" :busy="folderBusy" @close="showNewFolderModal = false">
       <form class="space-y-4" @submit.prevent="createFolder">
-        <p class="text-sm text-text-muted break-words">创建位置：{{ accountName }} / {{ directoryName }}（CID: {{ currentCid }}）</p>
-        <div><label for="new-folder-name" class="block mb-2 text-sm">文件夹名称</label><input id="new-folder-name" v-model="newFolderName" :disabled="folderBusy" required autofocus class="w-full px-3 rounded-lg border border-border bg-bg text-sm" :aria-invalid="!!folderError" :aria-describedby="folderError ? 'folder-error' : undefined" /></div>
+        <p class="text-xs font-mono text-text-muted break-words">创建位置：{{ accountName }} / {{ directoryName }}（CID: {{ currentCid }}）</p>
+        <div><label for="new-folder-name" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">文件夹名称</label><input id="new-folder-name" v-model="newFolderName" :disabled="folderBusy" required autofocus class="w-full px-3.5 rounded-xl border border-border/80 bg-bg text-sm focus:border-accent focus:outline-none" :aria-invalid="!!folderError" :aria-describedby="folderError ? 'folder-error' : undefined" /></div>
         <p v-if="folderError" id="folder-error" role="alert" class="text-sm text-danger break-words">创建文件夹失败：{{ folderError }}</p>
-        <div class="flex justify-end gap-2"><button type="button" :disabled="folderBusy" class="file-button" @click="showNewFolderModal = false">取消</button><button type="submit" :disabled="folderBusy" class="file-button bg-accent text-accent-contrast">{{ folderBusy ? '正在创建…' : '创建文件夹' }}</button></div>
+        <div class="flex justify-end gap-2 pt-2"><button type="button" :disabled="folderBusy" class="file-button" @click="showNewFolderModal = false">取消</button><button type="submit" :disabled="folderBusy" class="file-button bg-accent text-accent-contrast hover:bg-accent-strong">{{ folderBusy ? '正在创建…' : '创建文件夹' }}</button></div>
       </form>
     </UiDialog>
 
     <UiDialog v-if="showAccountModal" title="添加 115 账号" :busy="accountBusy" @close="showAccountModal = false">
       <form class="space-y-4" @submit.prevent="createAccount">
-        <div><label for="account-name" class="block mb-2 text-sm">账号名称</label><input id="account-name" v-model="newAccount.name" :disabled="accountBusy" required autofocus class="w-full rounded-lg border border-border bg-bg px-3 text-sm" /></div>
-        <div><label for="account-cookie" class="block mb-2 text-sm">浏览器 Cookie</label><input id="account-cookie" v-model="newAccount.cookie" :disabled="accountBusy" type="password" autocomplete="new-password" required class="w-full rounded-lg border border-border bg-bg px-3 text-sm font-mono" /></div>
-        <label class="inline-flex min-h-11 items-center gap-3 text-sm"><input v-model="newAccount.is_default" :disabled="accountBusy" type="checkbox" />设为默认账号</label>
+        <div><label for="account-name" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">账号名称</label><input id="account-name" v-model="newAccount.name" :disabled="accountBusy" required autofocus class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+        <div><label for="account-cookie" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">浏览器 Cookie</label><input id="account-cookie" v-model="newAccount.cookie" :disabled="accountBusy" type="password" autocomplete="new-password" required class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" /></div>
+        <label class="inline-flex min-h-11 items-center gap-3 text-sm text-text cursor-pointer"><input v-model="newAccount.is_default" :disabled="accountBusy" type="checkbox" class="accent-accent" />设为默认账号</label>
         <p v-if="accountError" role="alert" class="text-sm text-danger break-words">添加账号失败：{{ accountError }}</p>
-        <div class="flex justify-end gap-2"><button type="button" :disabled="accountBusy" class="file-button" @click="showAccountModal = false">取消</button><button type="submit" :disabled="accountBusy" class="file-button bg-accent text-accent-contrast">{{ accountBusy ? '正在保存…' : '保存账号' }}</button></div>
+        <div class="flex justify-end gap-2 pt-2"><button type="button" :disabled="accountBusy" class="file-button" @click="showAccountModal = false">取消</button><button type="submit" :disabled="accountBusy" class="file-button bg-accent text-accent-contrast hover:bg-accent-strong">{{ accountBusy ? '正在保存…' : '保存账号' }}</button></div>
       </form>
     </UiDialog>
 
     <UiDialog v-if="operation" :title="operationTitle" :busy="operationBusy" @close="operation = null">
       <form class="space-y-4" @submit.prevent="submitOperation">
-        <p class="text-sm break-words">账号：{{ accountName }}<br />当前目录：{{ directoryName }}（CID: {{ currentCid }}）</p>
-        <p class="text-sm">{{ operation.name ? `项目：${operation.name}` : `已选择 ${operation.ids.length} 个项目` }}</p>
-        <p v-if="operation.kind === 'move'" class="text-sm break-words">将 {{ operation.ids.length }} 个项目移动到「{{ accountName }} / {{ moveTargetName }}」（CID: {{ moveTargetCid }}）。</p>
-        <p v-if="operation.kind === 'delete'" class="rounded-lg border border-danger/30 bg-danger/5 p-3 text-sm text-danger">删除后，{{ operation.ids.length }} 个项目将从当前目录移入 115 回收站。请确认所选内容；恢复需前往 115 网盘。</p>
-        <div v-if="operation.kind === 'rename'"><label for="file-new-name" class="block mb-2 text-sm">新名称</label><input id="file-new-name" v-model="renameValue" required autofocus :disabled="operationBusy" class="w-full rounded-lg border border-border bg-bg px-3 text-sm" /></div>
+        <p class="text-xs font-mono text-text-muted break-words">账号：{{ accountName }}<br />当前目录：{{ directoryName }}（CID: {{ currentCid }}）</p>
+        <p class="text-sm font-medium text-text">{{ operation.name ? `项目：${operation.name}` : `已选择 ${operation.ids.length} 个项目` }}</p>
+        <p v-if="operation.kind === 'move'" class="text-sm text-text-muted break-words">将 {{ operation.ids.length }} 个项目移动到「{{ accountName }} / {{ moveTargetName }}」（CID: {{ moveTargetCid }}）。</p>
+        <p v-if="operation.kind === 'delete'" class="rounded-xl border border-danger/30 bg-danger/5 p-3.5 text-sm text-danger">删除后，{{ operation.ids.length }} 个项目将从当前目录移入 115 回收站。请确认所选内容；恢复需前往 115 网盘。</p>
+        <div v-if="operation.kind === 'rename'"><label for="file-new-name" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">新名称</label><input id="file-new-name" v-model="renameValue" required autofocus :disabled="operationBusy" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
         <p v-if="operationError" role="alert" class="text-sm text-danger break-words">{{ operationTitle }}失败：{{ operationError }}</p>
-        <div class="flex flex-wrap justify-end gap-2"><button type="button" :disabled="operationBusy" class="file-button" @click="operation = null">取消</button><button type="submit" :disabled="operationBusy || (operation.kind === 'rename' && renameValue.trim() === operation.name)" class="file-button" :class="operation.kind === 'delete' ? 'border-danger text-danger' : 'bg-accent text-accent-contrast'">{{ operationBusy ? '正在处理…' : operation.kind === 'delete' ? `确认删除 ${operation.ids.length} 个项目` : operation.kind === 'move' ? '确认移动' : '保存名称' }}</button></div>
+        <div class="flex flex-wrap justify-end gap-2 pt-2"><button type="button" :disabled="operationBusy" class="file-button" @click="operation = null">取消</button><button type="submit" :disabled="operationBusy || (operation.kind === 'rename' && renameValue.trim() === operation.name)" class="file-button" :class="operation.kind === 'delete' ? 'border-danger/40 text-danger hover:border-danger' : 'bg-accent text-accent-contrast hover:bg-accent-strong'">{{ operationBusy ? '正在处理…' : operation.kind === 'delete' ? `确认删除 ${operation.ids.length} 个项目` : operation.kind === 'move' ? '确认移动' : '保存名称' }}</button></div>
       </form>
     </UiDialog>
   </div>
@@ -483,12 +483,32 @@ onMounted(() => {
 <style scoped>
 .files-view button,
 .files-view select,
-input:not([type='checkbox']) { min-height: 44px; }
+input:not([type='checkbox']) { min-height: 40px; }
 .files-view button:disabled,
 .files-view select:disabled { opacity: 0.5; cursor: not-allowed; }
-.file-button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 4px; font-size: 0.875rem; }
+.file-button {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(31, 30, 29, 0.04);
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.file-button:hover:not(:disabled) {
+  background: var(--bg-muted);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
 .file-icon-button,
-.file-selection { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
+.file-selection { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; border-radius: 0.5rem; transition: all 0.15s ease; }
 .file-selection { cursor: pointer; }
 input[type='checkbox'] { width: 1.125rem; height: 1.125rem; accent-color: var(--accent); }
 .mobile-files { display: none; }
