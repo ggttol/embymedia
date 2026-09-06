@@ -56,6 +56,12 @@ func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T)
 			t.Fatal(err)
 		}
 	}
+	if err := os.Chmod(strmRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(strmRoot, "Movies"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(mediaRoot, ".embymedia-health-canary"), nil, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +99,15 @@ func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T)
 	}
 	if len(progress) == 0 || progress[0] != 5 || progress[len(progress)-1] != 100 || !strings.Contains(strings.Join(messages, "\n"), "removed 1 files") {
 		t.Fatalf("STRM progress did not expose reconciliation phases: progress=%v messages=%v", progress, messages)
+	}
+	for _, directory := range []string{strmRoot, filepath.Join(strmRoot, "Movies")} {
+		info, err := os.Stat(directory)
+		if err != nil {
+			t.Fatalf("read STRM directory permissions: %s: %v", directory, err)
+		}
+		if info.Mode().Perm()&0055 != 0055 {
+			t.Fatalf("STRM directory remained unreadable by Emby: %s mode=%v", directory, info.Mode().Perm())
+		}
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale generated STRM was retained: %v", err)

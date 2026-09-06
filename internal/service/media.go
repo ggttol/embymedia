@@ -55,6 +55,14 @@ func inside(root, path string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
+func ensureReadableDirectory(path string, info fs.FileInfo) error {
+	permissions := info.Mode().Perm()
+	if permissions&0055 == 0055 {
+		return nil
+	}
+	return os.Chmod(path, permissions|0055)
+}
+
 func canonicalRoot(path string, create bool) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -68,6 +76,15 @@ func canonicalRoot(path string, create bool) (string, error) {
 	resolved, err := filepath.EvalSymlinks(absolute)
 	if err != nil {
 		return "", err
+	}
+	if create {
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return "", err
+		}
+		if err := ensureReadableDirectory(resolved, info); err != nil {
+			return "", err
+		}
 	}
 	return resolved, nil
 }
@@ -134,13 +151,16 @@ func safeOutputPath(root, relative string) (string, error) {
 				if err := os.Mkdir(current, 0755); err != nil && !os.IsExist(err) {
 					return "", err
 				}
-				continue
+				info, err = os.Lstat(current)
 			}
 			if err != nil {
 				return "", err
 			}
 			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 				return "", fmt.Errorf("STRM output parent %s is not a real directory", current)
+			}
+			if err := ensureReadableDirectory(current, info); err != nil {
+				return "", err
 			}
 		}
 	}
