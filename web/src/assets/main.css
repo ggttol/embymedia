@@ -56,7 +56,7 @@ body,
 html {
   min-width: 320px;
   overflow-x: hidden;
-  overflow-y: hidden;
+  overflow-y: auto;
   scroll-behavior: smooth;
   background: var(--bg);
 }
@@ -108,8 +108,8 @@ summary:focus-visible {
 .app-shell {
   display: flex;
   width: 100%;
-  height: 100dvh;
-  overflow: hidden;
+  min-height: 100dvh;
+  overflow: visible;
 }
 
 .desktop-rail {
@@ -365,12 +365,9 @@ summary:focus-visible {
 .app-canvas {
   width: calc(100% - var(--rail));
   min-width: 0;
-  height: 100dvh;
+  min-height: 100dvh;
   margin-left: var(--rail);
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior-y: contain;
-  -webkit-overflow-scrolling: touch;
+  overflow: visible;
 }
 
 .desktop-header {
@@ -609,7 +606,7 @@ button:disabled { cursor: not-allowed; }
   .mobile-nav a,
   .mobile-nav button { flex-direction: column; gap: 3px; padding: 4px; }
   .mobile-nav svg { width: 18px; height: 18px; }
-  .app-canvas { scroll-padding-bottom: calc(var(--mobile-nav-height) + 24px); }
+  html { scroll-padding-bottom: calc(var(--mobile-nav-height) + 24px); }
   .view-canvas {
     padding: 20px 16px calc(var(--mobile-nav-height) + 32px);
   }
