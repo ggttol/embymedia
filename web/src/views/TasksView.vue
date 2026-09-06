@@ -51,7 +51,7 @@ interface TaskDefinition {
 
 const taskTypeOrder: TaskType[] = ['emby_refresh', 'emby_missing_posters', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
 const taskDefinitions: Record<TaskType, TaskDefinition> = {
-  emby_refresh: { label: '刷新 Emby 媒体库', description: '全库刷新会跟踪 Emby 的真实扫描进度直到结束；指定媒体库刷新会记录 Emby 已接受请求。', defaultName: '每日刷新媒体库' },
+  emby_refresh: { label: '同步媒体并刷新 Emby', description: '先把网盘视频同步为 STRM，再跟踪 Emby 全库扫描直到结束；指定媒体库 ID 时只提交该库刷新。', defaultName: '每日同步媒体并刷新 Emby' },
   emby_missing_posters: { label: '检查缺失海报', description: '找出没有主海报的 Emby 条目，结果会保存在执行记录中。', defaultName: '每日检查缺失海报' },
   emby_match: { label: '修正媒体匹配', description: '把一个 Emby 条目明确匹配到指定 TMDB 条目。', defaultName: '修正媒体匹配' },
   strm_sync: { label: '同步 STRM 文件', description: '根据媒体源目录创建或更新 STRM 文件。', defaultName: '每日同步 STRM' },
@@ -164,9 +164,9 @@ function taskHasFindings(task: AsyncTask) {
   const result = resultRecord(task)
   if (!result) return false
   if (task.type === 'emby_missing_posters') return Number(result.total_missing ?? result.returned ?? 0) > 0
-  if (task.type === 'strm_sync' || task.type === 'strm_verify') {
+  if (task.type === 'strm_sync' || task.type === 'strm_verify' || task.type === 'emby_refresh') {
     const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
-    return Number(strm?.missing || 0) > 0 || Number(strm?.invalid || 0) > 0
+    if (Number(strm?.missing || 0) > 0 || Number(strm?.invalid || 0) > 0) return true
   }
   return false
 }
@@ -179,10 +179,13 @@ function resultSummary(task: AsyncTask) {
   const result = resultRecord(task)
   if (!result) return task.result ? '任务返回了文本结果。' : ''
   switch (task.type) {
-    case 'emby_refresh':
+    case 'emby_refresh': {
+      const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
+      const synchronized = strm ? `STRM 新建 ${Number(strm.created || 0)}、更新 ${Number(strm.updated || 0)}、清理 ${Number(strm.removed || 0)}；` : ''
       return result.completion_tracked === true
-        ? `Emby 全库扫描已完成 · ${formatDuration(String(result.started_at || ''), String(result.completed_at || ''))}`
-        : 'Emby 已接受刷新请求；该范围不提供后台完成状态。'
+        ? `${synchronized}Emby 全库扫描已完成 · ${formatDuration(String(result.started_at || ''), String(result.completed_at || ''))}`
+        : 'Emby 已接受指定媒体库刷新；该范围不提供后台完成状态。'
+    }
     case 'emby_missing_posters': {
       const total = Number(result.total_missing ?? result.returned ?? 0)
       const returned = Number(result.returned || 0)
@@ -226,7 +229,7 @@ function userError(error?: string) {
 
 function taskSummary(type: string, payload: Record<string, unknown> = {}) {
   switch (type) {
-    case 'emby_refresh': return payload.library_id ? `媒体库 ID：${payload.library_id}` : '范围：全部 Emby 媒体库'
+    case 'emby_refresh': return payload.library_id ? `媒体库 ID：${payload.library_id}` : '范围：全部媒体源与 Emby 媒体库'
     case 'emby_missing_posters': return '范围：全部 Emby 媒体条目'
     case 'emby_match': return `Emby 条目 ${payload.item_id || '未填写'} → TMDB ${payload.tmdb_id || '未填写'}`
     case 'strm_sync': return payload.library ? `媒体目录：${payload.library}` : '范围：全部已配置媒体目录'

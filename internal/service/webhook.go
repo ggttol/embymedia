@@ -12,7 +12,7 @@ import (
 
 const defaultWebhookDebounce = 5 * time.Second
 
-// CloudDriveWebhookService debounces CloudDrive2 changes into one real Emby refresh task.
+// CloudDriveWebhookService debounces CloudDrive2 changes into one ordered STRM and Emby ingestion task.
 type CloudDriveWebhookService struct {
 	db    *storage.DB
 	queue *TaskQueueService
@@ -66,7 +66,7 @@ func (s *CloudDriveWebhookService) flush() {
 	s.timer = nil
 	s.mu.Unlock()
 	if _, err := s.queue.Enqueue("emby_refresh", map[string]any{"change_count": count}); err != nil {
-		log.Printf("enqueue CloudDrive webhook refresh: %v", err)
+		log.Printf("enqueue CloudDrive webhook ingestion: %v", err)
 	}
 }
 

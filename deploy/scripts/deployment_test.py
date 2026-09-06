@@ -103,7 +103,7 @@ elif command in ('embymedia', 'embymedia-linux-amd64'):
         assert database.parent.stat().st_mode & 0o700 == 0o700
     if '-bootstrap-webhook-secret-file' in args:
         secret = p(args[args.index('-bootstrap-webhook-secret-file') + 1])
-        assert secret.read_text() == 'webhook-secret'
+        assert secret.read_text().strip() == 'webhook-secret'
         assert secret.stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(database) as connection:
         connection.execute('create table if not exists deployment_probe (value text)')
@@ -174,7 +174,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         (self.root / 'run/lock').mkdir(parents=True)
         secrets = self.root / 'etc/embymedia/secrets'
         secrets.mkdir(parents=True)
-        (secrets / 'clouddrive-webhook-secret').write_text('webhook-secret')
+        (secrets / 'clouddrive-webhook-secret').write_text('webhook-secret\n')
         (secrets / 'restic-local-password').write_text('backup-secret')
         self.login = self.root / 'srv/embymedia/data/auth/http-login.json'
         self.login.parent.mkdir(parents=True)
@@ -214,6 +214,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         for name, state in self.initial_services.items():
             self.assertEqual(services[name], state, name)
         self.assertEqual(json.loads(self.login.read_text()), self.identity)
+        self.assertFalse((self.login.parent.parent / 'clouddrive/config/webhooks/webhook.toml').exists())
 
     def test_fresh_database_uses_service_identity(self):
         self.current.unlink()
@@ -232,6 +233,9 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.assertEqual(self.current.resolve().parent.stat().st_mode & 0o005, 0o005)
         self.assertEqual(self.current.resolve().name, 'new')
         self.assertEqual(list(database.parent.glob('.webhook-secret-*')), [])
+        webhook = self.login.parent.parent / 'clouddrive/config/webhooks/webhook.toml'
+        self.assertEqual(webhook.read_text(), '[file_system_watcher]\nenabled = true\nurl = "http://host.docker.internal/hooks/clouddrive2?key=webhook-secret"\nmethod = "POST"\n')
+        self.assertEqual(webhook.stat().st_mode & 0o777, 0o600)
 
     def test_database_failure_restarts_previous_service(self):
         self.assert_recovered(self.install(FAIL_COMMAND='embymedia -check-db'))

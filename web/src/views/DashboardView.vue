@@ -35,7 +35,7 @@ const serviceExceptions = computed(() => [
 ])
 const taskStatus = (status: string) => ({ running: '运行中', failed: '失败', pending: '等待中', completed: '已完成', paused: '已暂停', idle: '空闲', cancelled: '已取消' }[status] ?? '未知状态')
 const taskDefinition = (type: string) => ({
-  emby_refresh: ['刷新 Emby 媒体库', '让 Emby 重新扫描媒体库并更新可见内容。'],
+  emby_refresh: ['同步媒体并刷新 Emby', '先生成和校验 STRM，再跟踪 Emby 全库扫描到完成。'],
   emby_missing_posters: ['检查缺失海报', '检查没有主海报的 Emby 媒体条目。'],
   emby_match: ['修正媒体匹配', '将指定 Emby 条目匹配到明确的 TMDB 条目。'],
   strm_sync: ['同步 STRM 文件', '根据媒体源目录创建或更新 STRM 文件。'],

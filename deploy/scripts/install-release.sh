@@ -53,6 +53,7 @@ finish() {
   set +e
   recovery_failed=0
   if [ -n "${secret_input:-}" ]; then rm -f "$secret_input"; fi
+  if [ -n "${webhook_config_temp:-}" ]; then rm -f "$webhook_config_temp"; fi
   if [ "$committed" -eq 0 ] && [ "$changed" -eq 1 ]; then
     # Database migrations and identity changes are never rolled back by copying old data.
     for unit in $units; do
@@ -130,7 +131,7 @@ chmod -R a+rX "$release/deploy"
 for file in "$release"/deploy/systemd/*.service "$release"/deploy/systemd/*.timer; do
   printf '/etc/systemd/system/%s\n' "$(basename "$file")" >> "$state/configs"
 done
-printf '%s\n' /etc/caddy/Caddyfile /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md >> "$state/configs"
+printf '%s\n' /etc/caddy/Caddyfile /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md /srv/embymedia/data/clouddrive/config/webhooks/webhook.toml >> "$state/configs"
 while IFS= read -r destination; do
   if [ -e "$destination" ] || [ -L "$destination" ]; then
     mkdir -p "$state/files$(dirname "$destination")"
@@ -156,6 +157,20 @@ runuser -u embymedia -- "$release/bin/embymedia" -check-db -db "$database"
 # The service account gets a private temporary copy, not access to the secrets directory.
 secret_input=$(mktemp /srv/embymedia/data/.webhook-secret-XXXXXXXX)
 install -o embymedia -g embymedia -m 0600 /etc/embymedia/secrets/clouddrive-webhook-secret "$secret_input"
+webhook_config_dir=/srv/embymedia/data/clouddrive/config/webhooks
+webhook_config=$webhook_config_dir/webhook.toml
+install -o root -g root -m 0700 -d "$webhook_config_dir"
+webhook_config_temp=$(mktemp "$webhook_config_dir/.webhook-XXXXXXXX")
+{
+  printf '%s\n' '[file_system_watcher]' 'enabled = true'
+  printf '%s' 'url = "http://host.docker.internal/hooks/clouddrive2?key='
+  tr -d '\r\n' < "$secret_input"
+  printf '%s\n' '"' 'method = "POST"'
+} > "$webhook_config_temp"
+chown root:root "$webhook_config_temp"
+chmod 0600 "$webhook_config_temp"
+mv -f "$webhook_config_temp" "$webhook_config"
+webhook_config_temp=
 runuser -u embymedia -- "$release/bin/embymedia" -bootstrap-webhook-secret-file "$secret_input" -db "$database"
 rm -f "$secret_input"
 secret_input=

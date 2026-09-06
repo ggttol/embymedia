@@ -320,6 +320,35 @@ func (s *TaskQueueService) executeTask(parent context.Context, task domain.Async
 	}
 }
 
+func (s *TaskQueueService) taskProgress(taskID string, start, end float64) func(float64, string) error {
+	return func(progress float64, message string) error {
+		progress = min(100, max(0, progress))
+		mapped := min(99, start+(end-start)*progress/100)
+		if err := s.db.UpdateAsyncTaskProgress(taskID, mapped); err != nil {
+			return err
+		}
+		if message != "" {
+			return s.db.AppendTaskLog(taskID, message)
+		}
+		return nil
+	}
+}
+
+func (s *TaskQueueService) runSTRMSync(ctx context.Context, task domain.AsyncTask, start, end float64) (STRMResult, error) {
+	library, _ := stringPayload(task.Payload, "library", false)
+	result, err := s.mediaSvc.SyncSTRMWithProgress(ctx, library, s.taskProgress(task.ID, start, end))
+	if err != nil {
+		return result, err
+	}
+	if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM sync media=%d created=%d updated=%d removed=%d prune=%s", result.MediaFiles, result.Created, result.Updated, result.Removed, result.PruneStatus)); err != nil {
+		return result, err
+	}
+	if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM findings valid=%d missing=%d invalid=%d", result.Valid, result.Missing, result.Invalid)); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[string]any, error) {
 	switch task.Type {
 	case "emby_refresh":
@@ -333,16 +362,11 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 			}
 			return map[string]any{"library_id": libraryID, "accepted": true, "completion_tracked": false}, nil
 		}
-		scan, err := s.embySvc.RunLibraryScanCtx(ctx, func(providerProgress float64, message string) error {
-			progress := min(99, 10+providerProgress*0.89)
-			if err := s.db.UpdateAsyncTaskProgress(task.ID, progress); err != nil {
-				return err
-			}
-			if message != "" {
-				return s.db.AppendTaskLog(task.ID, message)
-			}
-			return nil
-		})
+		strm, err := s.runSTRMSync(ctx, task, 10, 75)
+		if err != nil {
+			return nil, err
+		}
+		scan, err := s.embySvc.RunLibraryScanCtx(ctx, s.taskProgress(task.ID, 80, 99))
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +374,7 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 			return nil, err
 		}
 		return map[string]any{
-			"library_id": "", "accepted": true, "completion_tracked": true,
+			"strm": strm, "library_id": "", "accepted": true, "completion_tracked": true,
 			"emby_task_id": scan.TaskID, "emby_status": scan.Status,
 			"started_at": scan.StartedAt, "completed_at": scan.CompletedAt,
 		}, nil
@@ -393,37 +417,14 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 		}
 		return map[string]any{"task_ids": ids, "target_cid": targetCID}, nil
 	case "strm_sync":
-		library, _ := stringPayload(task.Payload, "library", false)
-		result, err := s.mediaSvc.SyncSTRMWithProgress(ctx, library, func(progress float64, message string) error {
-			if err := s.db.UpdateAsyncTaskProgress(task.ID, min(99, max(10, progress))); err != nil {
-				return err
-			}
-			if message != "" {
-				return s.db.AppendTaskLog(task.ID, message)
-			}
-			return nil
-		})
+		result, err := s.runSTRMSync(ctx, task, 10, 99)
 		if err != nil {
-			return nil, err
-		}
-		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM sync media=%d created=%d updated=%d removed=%d prune=%s", result.MediaFiles, result.Created, result.Updated, result.Removed, result.PruneStatus)); err != nil {
-			return nil, err
-		}
-		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM findings valid=%d missing=%d invalid=%d", result.Valid, result.Missing, result.Invalid)); err != nil {
 			return nil, err
 		}
 		return map[string]any{"strm": result}, nil
 	case "strm_verify":
 		library, _ := stringPayload(task.Payload, "library", false)
-		result, err := s.mediaSvc.VerifySTRMWithProgress(ctx, library, func(progress float64, message string) error {
-			if err := s.db.UpdateAsyncTaskProgress(task.ID, min(99, max(10, progress))); err != nil {
-				return err
-			}
-			if message != "" {
-				return s.db.AppendTaskLog(task.ID, message)
-			}
-			return nil
-		})
+		result, err := s.mediaSvc.VerifySTRMWithProgress(ctx, library, s.taskProgress(task.ID, 10, 99))
 		if err != nil {
 			return nil, err
 		}

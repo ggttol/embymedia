@@ -78,7 +78,7 @@ func openAPISchema() map[string]any {
 	})
 	paths := map[string]any{
 		"/hooks/clouddrive2": map[string]any{"post": map[string]any{
-			"operationId": "receiveCloudDriveWebhook", "summary": "Debounce one authenticated CloudDrive2 filesystem event",
+			"operationId": "receiveCloudDriveWebhook", "summary": "Debounce one authenticated filesystem event into ordered STRM synchronization and Emby scanning",
 			"security":    []any{map[string]any{"WebhookSecret": []any{}}},
 			"requestBody": map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}},
 			"responses":   map[string]any{"202": map[string]any{"description": "Event accepted for debounce"}, "401": map[string]any{"description": "Invalid webhook secret"}},

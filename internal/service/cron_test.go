@@ -28,6 +28,7 @@ func TestCronManagerQueuesRealOperation(t *testing.T) {
 		t.Fatalf("open storage: %v", err)
 	}
 	defer db.Close()
+	configureTestMedia(t, db)
 	if err := db.SetSetting("emby_url", embyServer.URL); err != nil {
 		t.Fatalf("set Emby URL: %v", err)
 	}
