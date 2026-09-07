@@ -33,11 +33,18 @@ func TestEmbyAndCloudDriveServices(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/Items" {
-			if r.URL.Query().Get("ImageTypes") == "None" {
-				if r.URL.Query().Get("Fields") != "Path,ProviderIds" || r.URL.Query().Get("Limit") != "100" {
-					t.Error("missing-poster query omitted bounded detail fields")
+			if r.URL.Query().Get("IncludeItemTypes") == "Movie,Series" {
+				if r.URL.Query().Has("ImageTypes") || r.URL.Query().Get("Fields") != "Path,ProviderIds,ImageTags" || r.URL.Query().Get("Limit") != "500" {
+					t.Error("missing-poster scan did not request paginated image metadata")
 				}
-				w.Write([]byte(`{"Items":[{"Id":"missing","Name":"Missing","Type":"Movie","Path":"/strm/Missing.strm","ProviderIds":{"Tmdb":"42"}}],"TotalRecordCount":2772}`))
+				switch r.URL.Query().Get("StartIndex") {
+				case "0":
+					w.Write([]byte(`{"Items":[{"Id":"covered","Name":"Covered","Type":"Movie","ImageTags":{"Primary":"poster"}},{"Id":"missing","Name":"Missing","Type":"Movie","Path":"/strm/Missing.strm","ProviderIds":{"Tmdb":"42"}}],"TotalRecordCount":3}`))
+				case "2":
+					w.Write([]byte(`{"Items":[{"Id":"series","Name":"Series","Type":"Series","ImageTags":{"Primary":"poster"}}],"TotalRecordCount":3}`))
+				default:
+					t.Errorf("unexpected missing-poster page: %s", r.URL.Query().Get("StartIndex"))
+				}
 				return
 			}
 			if r.URL.Query().Get("Ids") == "item1" {
@@ -94,7 +101,7 @@ func TestEmbyAndCloudDriveServices(t *testing.T) {
 		t.Fatalf("search items: %+v, err=%v", items, err)
 	}
 	report, err := embySrv.GetMediaWithoutPosters()
-	if err != nil || report.Total != 2772 || report.Returned != 1 || !report.Truncated || report.Items[0].Path != "/strm/Missing.strm" || report.Items[0].ProviderIDs["Tmdb"] != "42" {
+	if err != nil || report.Total != 1 || report.Returned != 1 || report.Truncated || report.Items[0].Path != "/strm/Missing.strm" || report.Items[0].ProviderIDs["Tmdb"] != "42" {
 		t.Fatalf("unexpected missing-poster report: %+v, err=%v", report, err)
 	}
 	item, err := embySrv.GetItem("item1")
