@@ -41,7 +41,7 @@ For 115 deletion, first call `mcp_embymedia_c115_request_delete` with one freshl
 
 - `strm_sync`: `{}` or `{"library":"relative/library/folder"}`; creates or updates STRM files from the configured media tree and verifies every generated target.
 - `strm_verify`: `{}` or `{"library":"relative/library/folder"}`; checks existing STRM targets without changing files.
-- `emby_missing_posters`: `{}`; returns up to 100 Movie or Series items that currently have no image and changes no Emby metadata.
+- `emby_missing_posters`: `{}`; scans every Movie and Series page, returns the complete count plus up to 100 items without a primary image, and changes no Emby metadata.
 
 Use `mcp_embymedia_c115_list_offline` to inspect provider-side offline progress. Use `mcp_embymedia_emby_missing_posters` for a direct bounded missing-artwork inventory when a persistent task is unnecessary.
 
