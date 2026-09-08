@@ -43,6 +43,7 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - Copy actions acknowledge success only after clipboard completion; unavailable browser APIs expose selectable text for manual copying.
 - Dialogs own focus, Escape dismissal, submission feedback, and return focus to their opener.
 - Failed reads remain distinct from successful empty results; stale results show their age.
+- Automatic episode completion is a locked-scope operations flow: library checkboxes, transfer/preview modes, bounded candidate controls, an explicit destructive completed-pack switch, and a four-stage inspection-to-verification ledger. Replacement state distinguishes staged, retained-old, and completed deletion outcomes.
 
 ## Composition
 Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options.

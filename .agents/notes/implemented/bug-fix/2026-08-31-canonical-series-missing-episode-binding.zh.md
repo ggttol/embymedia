@@ -22,11 +22,15 @@ Host 解析媒体库名称、作为直接子项的 Series 文件夹与路径、E
 
 最终验证使用 plan 中非 secret 的 canonical 事实和当前 Emby 状态。它要求流水线验证与扫描完成，目标 Series 保持可读且 ID、路径及 TMDB 身份不变，每个请求的季集或绝对集数都从该 Series 的已播缺集中消失，并且该 Series 是媒体库中具有此 TMDB 身份的唯一 Series。验证不会重新打开受保护分享，也不需要其 115 访问码。
 
+任务中心仅为名称完全匹配的 `电视剧追更`、`综艺追更` Emby 媒体库及其同名 115 CID 映射提供 `series_auto_fill`，并沿用该规则。每次执行从 Emby 读取已播出且有编号的缺集，拒绝没有唯一 TMDB 身份或没有唯一 115 直接子目录的 Series，为每个 Series 检索配置范围内的 1–30 个有效 115 候选，并在深度 20、最多 10,000 个条目的限制内递归检查分享；只有包含明确且匹配集数标记的受支持视频叶文件可以入选。转存模式通常把这些叶文件 ID 接收到既有 Series CID，等待 CloudDrive，同步 STRM，扫描 Emby 并验证原 Series。同时启用 `replace_completed_pack` 和浏览器拥有的危险操作开关后，只有视频叶文件覆盖全部既有与缺失已播集并集的独立候选根才可以替换旧根。任务先把新根转存到旧根旁，等待完整集数集合可见，扫描并要求唯一的新相同 TMDB Series 不含已播缺集且拥有全部预期集数，然后删除旧 Emby 条目、回收准确的旧 115 CID、移除受限于 STRM 根内的旧目录，再次扫描并报告替换。删除前的任何失败都会保留旧根。预检模式只执行发现，不产生 provider 写入。
+
 已批准的清理会绑定确切的 Emby 条目、路径／类型／TMDB 事实、有界递归 STRM 与 115 manifest，以及确切的 115 parent／ID／名称／类型事实。`media.delete` 可以删除显式条目和完整选中的媒体根。共用根下的全部 Emby 媒体条目都必须被选中；不拥有根的条目成为仅删除 Emby 的目标，由最后一个 owner 只删除一次 STRM 与 115 根。执行会在删除存储前请求 Emby 删除记录。当 Emby 拒绝删除条目时，执行仍会删除经过审批的确切存储，刷新媒体库，并等待源已不存在的记录消失。`dedup.delete` 继续作为独立的保留一个 keeper 操作。作用后的取消、审计失败、组件失败或事实验证失败都会成为 partial，且绑定 Session owner 的 retry 只恢复同一组目标。
 
 ## Testing
 
 聚焦的 Series 领域测试固定 TMDB 标记、canonical 路径、季集与绝对集数范围、分页状态、显式 numbering mode、类型化 blocker、递归分享证据、误导性目录与整包标题拒绝，以及有界 `resource_plan` 输出。Host action 测试调用同 Session 的候选检查和分页 115 直接子项检查，证明不包含 secret 与 URL、目录标记经过脱敏、evidence 受限以及覆盖计数完整且紧凑。操作运行时与服务测试固定 snapshot hash、占用根拒绝、CID 唯一性、无需暂存访问码的受保护分享验证、审批后重新验证、作用后取消记账，以及 Series／TMDB／episode 完成条件。清理、路径、客户端、mutation、执行与验证测试固定效果前的完整集合预检、精确 Emby／STRM／115 绑定、有界流式 manifest、显式 keeper、绑定目标的审批文本、终态所有权检查、可恢复验证，以及绑定 owner 的 partial 重试。
+
+独立任务测试通过与 Emby、资源索引和 115 协议兼容的 fixture 执行真实队列路径，覆盖缺集发现、资源检索、递归 115 检查、精确接收、CloudDrive 可见性、STRM 创建、Emby 扫描完成和扫描后缺集验证。替换测试要求完整集数覆盖和危险操作开关，在删除旧 Emby 条目、旧 115 CID 和受限 STRM 根之前验证新 Series，并固定该删除顺序。单独的测试会拒绝其他媒体库和重复 TMDB Series，排除未来或无编号条目，并防止把分辨率等数字误识别为集数键。
 
 ## Alternatives considered
 
@@ -42,4 +46,4 @@ Host 解析媒体库名称、作为直接子项的 Series 文件夹与路径、E
 
 ## Consequences
 
-缺集成功表示目标既有 Series 在其 canonical TMDB 与存储根目录下拥有 requested episodes；对于显式的已完结 Series 替换路径，则表示已验证完整的新 Series 在删除旧根后成为唯一的相同 TMDB keeper。canonical 绑定、资源证据、目标唯一性、替换完整性或重复分组身份不确定时，修复都会快速失败。完整整包替换需要第二个根、第二个 plan 和严重风险删除审批，但绝不会用未经验证的整包换掉最后一份已知旧副本。最终验证无需恢复 secret 即可重复执行，同时普通新标题入库继续使用独立的 `resource.add_new` 约定。
+缺集成功表示目标既有 Series 在其 canonical TMDB 与存储根目录下拥有 requested episodes，或已验证完整的新 Series 在删除旧根后成为唯一的相同 TMDB keeper。canonical 绑定、资源证据、目标唯一性、替换完整性或重复分组身份不确定时，修复都会快速失败。自动整包替换同时要求显式任务选项和浏览器拥有的危险操作开关；这会增加无人值守删除风险，但暂存的新版本拥有每个预期已播集之前绝不会删除旧根。最终验证无需恢复 secret 即可重复执行，同时普通新标题入库继续使用独立的 `resource.add_new` 约定。

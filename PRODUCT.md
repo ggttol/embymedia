@@ -12,7 +12,7 @@ EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 1
 - Emby library inventory, exact item inspection, refresh, explicit TMDB matching, and missing-poster inspection.
 - 115 file lifecycle, share receive/create, offline download, and indexed resource search.
 - STRM synchronization and containment-aware target verification.
-- Persistent task, schedule, execution-attempt, cancellation, retry, and audit state.
+- Persistent task, schedule, execution-attempt, cancellation, retry, and audit state, including automatic aired-episode completion restricted to the `电视剧追更` and `综艺追更` libraries.
 - Credential configured/writable status without revealing stored values.
 - Agent integration through authenticated Streamable HTTP MCP, loopback legacy SSE, stdio MCP, and OpenAPI 3.1. Thirty-four MCP tools expose account/stored-file/share/offline discovery, Emby item/session discovery, task and schedule lifecycle, provider writes, validated settings updates, and system health.
 - Autonomous tokens default to read/write access and 120 requests per minute. Non-destructive 115, Emby, CloudDrive, STRM, task, settings, schedule, and Agent-token operations do not require per-action confirmation.
@@ -23,10 +23,11 @@ EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 1
 - Never display stored password material or secret values; Agent token plaintext appears only in the creation response.
 - Administrators and operators can use media operations; only administrators can manage browser users.
 - Tool discovery is not execution evidence; the UI distinguishes discovery from successful or failed read calls.
-- A 115 deletion requires a short-lived request bound to freshly resolved IDs and names, followed by one authenticated browser decision and one non-replayable execution. Agent tokens cannot approve deletion, enable the browser deletion switch, or use the REST file-delete route. Emby library deletion is not exposed.
+- Browser and Agent-initiated 115 deletion requires a short-lived request bound to freshly resolved IDs and names, followed by one authenticated browser decision and one non-replayable execution. The explicit `replace_completed_pack` task option is the sole automatic exception: with dangerous actions enabled, it may recycle an old Series root only after a transferred replacement owns every expected aired episode under the same unique TMDB identity. Emby library deletion is not exposed.
 - Provider operations fail with their actual configuration, authorization, transport, or response error; no synthetic success or empty fallback.
 - UI improvements retain the current routes, provider operations, Chinese interface, Warm Paper palette, and login proxy; they do not introduce dark mode, TLS changes, or synthetic operational success.
 - Transfer destinations use a consistent browser preference; resource return navigation preserves search context. Favorites removal supports undo within the browser.
+- Automatic episode completion requires one unique TMDB-bound Emby Series and one exact same-name 115 Series folder; ambiguous identity, future or unnumbered episodes, unsupported filenames, unavailable candidates, and unverified post-scan gaps remain visible findings. Completed-pack replacement stages a distinct root and keeps the old root unless the new Series passes full episode, path, and TMDB verification.
 
 ## Missing facts
 - No supplied product logo beyond the current EmbyMedia mark.

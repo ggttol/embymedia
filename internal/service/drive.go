@@ -688,9 +688,6 @@ func (s *DriveService) SaveShareCtx(ctx context.Context, accountID, rawURL, pass
 	if err != nil {
 		return 0, "", err
 	}
-	if targetCid == "" {
-		targetCid = "0"
-	}
 	code, receive, err := ParseShareCode(rawURL, password)
 	if err != nil {
 		return 0, "", err
@@ -703,31 +700,37 @@ func (s *DriveService) SaveShareCtx(ctx context.Context, accountID, rawURL, pass
 		return 0, title, fmt.Errorf("115 分享内容为空或已失效")
 	}
 	ids := make([]string, 0, len(files))
-	for _, f := range files {
-		ids = append(ids, f.ID)
+	for _, file := range files {
+		ids = append(ids, file.ID)
 	}
+	return s.receiveShareEntriesCtx(ctx, acc, code, receive, ids, targetCid, title)
+}
 
+func (s *DriveService) receiveShareEntriesCtx(ctx context.Context, account *domain.DriveAccount, shareCode, receiveCode string, ids []string, targetCID, title string) (int, string, error) {
+	if len(ids) == 0 {
+		return 0, title, fmt.Errorf("115 分享没有可转存的条目")
+	}
+	if targetCID == "" {
+		targetCID = "0"
+	}
 	uid := ""
-	if m := regexp.MustCompile(`(?:^|;\s*)UID=([^_;]+)`).FindStringSubmatch(acc.Cookie); m != nil {
-		uid = m[1]
+	if match := regexp.MustCompile(`(?:^|;\s*)UID=([^_;]+)`).FindStringSubmatch(account.Cookie); match != nil {
+		uid = match[1]
 	}
-
 	form := url.Values{}
-	form.Set("share_code", code)
-	form.Set("receive_code", receive)
+	form.Set("share_code", shareCode)
+	form.Set("receive_code", receiveCode)
 	form.Set("file_id", strings.Join(ids, ","))
-	form.Set("cid", targetCid)
+	form.Set("cid", targetCID)
 	form.Set("user_id", uid)
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://webapi.115.com/share/receive", strings.NewReader(form.Encode()))
 	if err != nil {
-		return 0, "", err
+		return 0, title, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
 	req.Header.Set("Referer", "https://115.com/")
-	req.Header.Set("Cookie", acc.Cookie)
-
+	req.Header.Set("Cookie", account.Cookie)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return 0, title, fmt.Errorf("115 转存请求失败: %w", err)
@@ -743,14 +746,14 @@ func (s *DriveService) SaveShareCtx(ctx context.Context, accountID, rawURL, pass
 		return 0, title, err
 	}
 	if !raw.State {
-		msg := raw.Error
-		if msg == "" {
-			msg = raw.Status
+		message := raw.Error
+		if message == "" {
+			message = raw.Status
 		}
-		if msg == "" {
-			msg = fmt.Sprintf("errno=%d", raw.ErrNo)
+		if message == "" {
+			message = fmt.Sprintf("errno=%d", raw.ErrNo)
 		}
-		return 0, title, fmt.Errorf("115 转存失败: %s", msg)
+		return 0, title, fmt.Errorf("115 转存失败: %s", message)
 	}
 	return len(ids), title, nil
 }

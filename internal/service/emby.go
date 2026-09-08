@@ -545,6 +545,175 @@ func (s *EmbyService) SearchMediaCtx(ctx context.Context, term string, limit int
 	return res, nil
 }
 
+// ListSeriesCtx returns every Series directly or recursively owned by one Emby library.
+func (s *EmbyService) ListSeriesCtx(ctx context.Context, libraryID string) ([]domain.EmbyMediaItem, error) {
+	libraryID = strings.TrimSpace(libraryID)
+	if libraryID == "" {
+		return nil, fmt.Errorf("Emby library ID is required")
+	}
+	const pageSize = 500
+	series := make([]domain.EmbyMediaItem, 0)
+	for startIndex := 0; ; {
+		query := url.Values{
+			"ParentId": {libraryID}, "Recursive": {"true"}, "IncludeItemTypes": {"Series"}, "Fields": {"Path,ProviderIds"},
+			"StartIndex": {strconv.Itoa(startIndex)}, "Limit": {strconv.Itoa(pageSize)}, "EnableTotalRecordCount": {"true"},
+		}
+		req, err := s.newRequest(ctx, http.MethodGet, "/Items?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list Emby Series: %w", err)
+		}
+		if err := requireEmbyResponse(resp, "Emby Series list"); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		var raw struct {
+			Items []struct {
+				ID, Name, Type, Path string
+				ProviderIDs          map[string]string `json:"ProviderIds"`
+			}
+			Total int `json:"TotalRecordCount"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&raw)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode Emby Series list: %w", decodeErr)
+		}
+		for _, item := range raw.Items {
+			series = append(series, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, Type: item.Type, Path: item.Path, ProviderIDs: item.ProviderIDs})
+		}
+		startIndex += len(raw.Items)
+		if len(raw.Items) == 0 || startIndex >= raw.Total {
+			break
+		}
+	}
+	return series, nil
+}
+
+// EmbyMissingEpisode identifies one aired episode that Emby expects but cannot find.
+type EmbyMissingEpisode struct {
+	SeriesID      string    `json:"series_id"`
+	SeriesName    string    `json:"series_name"`
+	SeasonNumber  int       `json:"season_number"`
+	EpisodeNumber int       `json:"episode_number"`
+	PremiereDate  time.Time `json:"premiere_date"`
+}
+
+// ListAiredMissingEpisodesCtx returns every numbered missing episode released no later than now for one library.
+func (s *EmbyService) ListAiredMissingEpisodesCtx(ctx context.Context, libraryID string, now time.Time) ([]EmbyMissingEpisode, error) {
+	libraryID = strings.TrimSpace(libraryID)
+	if libraryID == "" {
+		return nil, fmt.Errorf("Emby library ID is required")
+	}
+	const pageSize = 500
+
+	missing := make([]EmbyMissingEpisode, 0)
+	for startIndex := 0; ; {
+		query := url.Values{
+			"ParentId": {libraryID}, "Recursive": {"true"}, "Fields": {"SeriesInfo,PremiereDate"},
+			"StartIndex": {strconv.Itoa(startIndex)}, "Limit": {strconv.Itoa(pageSize)}, "EnableTotalRecordCount": {"true"},
+		}
+		req, err := s.newRequest(ctx, http.MethodGet, "/Shows/Missing?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list Emby missing episodes: %w", err)
+		}
+		if err := requireEmbyResponse(resp, "Emby missing-episode list"); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		var raw struct {
+			Items []struct {
+				SeriesID, SeriesName           string
+				ParentIndexNumber, IndexNumber int
+				PremiereDate                   time.Time
+			}
+			Total int `json:"TotalRecordCount"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&raw)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode Emby missing-episode list: %w", decodeErr)
+		}
+		for _, item := range raw.Items {
+			if item.SeriesID == "" || item.SeriesName == "" || item.ParentIndexNumber <= 0 || item.IndexNumber <= 0 || item.PremiereDate.IsZero() || item.PremiereDate.After(now) {
+				continue
+			}
+			missing = append(missing, EmbyMissingEpisode{
+				SeriesID: item.SeriesID, SeriesName: item.SeriesName, SeasonNumber: item.ParentIndexNumber,
+				EpisodeNumber: item.IndexNumber, PremiereDate: item.PremiereDate,
+			})
+		}
+		startIndex += len(raw.Items)
+		if len(raw.Items) == 0 || startIndex >= raw.Total {
+			break
+		}
+	}
+	return missing, nil
+}
+
+// ListAiredSeriesEpisodesCtx returns numbered episodes already owned by one Series and released no later than now.
+func (s *EmbyService) ListAiredSeriesEpisodesCtx(ctx context.Context, seriesID string, now time.Time) ([]EmbyMissingEpisode, error) {
+	seriesID = strings.TrimSpace(seriesID)
+	if seriesID == "" {
+		return nil, fmt.Errorf("Emby Series ID is required")
+	}
+	query := url.Values{"Fields": {"Path,PremiereDate"}, "Limit": {"10000"}}
+	req, err := s.newRequest(ctx, http.MethodGet, "/Shows/"+url.PathEscape(seriesID)+"/Episodes?"+query.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list Emby Series episodes: %w", err)
+	}
+	defer resp.Body.Close()
+	if err := requireEmbyResponse(resp, "Emby Series episode list"); err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Items []struct {
+			ParentIndexNumber, IndexNumber int
+			PremiereDate                   time.Time
+		}
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decode Emby Series episodes: %w", err)
+	}
+	episodes := make([]EmbyMissingEpisode, 0, len(raw.Items))
+	for _, item := range raw.Items {
+		if item.ParentIndexNumber <= 0 || item.IndexNumber <= 0 || item.PremiereDate.IsZero() || item.PremiereDate.After(now) {
+			continue
+		}
+		episodes = append(episodes, EmbyMissingEpisode{SeriesID: seriesID, SeasonNumber: item.ParentIndexNumber, EpisodeNumber: item.IndexNumber, PremiereDate: item.PremiereDate})
+	}
+	return episodes, nil
+}
+
+// DeleteItemCtx removes one exact Emby item before its verified obsolete storage root is recycled.
+func (s *EmbyService) DeleteItemCtx(ctx context.Context, itemID string) error {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return fmt.Errorf("Emby item ID is required")
+	}
+	req, err := s.newRequest(ctx, http.MethodDelete, "/Items/"+url.PathEscape(itemID), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete Emby item: %w", err)
+	}
+	defer resp.Body.Close()
+	return requireEmbyResponse(resp, "Emby item deletion")
+}
+
 // EmbyMissingPosterReport returns a bounded page and the complete matching count.
 type EmbyMissingPosterReport struct {
 	Items     []domain.EmbyMediaItem `json:"items"`

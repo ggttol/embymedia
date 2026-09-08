@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { Activity, CalendarClock, FileText, ListTodo, Loader2, Play, Plus, RotateCcw, X } from 'lucide-vue-next'
+import { Activity, CalendarClock, FileText, FolderDown, ListTodo, Loader2, Play, Plus, RefreshCcw, RotateCcw, ScanSearch, ShieldCheck, X } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
-type TaskType = 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
+type TaskType = 'series_auto_fill' | 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
 
 interface AsyncTask {
   id: string
@@ -49,8 +49,9 @@ interface TaskDefinition {
   defaultName: string
 }
 
-const taskTypeOrder: TaskType[] = ['emby_refresh', 'emby_missing_posters', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
+const taskTypeOrder: TaskType[] = ['series_auto_fill', 'emby_refresh', 'emby_missing_posters', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
 const taskDefinitions: Record<TaskType, TaskDefinition> = {
+  series_auto_fill: { label: '自动补集', description: '只检查“电视剧追更”和“综艺追更”的已播缺集；验证资源内的准确集号后，精确转存到原剧集目录并刷新 Emby。', defaultName: '每日自动补集' },
   emby_refresh: { label: '同步媒体并刷新 Emby', description: '先把网盘视频同步为 STRM，再跟踪 Emby 全库扫描直到结束；指定媒体库 ID 时只提交该库刷新。', defaultName: '每日同步媒体并刷新 Emby' },
   emby_missing_posters: { label: '检查缺失海报', description: '找出没有主海报的 Emby 条目，结果会保存在执行记录中。', defaultName: '每日检查缺失海报' },
   emby_match: { label: '修正媒体匹配', description: '把一个 Emby 条目明确匹配到指定 TMDB 条目。', defaultName: '修正媒体匹配' },
@@ -83,6 +84,11 @@ function newScheduleForm() {
     target_cid: '',
     account_id: '',
     library: '',
+    auto_fill_libraries: ['电视剧追更', '综艺追更'] as string[],
+    auto_fill_mode: 'transfer',
+    candidate_limit: '10',
+    max_series: '20',
+    replace_completed_pack: true,
   }
 }
 
@@ -171,6 +177,7 @@ function taskHasFindings(task: AsyncTask) {
   const result = resultRecord(task)
   if (!result) return false
   if (task.type === 'emby_missing_posters') return Number(result.total_missing ?? result.returned ?? 0) > 0
+  if (task.type === 'series_auto_fill') return Number(result.remaining || 0) > 0 || (Array.isArray(result.libraries) && result.libraries.some((library) => typeof library === 'object' && library !== null && Array.isArray((library as Record<string, unknown>).issues) && ((library as Record<string, unknown>).issues as unknown[]).length > 0))
   if (task.type === 'strm_sync' || task.type === 'strm_verify' || task.type === 'emby_refresh') {
     const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
     if (Number(strm?.missing || 0) > 0 || Number(strm?.invalid || 0) > 0) return true
@@ -186,6 +193,10 @@ function resultSummary(task: AsyncTask) {
   const result = resultRecord(task)
   if (!result) return task.result ? '任务返回了文本结果。' : ''
   switch (task.type) {
+    case 'series_auto_fill': {
+      const mode = result.mode === 'preview' ? '预检' : '自动转存'
+      return `${mode}：发现 ${Number(result.missing || 0)} 集，匹配 ${Number(result.matched || 0)} 集，转存 ${Number(result.transferred || 0)} 集，仍缺 ${Number(result.remaining || 0)} 集。`
+    }
     case 'emby_refresh': {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
       const synchronized = strm ? `STRM 新建 ${Number(strm.created || 0)}、更新 ${Number(strm.updated || 0)}、清理 ${Number(strm.removed || 0)}；` : ''
@@ -214,6 +225,18 @@ function resultDetails(task: AsyncTask) {
   const result = parsedResult(task)
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
 }
+function autoFillLibraryResults(task: AsyncTask): Record<string, unknown>[] {
+  const result = resultRecord(task)
+  return Array.isArray(result?.libraries) ? result.libraries.filter((value): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)) : []
+}
+
+function recordList(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item)) : []
+}
+
+function textList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
 
 function scheduleName(task: AsyncTask) {
   return task.schedule_id ? tasks.value.find((schedule) => schedule.id === task.schedule_id)?.name : undefined
@@ -231,11 +254,20 @@ function userError(error?: string) {
   }
   if (known[error]) return known[error]
   if (error.includes('is required')) return '任务缺少必填信息，请检查自动任务的执行参数。'
+  if (error.includes('canonical TMDB identity is missing or duplicated')) return '剧集缺少唯一 TMDB 身份；为避免写错目录，本次没有转存。'
+  if (error.includes('expected one 115 folder named')) return '没有找到唯一同名的 115 剧集目录；本次没有转存。'
+  if (error.includes('did not appear in CloudDrive')) return '115 已接受转存，但文件未在等待时间内通过 CloudDrive 出现。'
+  if (error.includes('canonical Series path or unique TMDB identity changed')) return 'Emby 扫描后剧集路径或 TMDB 唯一身份发生变化，请人工检查。'
+  if (error.includes('is absent from its eligible library')) return '缺集所属剧集不在目标追更库中；本次没有转存。'
   return error
 }
 
 function taskSummary(type: string, payload: Record<string, unknown> = {}) {
   switch (type) {
+    case 'series_auto_fill': {
+      const libraries = Array.isArray(payload.libraries) ? payload.libraries.join('、') : '未选择'
+      return `${payload.transfer === false ? '仅预检' : payload.replace_completed_pack === true ? '自动转存 · 完结整包替换' : '自动转存'} · ${libraries}`
+    }
     case 'emby_refresh': return payload.library_id ? `媒体库 ID：${payload.library_id}` : '范围：全部媒体源与 Emby 媒体库'
     case 'emby_missing_posters': return '范围：全部 Emby 媒体条目'
     case 'emby_match': return `Emby 条目 ${payload.item_id || '未填写'} → TMDB ${payload.tmdb_id || '未填写'}`
@@ -258,6 +290,15 @@ function scheduledPayload(task: ScheduledTask): Record<string, unknown> {
 function buildPayload(): Record<string, unknown> {
   const form = scheduleForm.value
   switch (form.type) {
+    case 'series_auto_fill':
+      if (form.auto_fill_libraries.length === 0) throw new Error('请至少选择一个追更媒体库。')
+      return {
+        libraries: [...form.auto_fill_libraries],
+        transfer: form.auto_fill_mode === 'transfer',
+        replace_completed_pack: form.auto_fill_mode === 'transfer' && form.replace_completed_pack,
+        candidate_limit: Number(form.candidate_limit),
+        max_series: Number(form.max_series),
+      }
     case 'emby_refresh': return form.library_id.trim() ? { library_id: form.library_id.trim() } : {}
     case 'emby_missing_posters': return {}
     case 'emby_match':
@@ -476,6 +517,12 @@ function formatLog(line: string) {
   const verificationComplete = /^STRM verification completed after (\d+) files$/.exec(line)
   if (verificationComplete) return `STRM 验证完成，共检查 ${verificationComplete[1]} 个文件。`
   if (line === 'STRM synchronization and verification completed') return 'STRM 同步和验证全部完成。'
+  const autoFillScan = /^Auto-fill scanning library (.+)$/.exec(line)
+  if (autoFillScan) return `开始检查 ${autoFillScan[1]} 的已播缺集。`
+  const autoFillSync = /^Auto-fill STRM sync library=(.+) created=(\d+) updated=(\d+)$/.exec(line)
+  if (autoFillSync) return `${autoFillSync[1]} STRM 同步：新建 ${autoFillSync[2]} 个，更新 ${autoFillSync[3]} 个。`
+  const autoFillComplete = /^Auto-fill completed mode=(\S+) missing=(\d+) matched=(\d+) transferred=(\d+) remaining=(\d+)$/.exec(line)
+  if (autoFillComplete) return `补集${autoFillComplete[1] === 'preview' ? '预检' : '执行'}完成：发现 ${autoFillComplete[2]} 集，匹配 ${autoFillComplete[3]} 集，转存 ${autoFillComplete[4]} 集，仍缺 ${autoFillComplete[5]} 集。`
   if (line.startsWith('failed: ')) return `执行失败：${userError(line.slice(8))}`
   return line
 }
@@ -623,7 +670,39 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       <div class="grid lg:grid-cols-[220px_minmax(0,1fr)] gap-5 p-5 sm:p-7 border-b border-border/70">
         <div><h3 class="font-serif font-semibold text-text">二、填写范围</h3><p class="mt-1 text-xs leading-5 text-text-faint">留空的可选项会使用系统设置中的默认值。</p></div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div v-if="scheduleForm.type === 'emby_refresh'" class="md:col-span-2"><label for="library-id" class="block mb-2 text-xs font-medium text-text-muted">媒体库 ID（可选）</label><input id="library-id" v-model="scheduleForm.library_id" placeholder="留空时刷新全部媒体库" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+          <div v-if="scheduleForm.type === 'series_auto_fill'" class="md:col-span-2 space-y-5">
+            <div class="auto-fill-lock">
+              <div class="flex items-start gap-3"><ShieldCheck class="mt-0.5 h-5 w-5 shrink-0 text-accent" /><div><strong class="block font-serif text-base text-text">范围锁定：只处理两个追更库</strong><p class="mt-1 text-xs leading-5 text-text-muted">不会读取或改动“电视剧”“综艺”及其他媒体库；未来集、特别篇和无法确认集号的资源会保留为未解决。</p></div></div>
+              <div class="mt-4 grid gap-2 sm:grid-cols-2">
+                <label v-for="library in ['电视剧追更', '综艺追更']" :key="library" class="flex min-h-12 cursor-pointer items-center gap-3 border border-border/80 bg-surface px-4 py-2.5 focus-within:border-accent">
+                  <input v-model="scheduleForm.auto_fill_libraries" type="checkbox" :value="library" class="accent-accent" />
+                  <span><strong class="block text-sm font-medium text-text">{{ library }}</strong><small class="text-xs text-text-faint">Emby 媒体库与同名 115 目录</small></span>
+                </label>
+              </div>
+            </div>
+
+            <fieldset>
+              <legend class="mb-2 text-xs font-medium text-text-muted">执行方式</legend>
+              <div class="grid gap-2 sm:grid-cols-2">
+                <label class="auto-fill-mode" :class="{ 'auto-fill-mode-active': scheduleForm.auto_fill_mode === 'transfer' }"><input v-model="scheduleForm.auto_fill_mode" class="sr-only" type="radio" value="transfer" /><FolderDown class="h-5 w-5" /><span><strong>自动转存并验证</strong><small>精确匹配集号，写入原剧集目录，生成 STRM 后复查 Emby。</small></span></label>
+                <label class="auto-fill-mode" :class="{ 'auto-fill-mode-active': scheduleForm.auto_fill_mode === 'preview' }"><input v-model="scheduleForm.auto_fill_mode" class="sr-only" type="radio" value="preview" /><ScanSearch class="h-5 w-5" /><span><strong>仅预检</strong><small>只盘点缺集并验证候选，不向 115 写入文件。</small></span></label>
+              </div>
+            </fieldset>
+            <label v-if="scheduleForm.auto_fill_mode === 'transfer'" class="flex cursor-pointer items-start gap-3 border-2 border-danger/40 bg-danger/5 p-4 text-sm text-text">
+              <input v-model="scheduleForm.replace_completed_pack" type="checkbox" class="mt-0.5 accent-danger" />
+              <span><strong class="block text-danger">完结整包自动替换旧版本</strong><small class="mt-1 block leading-5 text-text-muted">仅当整包覆盖全部已播集、新 Series 已绑定同一 TMDB 且扫描后无缺集时执行；随后自动删除旧 Emby 条目，并把旧 115 目录移入回收站。需要在系统设置中开启危险操作。</small></span>
+            </label>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div><label for="candidate-limit" class="mb-2 block text-xs font-medium text-text-muted">每部剧检查候选数</label><select id="candidate-limit" v-model="scheduleForm.candidate_limit" class="min-h-11 w-full border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none"><option value="5">5 个 · 更快</option><option value="10">10 个 · 推荐</option><option value="20">20 个 · 更全面</option><option value="30">30 个 · 最大范围</option></select></div>
+              <div><label for="max-series" class="mb-2 block text-xs font-medium text-text-muted">每库最多处理剧集</label><input id="max-series" v-model="scheduleForm.max_series" type="number" min="1" max="100" required class="min-h-11 w-full border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+            </div>
+
+            <ol class="auto-fill-flow" aria-label="自动补集执行流程">
+              <li><ScanSearch /><span><b>01</b> 读取已播缺集</span></li><li><ShieldCheck /><span><b>02</b> 核验剧名与集号</span></li><li><FolderDown /><span><b>03</b> 精确转存原目录</span></li><li><RefreshCcw /><span><b>04</b> 刷新并复查 Emby</span></li>
+            </ol>
+          </div>
+          <div v-else-if="scheduleForm.type === 'emby_refresh'" class="md:col-span-2"><label for="library-id" class="block mb-2 text-xs font-medium text-text-muted">媒体库 ID（可选）</label><input id="library-id" v-model="scheduleForm.library_id" placeholder="留空时刷新全部媒体库" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           <template v-else-if="scheduleForm.type === 'emby_match'">
             <div><label for="item-id" class="block mb-2 text-xs font-medium text-text-muted">Emby 条目 ID</label><input id="item-id" v-model="scheduleForm.item_id" required class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
             <div><label for="tmdb-id" class="block mb-2 text-xs font-medium text-text-muted">TMDB ID</label><input id="tmdb-id" v-model="scheduleForm.tmdb_id" required class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
@@ -714,6 +793,24 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
 
         <div v-if="task.result" class="p-3.5 rounded-xl border text-sm" :class="taskHasFindings(task) ? 'border-warn/30 bg-warn/5' : 'border-ok/30 bg-ok/5'">
           <p class="font-medium" :class="taskHasFindings(task) ? 'text-warn' : 'text-ok'">{{ resultSummary(task) }}</p>
+          <div v-if="task.type === 'series_auto_fill'" class="mt-4 space-y-3">
+            <section v-for="library in autoFillLibraryResults(task)" :key="String(library.library_id)" class="border border-border/70 bg-surface">
+              <header class="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3.5 py-3"><strong class="font-serif text-text">{{ library.library_name }}</strong><span class="font-mono text-[10px] text-text-faint">LIBRARY {{ library.library_id }}</span></header>
+              <dl class="grid grid-cols-2 sm:grid-cols-4">
+                <div class="auto-fill-result-stat"><dt>发现缺集</dt><dd>{{ Number(library.missing_count || 0) }}</dd></div><div class="auto-fill-result-stat"><dt>候选匹配</dt><dd>{{ Number(library.matched_count || 0) }}</dd></div><div class="auto-fill-result-stat"><dt>完成转存</dt><dd>{{ Number(library.transferred_count || 0) }}</dd></div><div class="auto-fill-result-stat"><dt>仍需处理</dt><dd :class="Number(library.remaining_count || 0) > 0 ? 'text-warn' : 'text-ok'">{{ Number(library.remaining_count || 0) }}</dd></div>
+              </dl>
+              <details v-if="recordList(library.series).length" class="border-t border-border/60 px-3.5"><summary class="min-h-11 cursor-pointer py-3 text-xs font-medium text-text-muted hover:text-text">查看 {{ recordList(library.series).length }} 部剧集明细</summary>
+                <ul class="space-y-2 pb-3.5">
+                  <li v-for="series in recordList(library.series)" :key="String(series.series_id)" class="border-l-2 px-3 py-2" :class="series.issue || textList(series.remaining_episodes).length ? 'border-warn bg-warn/5' : 'border-ok bg-ok/5'">
+                    <div class="flex flex-wrap items-center justify-between gap-2"><strong class="text-sm text-text">{{ series.series_name }}</strong><span class="font-mono text-[10px] text-text-faint">{{ series.folder || series.series_id }}</span></div>
+                    <p class="mt-1 text-xs text-text-muted">缺集 {{ textList(series.missing_episodes).join('、') || '—' }}<span v-if="textList(series.matched_episodes).length"> · 候选匹配 {{ textList(series.matched_episodes).join('、') }}</span><span v-if="textList(series.transferred_episodes).length"> · 已转存 {{ textList(series.transferred_episodes).join('、') }}</span><span v-if="textList(series.remaining_episodes).length"> · 仍缺 {{ textList(series.remaining_episodes).join('、') }}</span></p>
+                    <p v-if="series.replacement_status" class="mt-1 text-xs font-medium" :class="series.replacement_status === 'replaced' ? 'text-ok' : 'text-warn'">{{ series.replacement_status === 'replaced' ? `整包替换完成：旧版本已删除，新目录 ${series.replacement_folder}` : series.replacement_status === 'staged' ? '新整包已转存，正在验证后续删除。' : '新整包未通过完整验证，旧版本已保留。' }}</p>
+                    <p v-if="series.issue" class="mt-1 text-xs text-warn">{{ userError(String(series.issue)) }}</p>
+                  </li>
+                </ul>
+              </details>
+            </section>
+          </div>
           <details class="mt-2"><summary class="min-h-11 cursor-pointer py-2 text-xs text-text-muted hover:text-text">查看完整执行结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-bg p-3 font-mono text-xs">{{ resultDetails(task) }}</pre></details>
         </div>
 
@@ -799,5 +896,25 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
   background-size: 200% 100%;
   animation: progress-shimmer 2.5s ease-in-out infinite;
 }
+.auto-fill-result-stat details:not([open]) > :not(summary),
+section > details:not([open]) > :not(summary) { display: none; }
+.auto-fill-result-stat { padding: 12px 14px; border-right: 1px solid var(--border); }
+.auto-fill-result-stat:last-child { border-right: 0; }
+.auto-fill-result-stat dt { color: var(--text-faint); font-size: 10px; }
+.auto-fill-result-stat dd { margin-top: 3px; color: var(--text); font: 600 18px/1.2 "SFMono-Regular", Consolas, monospace; }
+@media (max-width: 639px) { .auto-fill-result-stat:nth-child(2) { border-right: 0; } .auto-fill-result-stat:nth-child(n+3) { border-top: 1px solid var(--border); } }
+.auto-fill-lock { border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--bg)); padding: 16px; }
+.auto-fill-mode { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 12px; min-height: 84px; padding: 14px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease; }
+.auto-fill-mode strong, .auto-fill-mode small { display: block; }
+.auto-fill-mode strong { color: var(--text); font-size: 14px; }
+.auto-fill-mode small { margin-top: 4px; font-size: 12px; line-height: 1.55; }
+.auto-fill-mode-active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.auto-fill-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--border); background: var(--surface); }
+.auto-fill-flow li { position: relative; display: flex; min-height: 76px; align-items: center; gap: 9px; padding: 12px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.auto-fill-flow li + li { border-left: 1px solid var(--border); }
+.auto-fill-flow svg { width: 17px; height: 17px; flex: none; color: var(--accent); }
+.auto-fill-flow b { display: block; margin-bottom: 2px; color: var(--annotation); font: 700 10px/1.2 "SFMono-Regular", Consolas, monospace; letter-spacing: .1em; }
+@media (max-width: 639px) { .auto-fill-flow { grid-template-columns: 1fr 1fr; } .auto-fill-flow li:nth-child(3) { border-left: 0; } .auto-fill-flow li:nth-child(n+3) { border-top: 1px solid var(--border); } }
+@media (prefers-reduced-motion: reduce) { .auto-fill-mode { transition: none; } }
 @media (max-width: 639px) { .task-center-page { padding-bottom: 6rem; } .task-list-end { align-items: flex-start; flex-direction: column; gap: 6px; } }
 </style>

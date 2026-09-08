@@ -23,6 +23,7 @@ var supportedTaskTypes = []string{
 	"emby_match",
 	"emby_refresh",
 	"emby_missing_posters",
+	"series_auto_fill",
 	"strm_sync",
 	"strm_verify",
 }
@@ -145,6 +146,9 @@ func validateTask(taskType string, payload map[string]any) error {
 		return err
 	case "emby_missing_posters":
 		return nil
+	case "series_auto_fill":
+		_, err := resolveSeriesAutoFillSpec(payload)
+		return err
 	case "c115_save_share":
 		rawURL, err := stringPayload(payload, "url", true)
 		if err != nil {
@@ -397,6 +401,8 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 			"items": report.Items, "total_missing": report.Total,
 			"returned": report.Returned, "truncated": report.Truncated,
 		}, nil
+	case "series_auto_fill":
+		return s.runSeriesAutoFill(ctx, task)
 	case "c115_save_share":
 		rawURL, _ := stringPayload(task.Payload, "url", true)
 		password, _ := stringPayload(task.Payload, "password", false)
