@@ -124,8 +124,8 @@ Installer 校验 artifact，安装不可变 release，以服务用户检查数�
 - 浏览器文件删除要求启用 `dangerous_actions_enabled` 并在 UI 中明确确认。Agent token 不能使用该路由或开启其开关；MCP 删除要求提交绑定最新目标的请求，由浏览器用户在 15 分钟内批准，并且只能执行一次。
 - 工具 discovery 只证明注册，不证明 provider 成功。仅根据无错误 result 报告操作成功；异步操作只有在 `status=completed` 后才能报告成功。
 - 服务重启会把中断的 effectful 任务标为失败。创建显式 retry 前应检查 provider 当前状态。
-- CloudDrive 容器重启可能使 Emby 的 bind-mount view 失效。CloudDrive 容器重启后应重启 Emby，并在提供播放前验证 `/media/.embymedia-health-canary`。
-- 备份保留原始服务状态，先停止 V2 与依赖 writer，并包含 `data/auth/http-login.json` 中的实际浏览器用户。隔离恢复会验证身份数据，并通过 `-check-db` 检查 SQLite，之后才能执行任何生产恢复。
+- `embymedia-clouddrive-recovery.timer` 每分钟检查容器和挂载健康标记。容器不健康或连续三次无法读取健康标记时，它会执行有界的 CloudDrive 和 Emby 重启、惰性删除失效的 FUSE 挂载、检查宿主机及 `/media` 健康标记，并恢复 V2；十五分钟冷却期防止重启循环。服务栈停止时也会删除残留的 FUSE 挂载。
+- 备份期间 V2 和 Compose 服务栈保持运行。备份会对每个检测到的数据库使用 SQLite 在线备份 API，重试复制过程中发生变化的普通文件，在生成检查点一致的副本后省略 WAL／SHM companion，通过 `PRAGMA quick_check` 验证每个数据库，再把私有暂存树交给 Restic。隔离恢复会识别该树，恢复规范路径和 owner，验证浏览器 identity，并通过 `-check-db` 检查 SQLite，之后才能执行任何生产恢复。
 
 ## 许可证
 

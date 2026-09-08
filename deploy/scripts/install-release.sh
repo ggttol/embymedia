@@ -34,7 +34,7 @@ state=$(mktemp -d /opt/embymedia-v2/.install-XXXXXXXX)
 changed=0
 activated=0
 committed=0
-units='embymedia-stack.service embymedia-http-login.service embymedia-v2.service caddy.service embymedia-backup.timer embymedia-dsh.service embymedia-control-helper.service'
+units='embymedia-stack.service embymedia-http-login.service embymedia-v2.service caddy.service embymedia-backup.timer embymedia-clouddrive-recovery.service embymedia-clouddrive-recovery.timer embymedia-dsh.service embymedia-control-helper.service'
 
 wait_http() {
   attempts=0
@@ -196,7 +196,7 @@ install -o gaotao -g gaotao -m 0755 -d /home/gaotao/.hermes/skills/embymedia-v2-
 install -o gaotao -g gaotao -m 0644 "$skill_source" /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md
 
 systemctl daemon-reload
-systemctl enable --now embymedia-stack.service embymedia-backup.timer
+systemctl enable --now embymedia-stack.service embymedia-backup.timer embymedia-clouddrive-recovery.timer
 systemctl enable --now embymedia-http-login.service embymedia-v2.service
 systemctl restart embymedia-http-login.service
 systemctl restart embymedia-v2.service

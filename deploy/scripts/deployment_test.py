@@ -35,8 +35,32 @@ def ownership(path, owner):
     (root / 'owners.json').write_text(json.dumps(owners))
 if command == 'id':
     print(0)
-elif command in ('flock', 'sleep'):
+elif command == 'flock':
     pass
+elif command == 'sleep':
+    pass
+elif command == 'timeout':
+    sys.exit(subprocess.run(args[1:], env=os.environ).returncode)
+elif command == 'findmnt':
+    sys.exit(0 if (root / 'mount-present').exists() else 1)
+elif command == 'umount':
+    (root / 'mount-present').unlink(missing_ok=True)
+    canary = root / 'srv/embymedia/data/clouddrive/CloudNAS/CloudDrive/.embymedia-health-canary'
+    canary.unlink(missing_ok=True)
+elif command == 'docker':
+    canary = root / 'srv/embymedia/data/clouddrive/CloudNAS/CloudDrive/.embymedia-health-canary'
+    if args[0] == 'inspect':
+        print('healthy' if (root / 'cloud-healthy').exists() else os.environ.get('CLOUDDRIVE_HEALTH', 'healthy'))
+    elif 'ps' in args and '-q' in args:
+        print('cloud-container')
+    elif 'up' in args:
+        if 'clouddrive2' in args:
+            canary.parent.mkdir(parents=True, exist_ok=True)
+            canary.touch()
+            (root / 'mount-present').touch()
+            (root / 'cloud-healthy').touch()
+    elif 'exec' in args:
+        sys.exit(0 if canary.exists() else 1)
 elif command == 'systemctl':
     op = args[0]
     units = [arg for arg in args[1:] if not arg.startswith('-')]
@@ -119,7 +143,7 @@ elif command == 'restic':
         snapshot = root / 'snapshot'
         for arg in args:
             source = p(arg)
-            if source.is_absolute() and source.exists() and str(source).startswith(str(root / 'srv/embymedia/data')):
+            if source.is_absolute() and source.exists() and str(source).startswith(str(root / 'srv/embymedia')):
                 target = snapshot / source.relative_to(root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if source.is_dir(): shutil.copytree(source, target, dirs_exist_ok=True)
@@ -139,13 +163,13 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
-        self.env = {**os.environ, 'DEPLOY_TEST_ROOT': str(self.root)}
+        self.env = {**os.environ, 'DEPLOY_TEST_ROOT': str(self.root), 'EMBYMEDIA_SNAPSHOT_SOURCE_ROOT': str(self.root)}
         self.fake_bin = self.root / 'cli'
         self.fake_bin.mkdir()
         shim = self.fake_bin / 'shim'
         shim.write_text(f'#!{sys.executable}\n' + MOCK)
         shim.chmod(0o755)
-        for name in ('id', 'flock', 'sleep', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'restic'):
+        for name in ('id', 'flock', 'sleep', 'timeout', 'findmnt', 'umount', 'docker', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'restic'):
             (self.fake_bin / name).symlink_to(shim)
         self.env['PATH'] = str(self.fake_bin) + os.pathsep + os.environ['PATH']
         self.source = self.root / 'source'
@@ -176,6 +200,10 @@ class DeploymentScriptsTest(unittest.TestCase):
         secrets.mkdir(parents=True)
         (secrets / 'clouddrive-webhook-secret').write_text('webhook-secret\n')
         (secrets / 'restic-local-password').write_text('backup-secret')
+        (secrets / 'authelia-users.yml').write_text('users: {}\n')
+        authelia = self.root / 'etc/embymedia/authelia'
+        authelia.mkdir(parents=True)
+        (authelia / 'configuration.yml').write_text('theme: auto\n')
         self.login = self.root / 'srv/embymedia/data/auth/http-login.json'
         self.login.parent.mkdir(parents=True)
         encoded = lambda value: base64.urlsafe_b64encode(value).decode().rstrip('=')
@@ -187,7 +215,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         for folder in ('emby/config', 'clouddrive/config', 'strm', 'authelia'):
             (self.login.parent.parent / folder).mkdir(parents=True)
         self.initial_services = {name: {'active': True, 'enabled': True} for name in (
-            'embymedia-v2.service', 'embymedia-http-login.service', 'embymedia-stack.service', 'caddy.service', 'embymedia-backup.timer')}
+            'docker.service', 'embymedia-v2.service', 'embymedia-http-login.service', 'embymedia-stack.service', 'caddy.service', 'embymedia-backup.timer')}
         (self.root / 'services.json').write_text(json.dumps(self.initial_services))
         (self.root / 'owners.json').write_text('{}')
 
@@ -195,7 +223,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         text = (SCRIPTS / name).read_text()
         text = text.replace('/usr/bin/python3', sys.executable)
         # Only relocate absolute host roots; paths appended to $target remain archive-relative.
-        for prefix in ('/opt/embymedia-v2', '/srv/embymedia', '/etc/embymedia', '/etc/systemd', '/etc/caddy', '/home/gaotao', '/run/lock'):
+        for prefix in ('/opt/embymedia-v2', '/srv/embymedia', '/etc/embymedia', '/etc/systemd', '/etc/caddy', '/home/gaotao', '/run/lock', '/run'):
             text = re.sub(r'(?<![A-Za-z0-9_$])' + re.escape(prefix), str(self.root) + prefix, text)
         path = self.root / name
         path.write_text(text)
@@ -282,11 +310,38 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.assertEqual(json.loads(self.login.read_text()), self.identity)
         self.assertFalse(json.loads((self.root / 'services.json').read_text())['embymedia-v2.service']['active'])
 
+    def test_clouddrive_recovery_replaces_stale_mount_and_restores_v2(self):
+        (self.root / 'mount-present').touch()
+        result = self.run_script('clouddrive-recover.sh', CLOUDDRIVE_HEALTH='unhealthy')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        canary = self.root / 'srv/embymedia/data/clouddrive/CloudNAS/CloudDrive/.embymedia-health-canary'
+        self.assertTrue(canary.is_file())
+        self.assertTrue(json.loads((self.root / 'services.json').read_text())['embymedia-v2.service']['active'])
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        self.assertTrue(any(command[0] == 'umount' and '-l' in command for command in commands))
+        self.assertTrue(any(command[0] == 'docker' and 'stop' in command and 'clouddrive2' in command for command in commands))
+        self.assertGreaterEqual(sum(command[0] == 'docker' and 'up' in command for command in commands), 2)
+
+    def test_stack_stop_cleans_remaining_fuse_mount(self):
+        (self.root / 'mount-present').touch()
+        result = self.run_script('clouddrive-recover.sh', 'stop-stack')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / 'mount-present').exists())
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        docker_stop = next(index for index, command in enumerate(commands) if command[0] == 'docker' and 'stop' in command)
+        unmount = next(index for index, command in enumerate(commands) if command[0] == 'umount')
+        self.assertLess(docker_stop, unmount)
+
     def test_backup_restores_live_browser_identity(self):
         database = self.login.parent.parent / 'embymedia.db'
         database.write_bytes(b'')
         result = self.run_script('backup.sh')
         self.assertEqual(result.returncode, 0, result.stderr)
+        services = json.loads((self.root / 'services.json').read_text())
+        self.assertTrue(all(service['active'] for service in services.values()))
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        self.assertFalse(any(command[:2] == ['systemctl', 'stop'] for command in commands))
+        self.assertFalse((self.root / 'srv/embymedia/backups/.online-snapshot').exists())
         target = self.root / 'srv/embymedia/restore-roundtrip'
         result = self.run_script('restore-isolated.sh', 'latest', target)
         self.assertEqual(result.returncode, 0, result.stderr)

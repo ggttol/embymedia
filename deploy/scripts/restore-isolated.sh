@@ -15,6 +15,13 @@ mkdir -m 0700 "$target"
 RESTIC_PASSWORD_FILE=/etc/embymedia/secrets/restic-local-password \
   restic --repo /srv/embymedia/backups/restic-local restore "$snapshot" --target "$target"
 chmod 0700 "$target"
+online_snapshot="$target/srv/embymedia/backups/.online-snapshot"
+if [ -d "$online_snapshot" ]; then
+  test -s "$online_snapshot/.embymedia-online-backup.json"
+  cp -a "$online_snapshot"/. "$target"/
+  rm -f "$target/.embymedia-online-backup.json"
+  rm -rf "$online_snapshot"
+fi
 
 database="$target/srv/embymedia/data/embymedia.db"
 test -r "$database"

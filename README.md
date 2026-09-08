@@ -124,8 +124,8 @@ The installer verifies the artifact, installs an immutable release, checks the d
 - Browser file deletion requires `dangerous_actions_enabled` and an explicit UI confirmation. Agent tokens cannot use that route or enable its switch; MCP deletion requires a fresh target-bound request, one browser approval within 15 minutes, and one non-replayable execution.
 - Tool discovery proves registration, not provider success. Report an operation as successful only from its non-error result, and report an asynchronous operation only after `status=completed`.
 - A service restart marks interrupted effectful tasks failed. Inspect provider state before creating an explicit retry.
-- CloudDrive container restarts can invalidate Emby's bind-mount view. Restart Emby after a CloudDrive container restart and verify `/media/.embymedia-health-canary` before serving playback.
-- Backups preserve the original service states, quiesce V2 and dependency writers, and include the live browser users in `data/auth/http-login.json`. Isolated restoration validates that identity data and checks SQLite with `-check-db` before any production recovery.
+- `embymedia-clouddrive-recovery.timer` checks the container and mount every minute. An unhealthy container or three consecutive unreadable canaries trigger a bounded CloudDrive and Emby restart, lazy removal of the stale FUSE mount, host and `/media` canary checks, and V2 restoration; a 15-minute cooldown prevents restart loops. Stack shutdown also removes any remaining FUSE mount.
+- Backups keep V2 and the Compose stack running. They use SQLite's online backup API for every detected database, retry regular files that change during copying, omit WAL/SHM companions after checkpoint-consistent copies, validate each database with `PRAGMA quick_check`, and give Restic a private staged tree. Isolated restoration recognizes that tree, restores canonical paths and ownership, validates browser identity, and checks SQLite with `-check-db` before any production recovery.
 
 ## License
 
