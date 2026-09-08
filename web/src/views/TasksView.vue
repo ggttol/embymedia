@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Activity, CalendarClock, FileText, FolderDown, ListTodo, Loader2, Play, Plus, RefreshCcw, RotateCcw, ScanSearch, ShieldCheck, WandSparkles, X } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
@@ -118,6 +118,8 @@ const savingSchedule = ref(false)
 const scheduleError = ref('')
 const highlightedTaskId = ref('')
 const executionFilter = ref<'all' | 'running' | 'completed' | 'attention'>('all')
+const executionPageSize = 5
+const visibleExecutionLimit = ref(executionPageSize)
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
 const activeTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'pending' || task.status === 'running').length)
 const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed' && !taskHasFindings(task)).length)
@@ -128,6 +130,18 @@ const filteredAsyncTasks = computed(() => {
   if (executionFilter.value === 'attention') return asyncTasks.value.filter((t) => t.status === 'failed' || t.status === 'cancelled' || taskHasFindings(t))
   return asyncTasks.value
 })
+const visibleAsyncTasks = computed(() => filteredAsyncTasks.value.slice(0, visibleExecutionLimit.value))
+const hiddenExecutionCount = computed(() => Math.max(0, filteredAsyncTasks.value.length - visibleAsyncTasks.value.length))
+watch(executionFilter, () => { visibleExecutionLimit.value = executionPageSize })
+
+function showMoreExecutions() {
+  visibleExecutionLimit.value += executionPageSize
+}
+
+function collapseExecutions() {
+  visibleExecutionLimit.value = executionPageSize
+  document.getElementById('execution-heading')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 let pollTimer: number | undefined
 
 let schedulesGeneration = 0
@@ -751,17 +765,38 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       </footer>
     </form>
 
+    <section class="space-y-4" aria-labelledby="schedule-heading">
+      <div class="flex items-center justify-between gap-3 px-1">
+        <div><div class="flex items-center gap-2"><ListTodo class="w-4 h-4 text-accent" /><h2 id="schedule-heading" class="font-serif font-semibold text-xl text-text">自动任务</h2></div><p class="mt-1 text-xs text-text-faint">系统会按计划执行；也可以随时手动启动一次。</p></div>
+        <span class="text-xs font-mono text-text-faint">{{ schedulesLoaded ? `${tasks.length} 个` : '—' }}</span>
+      </div>
+      <div v-if="schedulesError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
+      <div v-else-if="!schedulesLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取自动任务</div>
+      <div v-else-if="tasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
+      <article v-for="task in tasks" :key="task.id" class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs hover:shadow-card hover:border-border-strong transition-all duration-200 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+        <div class="space-y-3 min-w-0">
+          <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="activeExecution(task) ? 'bg-warn animate-pulse' : { 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2.5 py-0.5 rounded-full bg-accent-soft text-xs font-medium text-accent border border-accent/20">{{ frequencyLabel(task.cron_expr) }}</span></div>
+          <div><strong class="text-sm text-text font-medium">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>
+          <div class="flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-faint"><span>最近启动：{{ formatTime(task.last_run_at) }}</span><span v-if="task.next_run_at">下次：{{ formatTime(task.next_run_at) }}</span><span v-if="activeExecution(task)" class="font-semibold text-warn">本次：{{ statusLabel(activeExecution(task)?.status || '') }} · {{ Math.round(activeExecution(task)?.progress || 0) }}%</span><span v-if="task.error" class="text-danger">{{ userError(task.error) }}</span></div>
+          <p v-if="scheduleErrors[task.id]" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ scheduleErrors[task.id] }}</p>
+        </div>
+        <button type="button" @click="runTask(task)" :disabled="Boolean(executingId) || Boolean(activeExecution(task))" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 rounded-xl border border-accent/80 bg-surface hover:bg-accent hover:text-accent-contrast text-sm font-medium text-accent shadow-xs disabled:opacity-50 transition-all duration-200">
+          <Loader2 v-if="executingId === task.id || activeExecution(task)" class="w-4 h-4 animate-spin" /><Play v-else class="w-4 h-4" /><span>{{ executingId === task.id ? '正在创建执行' : activeExecution(task)?.status === 'pending' ? '等待执行' : activeExecution(task) ? `执行中 ${Math.round(activeExecution(task)?.progress || 0)}%` : '立即执行' }}</span>
+        </button>
+      </article>
+    </section>
+
     <section class="space-y-4" aria-labelledby="execution-heading">
       <div class="flex items-center justify-between gap-3 px-1">
         <div><div class="flex items-center gap-2"><Activity class="w-4 h-4 text-annotation" /><h2 id="execution-heading" class="font-serif font-semibold text-xl text-text">最近执行</h2></div><p class="mt-1 text-xs text-text-faint">执行中每秒更新，空闲时每 5 秒更新；开始、结束、耗时、进度、日志与结果均保留。</p></div>
-        <span class="text-xs font-mono text-text-faint">{{ executionsLoaded ? `显示 ${filteredAsyncTasks.length} / 共 ${asyncTasks.length} 条` : '—' }}</span>
+        <span class="text-xs font-mono text-text-faint">{{ executionsLoaded ? `显示 ${visibleAsyncTasks.length} / 筛选 ${filteredAsyncTasks.length} / 共 ${asyncTasks.length} 条` : '—' }}</span>
       </div>
 
       <div v-if="executionsError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ executionsError }}</p><p v-if="executionsLoaded" class="mt-1">以下为上次读取的执行记录。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
       <div v-else-if="!executionsLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取执行记录</div>
       <div v-else-if="filteredAsyncTasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-text-faint text-sm">{{ asyncTasks.length === 0 ? '还没有执行记录。创建自动任务并选择“立即执行”后，进度会显示在这里。' : '当前筛选分类下无执行记录。' }}</div>
 
-      <article v-for="task in filteredAsyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 sm:p-6 rounded-2xl border bg-surface shadow-xs space-y-4 transition-all duration-200 hover:shadow-card" :class="highlightedTaskId === task.id ? 'border-accent ring-2 ring-accent/20' : 'border-border/80 hover:border-border-strong'">
+      <article v-for="task in visibleAsyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 sm:p-6 rounded-2xl border bg-surface shadow-xs space-y-4 transition-all duration-200 hover:shadow-card" :class="highlightedTaskId === task.id ? 'border-accent ring-2 ring-accent/20' : 'border-border/80 hover:border-border-strong'">
         <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
           <div class="flex items-start gap-3.5 min-w-0">
             <span class="w-2.5 h-2.5 mt-2 rounded-full shrink-0" :class="asyncTone(task)"></span>
@@ -850,30 +885,14 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           </div>
         </div>
       </article>
-    </section>
-
-    <section class="space-y-4" aria-labelledby="schedule-heading">
-      <div class="flex items-center justify-between gap-3 px-1">
-        <div><div class="flex items-center gap-2"><ListTodo class="w-4 h-4 text-accent" /><h2 id="schedule-heading" class="font-serif font-semibold text-xl text-text">自动任务</h2></div><p class="mt-1 text-xs text-text-faint">系统会按计划执行；也可以随时手动启动一次。</p></div>
-        <span class="text-xs font-mono text-text-faint">{{ schedulesLoaded ? `${tasks.length} 个` : '—' }}</span>
+      <div v-if="executionsLoaded && filteredAsyncTasks.length > executionPageSize" class="flex flex-col items-center gap-2 border-t border-border/70 pt-5 sm:flex-row sm:justify-center">
+        <button v-if="hiddenExecutionCount > 0" type="button" class="min-h-11 border border-accent bg-surface px-5 text-sm font-medium text-accent transition-colors hover:bg-accent hover:text-accent-contrast" @click="showMoreExecutions">查看更多 · 还有 {{ hiddenExecutionCount }} 条</button>
+        <button v-if="visibleExecutionLimit > executionPageSize" type="button" class="min-h-11 border border-border bg-surface px-5 text-sm font-medium text-text-muted transition-colors hover:bg-bg-muted hover:text-text" @click="collapseExecutions">收起到最近 {{ executionPageSize }} 条</button>
       </div>
-      <div v-if="schedulesError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
-      <div v-else-if="!schedulesLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取自动任务</div>
-      <div v-else-if="tasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
-      <article v-for="task in tasks" :key="task.id" class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs hover:shadow-card hover:border-border-strong transition-all duration-200 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-        <div class="space-y-3 min-w-0">
-          <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="activeExecution(task) ? 'bg-warn animate-pulse' : { 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2.5 py-0.5 rounded-full bg-accent-soft text-xs font-medium text-accent border border-accent/20">{{ frequencyLabel(task.cron_expr) }}</span></div>
-          <div><strong class="text-sm text-text font-medium">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>
-          <div class="flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-faint"><span>最近启动：{{ formatTime(task.last_run_at) }}</span><span v-if="task.next_run_at">下次：{{ formatTime(task.next_run_at) }}</span><span v-if="activeExecution(task)" class="font-semibold text-warn">本次：{{ statusLabel(activeExecution(task)?.status || '') }} · {{ Math.round(activeExecution(task)?.progress || 0) }}%</span><span v-if="task.error" class="text-danger">{{ userError(task.error) }}</span></div>
-          <p v-if="scheduleErrors[task.id]" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ scheduleErrors[task.id] }}</p>
-        </div>
-        <button type="button" @click="runTask(task)" :disabled="Boolean(executingId) || Boolean(activeExecution(task))" class="flex min-h-11 shrink-0 items-center justify-center gap-2 px-4 rounded-xl border border-accent/80 bg-surface hover:bg-accent hover:text-accent-contrast text-sm font-medium text-accent shadow-xs disabled:opacity-50 transition-all duration-200">
-          <Loader2 v-if="executingId === task.id || activeExecution(task)" class="w-4 h-4 animate-spin" /><Play v-else class="w-4 h-4" /><span>{{ executingId === task.id ? '正在创建执行' : activeExecution(task)?.status === 'pending' ? '等待执行' : activeExecution(task) ? `执行中 ${Math.round(activeExecution(task)?.progress || 0)}%` : '立即执行' }}</span>
-        </button>
-      </article>
     </section>
 
-    <footer class="task-list-end" aria-label="任务列表结束"><span>END OF TASK HISTORY</span><strong>已显示全部执行记录与自动任务</strong></footer>
+
+    <footer class="task-list-end" aria-label="任务列表结束"><span>END OF TASK CENTER</span><strong>自动任务优先展示，执行记录按需展开</strong></footer>
 
     <UiDialog v-if="retryTarget" title="重新执行任务" :busy="Boolean(actionBusyId)" @close="closeRetry">
       <form class="space-y-5" @submit.prevent="retryTask">
