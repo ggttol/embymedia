@@ -49,7 +49,7 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - Poster maintenance is presented as one inspect–repair–verify task; completed runs remain warnings when any poster is still missing or a refresh request failed.
 - Metadata repair pairs one confidence statement with a bounded work limit and explicit auto-apply switch; execution cards separate auto-matched, review, and no-candidate outcomes and expose provider candidates progressively.
 - The Task Center places the schedule inventory before execution history. History renders the five newest filtered records first and expands in five-record increments, with an explicit collapse action.
-- Hourly schedules sort by minute within the Task Center so the six-stage pipeline reads in execution order even when recent updates change database row order.
+- Hourly schedules sort by minute within the Task Center so automatic episode completion, STRM synchronization, and Emby refresh read in execution order. Metadata repair, poster repair, and read-only STRM verification run once daily at 04:10, 04:20, and 04:40.
 
 ## Composition
 Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options.

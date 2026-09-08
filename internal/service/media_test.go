@@ -205,3 +205,34 @@ func TestMediaServiceRejectsEscapingSTRMTarget(t *testing.T) {
 		t.Fatalf("escaping STRM target was not rejected: %+v, err=%v", result, err)
 	}
 }
+
+func TestMediaServiceSerializesCollidingSTRMOutputs(t *testing.T) {
+	root := t.TempDir()
+	mediaRoot := filepath.Join(root, "media")
+	strmRoot := filepath.Join(root, "strm")
+	movies := filepath.Join(mediaRoot, "Movies")
+	if err := os.MkdirAll(movies, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Episode.mkv", "Episode.mp4"} {
+		if err := os.WriteFile(filepath.Join(movies, name), []byte("video"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSettings(map[string]string{"media_root": mediaRoot, "strm_root": strmRoot, "emby_media_prefix": "/media"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := NewMediaService(db).SyncSTRM(context.Background(), "Movies")
+	if err != nil || result.MediaFiles != 2 || result.Created != 1 || result.Updated != 1 || result.Valid != 1 {
+		t.Fatalf("colliding outputs lost source order: %+v, err=%v", result, err)
+	}
+	content, err := os.ReadFile(filepath.Join(strmRoot, "Movies", "Episode.strm"))
+	if err != nil || strings.TrimSpace(string(content)) != "/media/Movies/Episode.mp4" {
+		t.Fatalf("later source did not own colliding output: %q, err=%v", content, err)
+	}
+}

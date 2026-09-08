@@ -571,6 +571,10 @@ func (d *DB) ListAsyncTasks(status string, limit int) ([]domain.AsyncTask, error
 		return nil, err
 	}
 	defer rows.Close()
+	return collectAsyncTasks(rows)
+}
+
+func collectAsyncTasks(rows *sql.Rows) ([]domain.AsyncTask, error) {
 	result := make([]domain.AsyncTask, 0)
 	for rows.Next() {
 		task, err := scanAsyncTask(rows)
@@ -580,6 +584,25 @@ func (d *DB) ListAsyncTasks(status string, limit int) ([]domain.AsyncTask, error
 		result = append(result, *task)
 	}
 	return result, rows.Err()
+}
+
+// ListPendingAsyncTasks returns the oldest queued executions first.
+func (d *DB) ListPendingAsyncTasks(limit int) ([]domain.AsyncTask, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	query := `SELECT id, type, schedule_id, payload, status, progress, result, error, attempts, max_attempts, created_at, updated_at FROM async_tasks WHERE status = 'pending' ORDER BY created_at ASC, id ASC`
+	var args []any
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectAsyncTasks(rows)
+
 }
 
 func (d *DB) GetAsyncTask(id string) (*domain.AsyncTask, error) {

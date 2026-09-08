@@ -50,8 +50,8 @@ func TestCronManagerQueuesRealOperation(t *testing.T) {
 		t.Fatalf("schedule task: %v", err)
 	}
 	storedBeforeRun, err := db.GetTask(task.ID)
-	if err != nil || storedBeforeRun.NextRunAt == nil || storedBeforeRun.NextRunAt.IsZero() {
-		t.Fatalf("schedule did not persist its initial next run: %+v, err=%v", storedBeforeRun, err)
+	if err != nil || storedBeforeRun.NextRunAt == nil || storedBeforeRun.NextRunAt.IsZero() || task.NextRunAt == nil || !task.NextRunAt.Equal(*storedBeforeRun.NextRunAt) {
+		t.Fatalf("schedule did not return its persisted initial next run: returned=%+v stored=%+v err=%v", task.NextRunAt, storedBeforeRun.NextRunAt, err)
 	}
 	deadline := time.Now().Add(4 * time.Second)
 	for refreshes.Load() == 0 && time.Now().Before(deadline) {

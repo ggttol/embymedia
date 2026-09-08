@@ -249,3 +249,24 @@ func TestOpenAddsScheduleLinkToExistingAsyncTasks(t *testing.T) {
 		t.Fatalf("migrated legacy task was not readable: %+v, err=%v", tasks, err)
 	}
 }
+
+func TestListPendingAsyncTasksUsesCreationOrder(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	base := time.Now()
+	for _, task := range []*domain.AsyncTask{
+		{ID: "newer", Type: "strm_verify", Payload: map[string]any{}, Status: "pending", CreatedAt: base.Add(time.Second)},
+		{ID: "oldest", Type: "strm_sync", Payload: map[string]any{}, Status: "pending", CreatedAt: base},
+	} {
+		if err := db.CreateAsyncTask(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks, err := db.ListPendingAsyncTasks(1)
+	if err != nil || len(tasks) != 1 || tasks[0].ID != "oldest" {
+		t.Fatalf("pending tasks were not dispatched FIFO: %+v, err=%v", tasks, err)
+	}
+}

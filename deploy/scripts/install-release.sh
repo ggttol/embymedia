@@ -4,6 +4,8 @@ umask 077
 
 source_tree=${1:?source tree required}
 release_id=${2:-$(date -u +%Y%m%dT%H%M%SZ)}
+force=${EMBYMEDIA_DEPLOY_FORCE:-0}
+case "$force" in 0|1) ;; *) echo 'EMBYMEDIA_DEPLOY_FORCE must be 0 or 1' >&2; exit 1 ;; esac
 
 [ "$(id -u)" -eq 0 ] || { echo 'run as root' >&2; exit 1; }
 case "$release_id" in
@@ -43,6 +45,31 @@ wait_http() {
     attempts=$((attempts + 1))
     sleep 1
   done
+  return 1
+}
+
+wait_task_queue_idle() {
+  attempts=0
+  announced=0
+  while [ "$attempts" -lt 720 ]; do
+    active=$(curl -fsS --max-time 2 -H 'Remote-User: release-probe' 'http://127.0.0.1:3080/api/v1/async-tasks?status=running')
+    case "$active" in
+      *'"tasks":[]'*) return 0 ;;
+      *'"id":'*)
+        if [ "$announced" -eq 0 ]; then
+          echo 'waiting for active EmbyMedia task before deployment'
+          announced=1
+        fi
+        attempts=$((attempts + 1))
+        sleep 5
+        ;;
+      *)
+        echo 'active task query returned an invalid response; deployment left the running release unchanged' >&2
+        return 1
+        ;;
+    esac
+  done
+  echo 'active EmbyMedia task did not finish within one hour; deployment left the running release unchanged' >&2
   return 1
 }
 
@@ -147,6 +174,7 @@ for unit in $units; do
   if systemctl is-enabled --quiet "$unit"; then touch "$state/$unit.enabled"; fi
 done
 
+if [ -f "$state/embymedia-v2.service.active" ] && [ "$force" -ne 1 ]; then wait_task_queue_idle; fi
 changed=1
 if [ -f "$state/embymedia-v2.service.active" ]; then systemctl stop embymedia-v2.service; fi
 systemctl disable --now embymedia-dsh.service embymedia-control-helper.service 2>/dev/null || true
@@ -173,7 +201,11 @@ webhook_config_temp=$(mktemp "$webhook_config_dir/.webhook-XXXXXXXX")
 } > "$webhook_config_temp"
 chown root:root "$webhook_config_temp"
 chmod 0600 "$webhook_config_temp"
-mv -f "$webhook_config_temp" "$webhook_config"
+if [ -f "$webhook_config" ] && cmp -s "$webhook_config_temp" "$webhook_config"; then
+  rm -f "$webhook_config_temp"
+else
+  mv -f "$webhook_config_temp" "$webhook_config"
+fi
 webhook_config_temp=
 runuser -u embymedia -- "$release/bin/embymedia" -bootstrap-webhook-secret-file "$secret_input" -db "$database"
 rm -f "$secret_input"
@@ -203,9 +235,10 @@ install -o gaotao -g gaotao -m 0644 "$skill_source" /home/gaotao/.hermes/skills/
 
 systemctl daemon-reload
 systemctl enable --now embymedia-stack.service embymedia-backup.timer embymedia-clouddrive-recovery.timer
-systemctl enable --now embymedia-http-login.service embymedia-v2.service
+systemctl enable --now embymedia-http-login.service
+systemctl enable embymedia-v2.service
 systemctl restart embymedia-http-login.service
-systemctl restart embymedia-v2.service
+systemctl start embymedia-v2.service
 wait_http http://127.0.0.1:9092/health
 wait_http -H 'Remote-User: release-probe' http://127.0.0.1:3080/api/v1/openapi.json
 if systemctl is-active --quiet caddy.service; then

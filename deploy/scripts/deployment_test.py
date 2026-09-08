@@ -137,6 +137,12 @@ elif command == 'curl':
     if os.environ.get('FAIL_HEALTH') and current.resolve().name == 'new': sys.exit(1)
     assert (current / 'bin/embymedia').is_file()
     service = 'embymedia-http-login.service' if ':9092/' in args[-1] else 'embymedia-v2.service'
+    if '/api/v1/async-tasks?status=running' in args[-1]:
+        polls = root / 'active-task-polls'
+        if not polls.exists(): polls.write_text(os.environ.get('ACTIVE_TASK_POLLS', '0'))
+        remaining = int(polls.read_text())
+        polls.write_text(str(max(0, remaining - 1)))
+        print('{"tasks":[{"id":"running"}]}' if remaining else '{"tasks":[]}')
     sys.exit(0 if state[service]['active'] else 1)
 elif command == 'restic':
     if 'backup' in args:
@@ -277,6 +283,34 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.assertTrue(any(command[:3] == ['systemctl', 'reload', 'caddy.service'] for command in commands))
         self.assertFalse(any(command[:3] == ['systemctl', 'restart', 'caddy.service'] for command in commands))
 
+    def test_unchanged_webhook_configuration_is_not_replaced(self):
+        webhook = self.login.parent.parent / 'clouddrive/config/webhooks/webhook.toml'
+        webhook.parent.mkdir(parents=True, exist_ok=True)
+        webhook.write_text('[file_system_watcher]\nenabled = true\nurl = "http://host.docker.internal/hooks/clouddrive2?key=webhook-secret"\nmethod = "POST"\n')
+        inode = webhook.stat().st_ino
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(webhook.stat().st_ino, inode)
+
+    def test_active_service_is_started_once_after_task_drain(self):
+        result = self.install(ACTIVE_TASK_POLLS='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('waiting for active EmbyMedia task before deployment', result.stdout)
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        task_checks = [i for i, command in enumerate(commands) if '/api/v1/async-tasks?status=running' in command[-1]]
+        service_stop = next(i for i, command in enumerate(commands) if command[:3] == ['systemctl', 'stop', 'embymedia-v2.service'])
+        starts = [command for command in commands if command[:3] in (['systemctl', 'start', 'embymedia-v2.service'], ['systemctl', 'restart', 'embymedia-v2.service'])]
+        self.assertEqual(len(task_checks), 2)
+        self.assertLess(task_checks[-1], service_stop)
+        self.assertEqual(starts, [['systemctl', 'start', 'embymedia-v2.service']])
+
+    def test_explicit_force_skips_active_task_drain(self):
+        result = self.install(ACTIVE_TASK_POLLS='1', EMBYMEDIA_DEPLOY_FORCE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        self.assertFalse(any('/api/v1/async-tasks?status=running' in command[-1] for command in commands))
+        self.assertTrue(any(command[:3] == ['systemctl', 'stop', 'embymedia-v2.service'] for command in commands))
+
     def test_database_failure_restarts_previous_service(self):
         self.assert_recovered(self.install(FAIL_COMMAND='embymedia -check-db'))
 
@@ -290,7 +324,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.assert_recovered(self.install(FAIL_COMMAND='systemctl daemon-reload'))
 
     def test_startup_failure_restores_previous_deployment(self):
-        self.assert_recovered(self.install(FAIL_COMMAND='systemctl restart embymedia-v2.service'))
+        self.assert_recovered(self.install(FAIL_COMMAND='systemctl start embymedia-v2.service'))
 
     def test_unhealthy_release_restores_previous_deployment(self):
         self.assert_recovered(self.install(FAIL_HEALTH='1'))

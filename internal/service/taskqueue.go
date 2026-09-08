@@ -256,7 +256,7 @@ func (s *TaskQueueService) workerLoop(ctx context.Context, done chan<- struct{})
 }
 
 func (s *TaskQueueService) processPendingTasks(ctx context.Context) {
-	tasks, err := s.db.ListAsyncTasks("pending", 5)
+	tasks, err := s.db.ListPendingAsyncTasks(5)
 	if err != nil {
 		log.Printf("list pending tasks: %v", err)
 		return

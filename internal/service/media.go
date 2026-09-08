@@ -6,7 +6,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/embymedia/embymedia/internal/storage"
 )
@@ -259,6 +262,121 @@ func reportMediaProgress(update func(float64, string) error, progress float64, m
 	return update(progress, message)
 }
 
+const strmWorkerCount = 2
+
+func processConcurrently[T any](ctx context.Context, items []T, process func(context.Context, T) error) error {
+	workerCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	jobs := make(chan T, strmWorkerCount)
+	var workers sync.WaitGroup
+	for range strmWorkerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case item, ok := <-jobs:
+					if !ok {
+						return
+					}
+					if err := process(workerCtx, item); err != nil {
+						cancel(err)
+						return
+					}
+				}
+			}
+		}()
+	}
+send:
+	for _, item := range items {
+		select {
+		case <-workerCtx.Done():
+			break send
+		case jobs <- item:
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	return context.Cause(workerCtx)
+}
+
+type strmSyncJob struct {
+	outputRelative string
+	contents       [][]byte
+}
+
+type strmVerifyJob struct {
+	path   string
+	linked bool
+}
+
+type strmTargetState uint8
+
+const (
+	strmTargetValid strmTargetState = iota
+	strmTargetMissing
+	strmTargetInvalid
+)
+
+type resolvedDirectory struct {
+	path string
+	err  error
+}
+
+func inspectSTRMTarget(mediaRoot, relative string, directories *sync.Map) (strmTargetState, error) {
+	candidate := filepath.Join(mediaRoot, relative)
+	parent := filepath.Dir(candidate)
+	value, ok := directories.Load(parent)
+	if !ok {
+		resolved, err := filepath.EvalSymlinks(parent)
+		value, _ = directories.LoadOrStore(parent, resolvedDirectory{path: resolved, err: err})
+	}
+	directory := value.(resolvedDirectory)
+	if os.IsNotExist(directory.err) {
+		return strmTargetMissing, nil
+	}
+	if directory.err != nil {
+		return strmTargetInvalid, directory.err
+	}
+	if !inside(mediaRoot, directory.path) {
+		return strmTargetInvalid, nil
+	}
+	leaf := filepath.Join(directory.path, filepath.Base(candidate))
+	info, err := os.Lstat(leaf)
+	if os.IsNotExist(err) {
+		return strmTargetMissing, nil
+	}
+	if err != nil {
+		return strmTargetInvalid, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return strmTargetValid, nil
+	}
+	resolved, err := filepath.EvalSymlinks(leaf)
+	if os.IsNotExist(err) {
+		return strmTargetMissing, nil
+	}
+	if err != nil {
+		return strmTargetInvalid, err
+	}
+	if !inside(mediaRoot, resolved) {
+		return strmTargetInvalid, nil
+	}
+	return strmTargetValid, nil
+}
+
+func addConcurrentExample(mu *sync.Mutex, examples *[]string, value string) {
+	mu.Lock()
+	defer mu.Unlock()
+	*examples = append(*examples, value)
+	sort.Strings(*examples)
+	if len(*examples) > 20 {
+		*examples = (*examples)[:20]
+	}
+}
+
 // SyncSTRM creates or updates one STRM file for each supported video file and then verifies the result.
 func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult, error) {
 	return s.SyncSTRMWithProgress(ctx, library, nil)
@@ -284,6 +402,8 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 	}
 	result := STRMResult{}
 	expected := make(map[string]struct{})
+	jobs := make([]strmSyncJob, 0, 1024)
+	jobIndex := make(map[string]int)
 	err = filepath.WalkDir(mediaBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -311,34 +431,76 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 			return err
 		}
 		outputRelative := filepath.Join(libraryRelative, strings.TrimSuffix(relative, filepath.Ext(relative))+".strm")
-		output, err := safeOutputPath(strmRoot, outputRelative)
-		if err != nil {
-			return err
+		cleanOutput, err := cleanRelative(outputRelative, "STRM output")
+		if err != nil || cleanOutput == "" {
+			return fmt.Errorf("invalid STRM output path")
 		}
-		expected[output] = struct{}{}
+		expected[filepath.Join(strmRoot, cleanOutput)] = struct{}{}
 		targetRelative := relative
 		if strings.TrimSpace(library) != "" {
 			targetRelative = filepath.Join(filepath.Clean(library), relative)
 		}
 		content := []byte(embyPrefix + "/" + filepath.ToSlash(targetRelative) + "\n")
-		existing, readErr := os.ReadFile(output)
-		if readErr == nil && string(existing) == string(content) {
-			result.Unchanged++
-			return nil
-		}
-		if readErr != nil && !os.IsNotExist(readErr) {
-			return readErr
-		}
-		if err := writeAtomic(output, content); err != nil {
-			return err
-		}
-		if os.IsNotExist(readErr) {
-			result.Created++
+		if index, exists := jobIndex[cleanOutput]; exists {
+			jobs[index].contents = append(jobs[index].contents, content)
 		} else {
-			result.Updated++
+			jobIndex[cleanOutput] = len(jobs)
+			jobs = append(jobs, strmSyncJob{outputRelative: cleanOutput, contents: [][]byte{content}})
 		}
 		return nil
 	})
+	if err != nil {
+		return result, err
+	}
+	if err := reportMediaProgress(update, 30, fmt.Sprintf("STRM source scan found %d media files", result.MediaFiles)); err != nil {
+		return result, err
+	}
+	var created, updated, unchanged, completed atomic.Int64
+	var progressMu sync.Mutex
+	nextReport := int64(1000)
+	err = processConcurrently(ctx, jobs, func(_ context.Context, job strmSyncJob) error {
+		output, err := safeOutputPath(strmRoot, job.outputRelative)
+		if err != nil {
+			return err
+		}
+		for _, content := range job.contents {
+			existing, readErr := os.ReadFile(output)
+			if readErr == nil && string(existing) == string(content) {
+				unchanged.Add(1)
+			} else {
+				if readErr != nil && !os.IsNotExist(readErr) {
+					return readErr
+				}
+				if err := writeAtomic(output, content); err != nil {
+					return err
+				}
+				if os.IsNotExist(readErr) {
+					created.Add(1)
+				} else {
+					updated.Add(1)
+				}
+			}
+			count := completed.Add(1)
+			progressMu.Lock()
+			var progressErr error
+			if count >= nextReport {
+				nextReport = count/1000*1000 + 1000
+				progress := 30.0
+				if result.MediaFiles > 0 {
+					progress += 30 * float64(count) / float64(result.MediaFiles)
+				}
+				progressErr = reportMediaProgress(update, progress, fmt.Sprintf("STRM output reconciliation processed %d files", count))
+			}
+			progressMu.Unlock()
+			if progressErr != nil {
+				return progressErr
+			}
+		}
+		return nil
+	})
+	result.Created = int(created.Load())
+	result.Updated = int(updated.Load())
+	result.Unchanged = int(unchanged.Load())
 	if err != nil {
 		return result, err
 	}
@@ -381,8 +543,7 @@ func (s *MediaService) VerifySTRMWithProgress(ctx context.Context, library strin
 	if err := reportMediaProgress(update, 0, "STRM verification started"); err != nil {
 		return STRMResult{}, err
 	}
-	result := STRMResult{}
-	checked := 0
+	jobs := make([]strmVerifyJob, 0, 1024)
 	err = filepath.WalkDir(strmBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -393,54 +554,90 @@ func (s *MediaService) VerifySTRMWithProgress(ctx context.Context, library strin
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".strm" {
 			return nil
 		}
-		checked++
-		if checked%2000 == 0 {
-			if err := reportMediaProgress(update, 0, fmt.Sprintf("STRM verification checked %d files", checked)); err != nil {
-				return err
-			}
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			result.Invalid++
-			addExample(&result, path+": symbolic link is not allowed")
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		target := strings.TrimSpace(string(content))
-		prefix := embyPrefix + "/"
-		if !strings.HasPrefix(target, prefix) {
-			result.Invalid++
-			addExample(&result, path+": invalid target")
-			return nil
-		}
-		relative, err := cleanRelative(filepath.FromSlash(strings.TrimPrefix(target, prefix)), "STRM target")
-		if err != nil || relative == "" {
-			result.Invalid++
-			addExample(&result, path+": target escapes media_root")
-			return nil
-		}
-		candidate := filepath.Join(mediaRoot, relative)
-		resolved, err := filepath.EvalSymlinks(candidate)
-		if err != nil {
-			if os.IsNotExist(err) {
-				result.Missing++
-				addExample(&result, path+": missing "+target)
-				return nil
-			}
-			return err
-		}
-		if !inside(mediaRoot, resolved) {
-			result.Invalid++
-			addExample(&result, path+": target resolves outside media_root")
-			return nil
-		}
-		result.Valid++
+		jobs = append(jobs, strmVerifyJob{path: path, linked: entry.Type()&os.ModeSymlink != 0})
 		return nil
 	})
-	if err == nil {
-		err = reportMediaProgress(update, 100, fmt.Sprintf("STRM verification completed after %d files", checked))
+	if err != nil {
+		return STRMResult{}, err
 	}
+	if err := reportMediaProgress(update, 5, fmt.Sprintf("STRM verification found %d files", len(jobs))); err != nil {
+		return STRMResult{}, err
+	}
+	groups := make([][]strmVerifyJob, 0, 256)
+	groupIndex := make(map[string]int)
+	for _, job := range jobs {
+		directory := filepath.Dir(job.path)
+		if index, exists := groupIndex[directory]; exists {
+			groups[index] = append(groups[index], job)
+		} else {
+			groupIndex[directory] = len(groups)
+			groups = append(groups, []strmVerifyJob{job})
+		}
+	}
+	var valid, missing, invalid, completed atomic.Int64
+	var examplesMu, progressMu sync.Mutex
+	examples := make([]string, 0, 20)
+	var directories sync.Map
+	nextReport := int64(2000)
+	err = processConcurrently(ctx, groups, func(_ context.Context, group []strmVerifyJob) error {
+		for _, job := range group {
+			if job.linked {
+				invalid.Add(1)
+				addConcurrentExample(&examplesMu, &examples, job.path+": symbolic link is not allowed")
+			} else {
+				content, err := os.ReadFile(job.path)
+				if err != nil {
+					return err
+				}
+				target := strings.TrimSpace(string(content))
+				prefix := embyPrefix + "/"
+				if !strings.HasPrefix(target, prefix) {
+					invalid.Add(1)
+					addConcurrentExample(&examplesMu, &examples, job.path+": invalid target")
+				} else {
+					relative, err := cleanRelative(filepath.FromSlash(strings.TrimPrefix(target, prefix)), "STRM target")
+					if err != nil || relative == "" {
+						invalid.Add(1)
+						addConcurrentExample(&examplesMu, &examples, job.path+": target escapes media_root")
+					} else {
+						state, err := inspectSTRMTarget(mediaRoot, relative, &directories)
+						switch {
+						case err != nil:
+							return err
+						case state == strmTargetMissing:
+							missing.Add(1)
+							addConcurrentExample(&examplesMu, &examples, job.path+": missing "+target)
+						case state == strmTargetInvalid:
+							invalid.Add(1)
+							addConcurrentExample(&examplesMu, &examples, job.path+": target resolves outside media_root")
+						default:
+							valid.Add(1)
+						}
+					}
+				}
+			}
+			count := completed.Add(1)
+			progressMu.Lock()
+			var progressErr error
+			if count >= nextReport {
+				nextReport = count/2000*2000 + 2000
+				progress := 5.0
+				if len(jobs) > 0 {
+					progress += 94 * float64(count) / float64(len(jobs))
+				}
+				progressErr = reportMediaProgress(update, progress, fmt.Sprintf("STRM verification checked %d files", count))
+			}
+			progressMu.Unlock()
+			if progressErr != nil {
+				return progressErr
+			}
+		}
+		return nil
+	})
+	result := STRMResult{Valid: int(valid.Load()), Missing: int(missing.Load()), Invalid: int(invalid.Load()), Examples: examples}
+	if err != nil {
+		return result, err
+	}
+	err = reportMediaProgress(update, 100, fmt.Sprintf("STRM verification completed after %d files", len(jobs)))
 	return result, err
 }

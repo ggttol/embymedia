@@ -166,7 +166,15 @@ func (cm *CronManager) ScheduleTask(task *domain.ScheduledTask) error {
 	if !task.Enabled {
 		return cm.db.SaveTask(task)
 	}
-	return cm.registerTask(*task)
+	if err := cm.registerTask(*task); err != nil {
+		return err
+	}
+	stored, err := cm.db.GetTask(task.ID)
+	if err != nil {
+		return err
+	}
+	*task = *stored
+	return nil
 }
 
 // DeleteTask removes one schedule and its active cron registration.
