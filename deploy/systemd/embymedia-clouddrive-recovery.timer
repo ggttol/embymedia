@@ -1,0 +1,12 @@
+[Unit]
+Description=Monitor the CloudDrive FUSE mount
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=10s
+AccuracySec=10s
+Unit=embymedia-clouddrive-recovery.service
+
+[Install]
+WantedBy=timers.target

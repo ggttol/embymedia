@@ -1,0 +1,13 @@
+[Unit]
+Description=Recover an unreadable CloudDrive FUSE mount
+After=docker.service embymedia-stack.service
+Requires=docker.service
+ConditionPathExists=/opt/embymedia-v2/current/deploy/compose.yml
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/embymedia-v2/current
+ExecStart=/opt/embymedia-v2/current/deploy/scripts/clouddrive-recover.sh monitor
+TimeoutStartSec=720
