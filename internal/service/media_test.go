@@ -51,7 +51,8 @@ func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T)
 	root := t.TempDir()
 	mediaRoot := filepath.Join(root, "media")
 	strmRoot := filepath.Join(root, "strm")
-	for _, directory := range []string{filepath.Join(mediaRoot, "Movies"), filepath.Join(strmRoot, "Movies")} {
+	ghostDirectory := filepath.Join(strmRoot, "Movies", "Ghost")
+	for _, directory := range []string{filepath.Join(mediaRoot, "Movies"), filepath.Join(strmRoot, "Movies"), ghostDirectory} {
 		if err := os.MkdirAll(directory, 0755); err != nil {
 			t.Fatal(err)
 		}
@@ -68,7 +69,7 @@ func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T)
 	if err := os.WriteFile(filepath.Join(mediaRoot, "Movies", "Current.mkv"), []byte("video"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	stale := filepath.Join(strmRoot, "Movies", "Stale.strm")
+	stale := filepath.Join(ghostDirectory, "Stale.strm")
 	manual := filepath.Join(strmRoot, "Movies", "Alternate.strm")
 	if err := os.WriteFile(stale, []byte("/media/Movies/Missing.mkv\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -94,7 +95,7 @@ func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T)
 		messages = append(messages, message)
 		return nil
 	})
-	if err != nil || result.Removed != 1 || result.Missing != 0 || result.Valid != 2 || result.PruneStatus != "completed" {
+	if err != nil || result.Removed != 1 || result.RemovedDirectories != 1 || result.Missing != 0 || result.Valid != 2 || result.PruneStatus != "completed" {
 		t.Fatalf("stale reconciliation failed: %+v, err=%v", result, err)
 	}
 	if len(progress) == 0 || progress[0] != 5 || progress[len(progress)-1] != 100 || !strings.Contains(strings.Join(messages, "\n"), "removed 1 files") {
@@ -111,6 +112,9 @@ func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale generated STRM was retained: %v", err)
+	}
+	if _, err := os.Stat(ghostDirectory); !os.IsNotExist(err) {
+		t.Fatalf("empty generated directory was retained: %v", err)
 	}
 	if _, err := os.Stat(manual); err != nil {
 		t.Fatalf("valid non-generated STRM was removed: %v", err)

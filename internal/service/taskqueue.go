@@ -348,7 +348,7 @@ func (s *TaskQueueService) runSTRMSync(ctx context.Context, task domain.AsyncTas
 	if err != nil {
 		return result, err
 	}
-	if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM sync media=%d created=%d updated=%d removed=%d prune=%s", result.MediaFiles, result.Created, result.Updated, result.Removed, result.PruneStatus)); err != nil {
+	if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM sync media=%d created=%d updated=%d removed=%d removed_directories=%d prune=%s", result.MediaFiles, result.Created, result.Updated, result.Removed, result.RemovedDirectories, result.PruneStatus)); err != nil {
 		return result, err
 	}
 	if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("STRM findings valid=%d missing=%d invalid=%d", result.Valid, result.Missing, result.Invalid)); err != nil {

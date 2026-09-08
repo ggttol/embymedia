@@ -20,16 +20,17 @@ var videoExtensions = map[string]struct{}{
 
 // STRMResult reports observable synchronization and validation counts.
 type STRMResult struct {
-	MediaFiles  int      `json:"media_files"`
-	Created     int      `json:"created"`
-	Updated     int      `json:"updated"`
-	Unchanged   int      `json:"unchanged"`
-	Removed     int      `json:"removed"`
-	Valid       int      `json:"valid"`
-	Missing     int      `json:"missing"`
-	Invalid     int      `json:"invalid"`
-	Examples    []string `json:"examples,omitempty"`
-	PruneStatus string   `json:"prune_status,omitempty"`
+	MediaFiles         int      `json:"media_files"`
+	Created            int      `json:"created"`
+	Updated            int      `json:"updated"`
+	Unchanged          int      `json:"unchanged"`
+	Removed            int      `json:"removed"`
+	RemovedDirectories int      `json:"removed_directories"`
+	Valid              int      `json:"valid"`
+	Missing            int      `json:"missing"`
+	Invalid            int      `json:"invalid"`
+	Examples           []string `json:"examples,omitempty"`
+	PruneStatus        string   `json:"prune_status,omitempty"`
 }
 
 // MediaService synchronizes STRM files from the configured CloudDrive media tree.
@@ -212,7 +213,8 @@ func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string,
 		return nil
 	}
 	result.PruneStatus = "completed"
-	return filepath.WalkDir(strmBase, func(path string, entry fs.DirEntry, walkErr error) error {
+	emptied := make(map[string]struct{})
+	if err := filepath.WalkDir(strmBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -251,8 +253,35 @@ func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string,
 			return err
 		}
 		result.Removed++
+		for directory := filepath.Dir(path); directory != strmBase && inside(strmBase, directory); directory = filepath.Dir(directory) {
+			emptied[directory] = struct{}{}
+		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	directories := make([]string, 0, len(emptied))
+	for directory := range emptied {
+		directories = append(directories, directory)
+	}
+	sort.Slice(directories, func(i, j int) bool { return len(directories[i]) > len(directories[j]) })
+	for _, directory := range directories {
+		entries, err := os.ReadDir(directory)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if len(entries) != 0 {
+			continue
+		}
+		if err := os.Remove(directory); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		result.RemovedDirectories++
+	}
+	return nil
 }
 
 func reportMediaProgress(update func(float64, string) error, progress float64, message string) error {
@@ -510,7 +539,8 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 	if err := pruneStaleSTRM(ctx, mediaRoot, strmBase, embyPrefix, expected, &result); err != nil {
 		return result, err
 	}
-	if err := reportMediaProgress(update, 70, fmt.Sprintf("STRM stale reconciliation removed %d files with status %s", result.Removed, result.PruneStatus)); err != nil {
+	if err := reportMediaProgress(update, 70, fmt.Sprintf("STRM stale reconciliation removed %d files and %d empty directories with status %s", result.Removed, result.RemovedDirectories, result.PruneStatus)); err != nil {
+
 		return result, err
 	}
 	verification, err := s.VerifySTRMWithProgress(ctx, library, func(progress float64, message string) error {

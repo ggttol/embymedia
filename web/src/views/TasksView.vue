@@ -232,7 +232,7 @@ function resultSummary(task: AsyncTask) {
     }
     case 'emby_refresh': {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
-      const synchronized = strm ? `STRM 新建 ${Number(strm.created || 0)}、更新 ${Number(strm.updated || 0)}、清理 ${Number(strm.removed || 0)}；` : ''
+      const synchronized = strm ? `STRM 新建 ${Number(strm.created || 0)}、更新 ${Number(strm.updated || 0)}、清理 ${Number(strm.removed || 0)} 个旧文件和 ${Number(strm.removed_directories || 0)} 个空目录；` : ''
       return result.completion_tracked === true
         ? `${synchronized}Emby 全库扫描已完成 · ${formatDuration(String(result.started_at || ''), String(result.completed_at || ''))}`
         : 'Emby 已接受指定媒体库刷新；该范围不提供后台完成状态。'
@@ -248,7 +248,7 @@ function resultSummary(task: AsyncTask) {
     case 'strm_sync':
     case 'strm_verify': {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
-      return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}${Number(strm.removed || 0) > 0 ? ` · 已清理 ${Number(strm.removed)} 个旧 STRM` : ''}` : 'STRM 操作已完成。'
+      return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}${Number(strm.removed || 0) > 0 || Number(strm.removed_directories || 0) > 0 ? ` · 已清理 ${Number(strm.removed || 0)} 个旧 STRM 和 ${Number(strm.removed_directories || 0)} 个空目录` : ''}` : 'STRM 操作已完成。'
     }
     default: return '任务已保存执行结果。'
   }
@@ -537,8 +537,8 @@ function formatLog(line: string) {
   if (posterRepair) return `Emby 海报修复：发现 ${posterRepair[1]} 个，提交刷新 ${posterRepair[2]} 个，下载候选 ${posterRepair[3]} 个，确认修复 ${posterRepair[4]} 个，仍缺 ${posterRepair[5]} 个，请求失败 ${posterRepair[6]} 个。`
   const metadataRepair = /^Emby metadata repair scanned=(\d+) missing=(\d+) processed=(\d+) matched=(\d+) review=(\d+) no_match=(\d+)$/.exec(line)
   if (metadataRepair) return `Emby 元数据修复：扫描 ${metadataRepair[1]} 个，缺少 TMDB ${metadataRepair[2]} 个，处理 ${metadataRepair[3]} 个，自动修复 ${metadataRepair[4]} 个，待确认 ${metadataRepair[5]} 个，无候选 ${metadataRepair[6]} 个。`
-  const sync = /^STRM sync media=(\d+) created=(\d+) updated=(\d+) removed=(\d+) prune=(\S+)$/.exec(line)
-  if (sync) return `STRM 同步：媒体 ${sync[1]} 个，新建 ${sync[2]} 个，更新 ${sync[3]} 个，清理旧文件 ${sync[4]} 个；清理状态 ${sync[5]}。`
+  const sync = /^STRM sync media=(\d+) created=(\d+) updated=(\d+) removed=(\d+) removed_directories=(\d+) prune=(\S+)$/.exec(line)
+  if (sync) return `STRM 同步：媒体 ${sync[1]} 个，新建 ${sync[2]} 个，更新 ${sync[3]} 个，清理旧文件 ${sync[4]} 个、空目录 ${sync[5]} 个；清理状态 ${sync[6]}。`
   const findings = /^STRM findings valid=(\d+) missing=(\d+) invalid=(\d+)$/.exec(line)
   if (findings) return `STRM 校验：有效 ${findings[1]} 个，缺失 ${findings[2]} 个，无效 ${findings[3]} 个。`
   if (line === 'STRM source scan started') return '开始扫描媒体源文件。'
@@ -546,8 +546,8 @@ function formatLog(line: string) {
   if (sourceProgress) return `已扫描 ${sourceProgress[1]} 个媒体文件。`
   const sourceComplete = /^STRM source scan completed with (\d+) media files$/.exec(line)
   if (sourceComplete) return `媒体源扫描完成，共 ${sourceComplete[1]} 个视频文件。`
-  const reconciliation = /^STRM stale reconciliation removed (\d+) files with status (\S+)$/.exec(line)
-  if (reconciliation) return `旧 STRM 协调完成：清理 ${reconciliation[1]} 个；状态 ${reconciliation[2]}。`
+  const reconciliation = /^STRM stale reconciliation removed (\d+) files and (\d+) empty directories with status (\S+)$/.exec(line)
+  if (reconciliation) return `旧 STRM 协调完成：清理 ${reconciliation[1]} 个文件、${reconciliation[2]} 个空目录；状态 ${reconciliation[3]}。`
   if (line === 'STRM verification started') return '开始逐项验证 STRM 目标。'
   const verified = /^STRM verification checked (\d+) files$/.exec(line)
   if (verified) return `已验证 ${verified[1]} 个 STRM 文件。`
