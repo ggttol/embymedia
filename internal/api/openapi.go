@@ -1,5 +1,7 @@
 package api
 
+import "github.com/embymedia/embymedia/internal/product"
+
 func schemaObject(required []string, properties map[string]any) map[string]any {
 	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": properties}
 	if len(required) > 0 {
@@ -151,7 +153,7 @@ func openAPISchema() map[string]any {
 	paths["/api/v1/files/delete"].(map[string]any)["post"].(map[string]any)["security"] = []any{map[string]any{"BrowserSession": []any{}}}
 	return map[string]any{
 		"openapi": "3.1.0",
-		"info":    map[string]any{"title": "EmbyMedia V2 API", "version": "2.0.0", "description": "Standalone 115, Emby, CloudDrive2, task, settings and Agent operations", "license": map[string]any{"name": "MIT", "identifier": "MIT"}},
+		"info":    map[string]any{"title": "EmbyMedia V2 API", "version": product.Version, "description": "Standalone 115, Emby, CloudDrive2, task, settings and Agent operations", "license": map[string]any{"name": "MIT", "identifier": "MIT"}},
 		"servers": []any{map[string]any{"url": "/", "description": "Current EmbyMedia server"}},
 		"components": map[string]any{"securitySchemes": map[string]any{
 			"AgentToken":     map[string]any{"type": "apiKey", "in": "header", "name": "X-Agent-Token", "description": "Agent token issued by the administrator"},

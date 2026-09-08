@@ -1,8 +1,8 @@
-# EmbyMedia V2
+# EmbyMedia 2.1.0
 
 English | [中文](README.zh.md)
 
-EmbyMedia V2 is a self-hosted Go and Vue operations system for 115, CloudDrive2, Emby, STRM files, persistent tasks, REST, OpenAPI, and MCP. The supported runtime is one Go binary with an embedded browser application; Node, Cordis, DSH, and PostgreSQL are not production dependencies.
+EmbyMedia 2.1.0 is a self-hosted Go and Vue operations system for 115, CloudDrive2, Emby, STRM files, persistent tasks, REST, OpenAPI, and MCP. The supported runtime is one Go binary with an embedded browser application; Node, Cordis, DSH, and PostgreSQL are not production dependencies.
 
 ## Runtime
 

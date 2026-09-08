@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
+	"github.com/embymedia/embymedia/internal/product"
 	"github.com/embymedia/embymedia/internal/security"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
@@ -36,7 +37,7 @@ type MCPServer struct {
 func NewMCPServer(db *storage.DB, drive *service.DriveService, emby *service.EmbyService, cd *service.CloudDriveService, tq *service.TaskQueueService, cron *service.CronManager, authorizer *security.AgentAuthorizer, trustTokenless bool) *MCPServer {
 	s := server.NewMCPServer(
 		"EmbyMedia MCP Server",
-		"2.0.0",
+		product.Version,
 		server.WithToolCapabilities(true),
 	)
 

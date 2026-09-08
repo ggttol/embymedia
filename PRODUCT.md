@@ -1,7 +1,7 @@
 # PRODUCT.md
 
 ## Product
-EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 115 resources, STRM generation, metadata, tasks, audit, REST, and MCP. The V2 application runs as one Go binary with an embedded Vue interface and a separate loopback login service.
+EmbyMedia 2.1.0 is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 115 resources, STRM generation, metadata, tasks, audit, REST, and MCP. The application runs as one Go binary with an embedded Vue interface and a separate loopback login service.
 
 ## Audience and primary task
 - Primary users: the system administrator and explicitly created media operators.

@@ -121,6 +121,12 @@ const executionFilter = ref<'all' | 'running' | 'completed' | 'attention'>('all'
 const executionPageSize = 5
 const visibleExecutionLimit = ref(executionPageSize)
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
+const orderedTasks = computed(() => [...tasks.value].sort((left, right) => {
+  const leftMinute = hourlyMinute(left.cron_expr)
+  const rightMinute = hourlyMinute(right.cron_expr)
+  if (leftMinute !== null && rightMinute !== null) return leftMinute - rightMinute
+  return new Date(left.next_run_at || 0).getTime() - new Date(right.next_run_at || 0).getTime()
+}))
 const activeTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'pending' || task.status === 'running').length)
 const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed' && !taskHasFindings(task)).length)
 const attentionTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'failed' || task.status === 'cancelled' || taskHasFindings(task)).length)
@@ -154,7 +160,16 @@ function statusLabel(status: string) {
   return ({ pending: '等待执行', running: '正在执行', completed: '已完成', failed: '执行失败', cancelled: '已取消', idle: '等待下次执行', paused: '已停用' } as Record<string, string>)[status] ?? status
 }
 
+function hourlyMinute(cron: string): number | null {
+  const fields = cron.trim().split(/\s+/)
+  if (fields.length !== 6 || fields[0] !== '0' || fields[2] !== '*' || fields.slice(3).some((field) => field !== '*')) return null
+  const minute = Number(fields[1])
+  return Number.isInteger(minute) && minute >= 0 && minute <= 59 ? minute : null
+}
+
 function frequencyLabel(cron: string) {
+  const minute = hourlyMinute(cron)
+  if (minute !== null) return minute === 0 ? '每小时整点' : `每小时第 ${minute} 分钟`
   return frequencyOptions.find((option) => option.cron === cron)?.label ?? `自定义时间：${cron}`
 }
 
@@ -773,7 +788,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
       <div v-if="schedulesError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
       <div v-else-if="!schedulesLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取自动任务</div>
       <div v-else-if="tasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
-      <article v-for="task in tasks" :key="task.id" class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs hover:shadow-card hover:border-border-strong transition-all duration-200 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+      <article v-for="task in orderedTasks" :key="task.id" class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs hover:shadow-card hover:border-border-strong transition-all duration-200 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
         <div class="space-y-3 min-w-0">
           <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="activeExecution(task) ? 'bg-warn animate-pulse' : { 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2.5 py-0.5 rounded-full bg-accent-soft text-xs font-medium text-accent border border-accent/20">{{ frequencyLabel(task.cron_expr) }}</span></div>
           <div><strong class="text-sm text-text font-medium">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>

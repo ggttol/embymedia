@@ -39,14 +39,17 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - Configuration matrix: endpoint, filesystem, webhook, destructive-action, and write-only credential settings.
 - Authentication entry: a Warm Paper access ledger with a single credential form, explicit private-system context, and no decorative dashboard metrics.
 - User administration: a restrained roster table with role, access state, password-reset, and removal actions; destructive changes use explicit confirmation.
+- Product identity shows compact `V2.1` in the navigation brand; protocol and documentation surfaces use the full semantic version `2.1.0`.
 - Destructive controls require explicit confirmation, a server-side enable switch where applicable, and visible upstream errors.
 - Copy actions acknowledge success only after clipboard completion; unavailable browser APIs expose selectable text for manual copying.
 - Dialogs own focus, Escape dismissal, submission feedback, and return focus to their opener.
 - Failed reads remain distinct from successful empty results; stale results show their age.
+- Core-service health belongs to the Dashboard summary; the navigation rail contains identity and navigation only, without a second probe or status copy.
 - Automatic episode completion is a locked-scope operations flow: library checkboxes, transfer/preview modes, bounded candidate controls, an explicit destructive completed-pack switch, and a four-stage inspection-to-verification ledger. Replacement state distinguishes staged, retained-old, and completed deletion outcomes.
 - Poster maintenance is presented as one inspect–repair–verify task; completed runs remain warnings when any poster is still missing or a refresh request failed.
 - Metadata repair pairs one confidence statement with a bounded work limit and explicit auto-apply switch; execution cards separate auto-matched, review, and no-candidate outcomes and expose provider candidates progressively.
 - The Task Center places the schedule inventory before execution history. History renders the five newest filtered records first and expands in five-record increments, with an explicit collapse action.
+- Hourly schedules sort by minute within the Task Center so the six-stage pipeline reads in execution order even when recent updates change database row order.
 
 ## Composition
 Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options.

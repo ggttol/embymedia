@@ -1,8 +1,8 @@
-# EmbyMedia V2
+# EmbyMedia 2.1.0
 
 [English](README.md) | 中文
 
-EmbyMedia V2 是面向 115、CloudDrive2、Emby、STRM 文件、持久任务、REST、OpenAPI 与 MCP 的自托管 Go 和 Vue 运营系统。受支持 runtime 是一个内嵌浏览器应用的 Go 二进制；Node、Cordis、DSH 与 PostgreSQL 都不是生产依赖。
+EmbyMedia 2.1.0 是面向 115、CloudDrive2、Emby、STRM 文件、持久任务、REST、OpenAPI 与 MCP 的自托管 Go 和 Vue 运营系统。受支持 runtime 是一个内嵌浏览器应用的 Go 二进制；Node、Cordis、DSH 与 PostgreSQL 都不是生产依赖。
 
 ## Runtime
 

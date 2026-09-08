@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
+	"github.com/embymedia/embymedia/internal/product"
 	"github.com/embymedia/embymedia/internal/security"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
@@ -84,6 +85,14 @@ func TestAPIRoutes(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 from /openapi.json, got %d", rec.Code)
+	}
+	var openAPI struct {
+		Info struct {
+			Version string `json:"version"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &openAPI); err != nil || openAPI.Info.Version != product.Version {
+		t.Fatalf("OpenAPI version mismatch: %+v, err=%v", openAPI, err)
 	}
 
 	// Test resource summary proxy

@@ -12,6 +12,8 @@ Status: implemented
 
 Go 二进制是唯一部署的 EmbyMedia 应用 runtime。它提供 Vue、REST、OpenAPI 3.1、Streamable HTTP MCP、旧式 loopback SSE 与 stdio MCP。Debian Hermes 直接连接其 loopback `/mcp` endpoint，并为已注册的三十四个工具加载一个 V2 技能。
 
+EmbyMedia release identity 为 `2.1.0`。`internal/product.Version` 负责 OpenAPI 与 MCP 的 Go 协议版本；`web/src/version.ts` 负责浏览器诊断和紧凑的 `V2.1` 品牌标记，`web/package.json` 保存完整 release version。DSH monorepo 根版本保持独立。
+
 Provider 工具执行真实 provider 操作。115 客户端使用所选账号凭据列出、创建、重命名、移动、删除与转存文件，创建分享链接，并提交离线下载。CloudDrive2 客户端通过版本匹配的 gRPC 方法读取系统状态与挂载清单、卸载和挂载；文件系统容量来自 `statfs`。CloudDrive2 返回容器内路径，已配置挂载路径标识健康检查所用的对应宿主机文件系统路径。Emby 条目检查按一个确切条目 ID 寻址，元数据应用会检查上游响应，并且每个 Emby 请求都通过 `X-Emby-Token` 发送 API key，而不是使用可能出现在持久错误中的 URL。
 
 持久任务队列只接受其已公布类型：Emby 刷新与匹配、115 分享与离线操作，以及 STRM 同步或验证。每次自动计划启动都会原子创建关联执行，并更新计划的最近执行 ID 与启动时间。每次尝试都持久记录开始和完成时间、阶段进度、已处理条目数、结果、错误与日志。Emby 全库刷新会先同步并验证全部 STRM 输出，再启动 `RefreshLibrary` scheduled task，跟随 provider 报告的进度，并且只有在 Emby 记录终态结果后才完成；指定媒体库的条目刷新只记录请求已接受，因为该 endpoint 不暴露完成状态。独立服务使用 `UMask=0077`，而 Emby 使用另一个 UID，因此生成的 STRM 目录会显式保留 group 和 other 的读取／穿过权限。CloudDrive 文件系统事件会防抖为这个有序入库操作。Release installer 会用持久化到 SQLite 的同一个去除换行的 secret 重写 CloudDrive webhook 配置，防止轮换或迁移后的凭据静默拒绝每个事件。缺失海报检查会扫描每一页电影和剧集，统计 `ImageTags` 不含 `Primary` 的条目，并返回带路径和 provider ID 的有界页面；Emby 的 `ImageTypes` 查询参数选择返回的图片类型，而不是筛选缺失图片。STRM 同步只会在媒体挂载 canary 证明源挂载存在时删除目标缺失的生成记录，从而协调输出；它会保留有效的非生成记录，并报告跳过清理。检查执行完成但包含缺失或无效条目时，仍是执行成功，但会保留明确发现。取消操作会停止该执行启动的全库扫描。服务重启时，执行中的 effectful 工作会变为失败并要求显式重试，因为自动重放可能重复已经被上游接受的写入。Scheduler 从已解析 cron schedule 直接计算并持久化首次下次运行时间，而不是在 cron loop 启动前读取值为零的 `cron.Entry.Next`。

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
+	"github.com/embymedia/embymedia/internal/product"
 	"github.com/embymedia/embymedia/internal/security"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
@@ -72,10 +73,14 @@ func TestStreamableMCPEnforcesSharedAgentPolicyAndAudits(t *testing.T) {
 	defer httpServer.Close()
 
 	initialize := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "test", "version": "1"}}}
-	response, _ := postMCP(t, httpServer.URL, "", readSecret, initialize)
+	response, initialized := postMCP(t, httpServer.URL, "", readSecret, initialize)
 	sessionID := response.Header.Get("Mcp-Session-Id")
 	if response.StatusCode != http.StatusOK || sessionID == "" {
 		t.Fatalf("MCP initialize failed: status=%d session=%q", response.StatusCode, sessionID)
+	}
+	serverInfo := initialized["result"].(map[string]any)["serverInfo"].(map[string]any)
+	if serverInfo["version"] != product.Version {
+		t.Fatalf("MCP version mismatch: %v", serverInfo)
 	}
 	postMCP(t, httpServer.URL, sessionID, readSecret, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
 

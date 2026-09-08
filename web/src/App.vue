@@ -14,10 +14,10 @@ import {
   LogOut,
   UserRound,
   MoreHorizontal,
-  RefreshCw,
 } from 'lucide-vue-next'
 import { useFavorites } from '@/stores/favorites'
 import UiDialog from '@/components/UiDialog.vue'
+import { PRODUCT_SHORT_VERSION } from '@/version'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,27 +53,8 @@ const activeItem = computed(() =>
   ?? (route.path.startsWith('/resources/') ? navItems.value[1] : undefined)
 )
 const currentTitle = computed(() => activeItem.value?.desktopName ?? 'EmbyMedia')
-const endpointLabel = window.location.host
-const coreReachable = ref<boolean | null>(null)
-const checkedAt = ref('')
-const checkingCore = ref(false)
-const coreLabel = computed(() => checkingCore.value ? '正在检测核心服务' : coreReachable.value === null ? '核心服务未检测' : coreReachable.value ? '核心服务可达' : '核心服务不可达')
-const coreState = computed(() => checkingCore.value ? 'checking' : coreReachable.value === null ? 'untested' : coreReachable.value ? 'healthy' : 'failed')
 const searchShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ K' : 'Ctrl K'
 
-async function probeCore() {
-  if (checkingCore.value) return
-  checkingCore.value = true
-  try {
-    const response = await fetch('/api/v1/openapi.json', { cache: 'no-store' })
-    coreReachable.value = response.ok && typeof (await response.json()).openapi === 'string'
-  } catch {
-    coreReachable.value = false
-  } finally {
-    checkedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-    checkingCore.value = false
-  }
-}
 
 async function probeSession() {
   try {
@@ -107,7 +88,7 @@ watch(() => route.fullPath, () => {
 })
 
 onMounted(() => {
-  void Promise.all([probeCore(), probeSession()])
+  void probeSession()
   window.addEventListener('keydown', openGlobalSearch)
 })
 onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
@@ -120,7 +101,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
         <span class="brand-mark"><Tv aria-hidden="true" /></span>
         <span class="brand-copy">
           <strong class="brand-title">EmbyMedia</strong>
-          <small class="brand-subtitle">MEDIA OPERATIONS</small>
+          <small class="brand-subtitle">MEDIA OPERATIONS · V{{ PRODUCT_SHORT_VERSION }}</small>
         </span>
       </RouterLink>
 
@@ -148,23 +129,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
           <a href="/logout" class="session-action" aria-label="退出登录" title="退出登录">
             <LogOut aria-hidden="true" />
           </a>
-        </div>
-        <div class="service-indicator">
-          <span class="status-dot" :data-state="coreState" aria-hidden="true"></span>
-          <span class="service-meta" role="status">
-            <strong>{{ coreLabel }}</strong>
-            <small class="service-endpoint">{{ endpointLabel }}</small>
-            <small v-if="checkedAt" class="service-checked">检测于 {{ checkedAt }}</small>
-          </span>
-          <button
-            type="button"
-            class="status-refresh"
-            aria-label="重新检测核心服务"
-            :disabled="checkingCore"
-            @click="probeCore"
-          >
-            <RefreshCw aria-hidden="true" :class="{ 'animate-spin': checkingCore }" />
-          </button>
         </div>
       </div>
     </aside>
@@ -237,22 +201,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', openGlobalSearch))
           <span v-if="item.badge && item.badge() > 0" class="nav-badge">{{ item.badge() }}</span>
         </RouterLink>
       </nav>
-      <div class="more-status">
-        <span class="status-dot" :data-state="coreState" aria-hidden="true"></span>
-        <span role="status">
-          {{ coreLabel }}
-          <small v-if="checkedAt"> · {{ checkedAt }}</small>
-        </span>
-        <button
-          class="status-refresh"
-          type="button"
-          :disabled="checkingCore"
-          aria-label="重新检测核心服务"
-          @click="probeCore"
-        >
-          <RefreshCw aria-hidden="true" :class="{ 'animate-spin': checkingCore }" />
-        </button>
-      </div>
     </UiDialog>
   </div>
 </template>
