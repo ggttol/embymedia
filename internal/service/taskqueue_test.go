@@ -200,6 +200,67 @@ func TestTaskQueueCancelsMissingPosterRequest(t *testing.T) {
 	waitForTaskStatus(t, db, task.ID, "cancelled")
 }
 
+func TestTaskQueueRepairsAndVerifiesMissingPoster(t *testing.T) {
+	var refreshed atomic.Bool
+	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/Items":
+			if refreshed.Load() {
+				_, _ = response.Write([]byte(`{"Items":[{"Id":"missing","Name":"Missing","Type":"Movie","ImageTags":{"Primary":"poster"}}],"TotalRecordCount":1}`))
+			} else {
+				_, _ = response.Write([]byte(`{"Items":[{"Id":"missing","Name":"Missing","Type":"Movie","Path":"/strm/Missing.strm","ProviderIds":{"Tmdb":"42"}}],"TotalRecordCount":1}`))
+			}
+		case request.Method == http.MethodPost && request.URL.Path == "/Items/missing/Refresh":
+			query := request.URL.Query()
+			if query.Get("ImageRefreshMode") != "FullRefresh" || query.Get("MetadataRefreshMode") != "Default" || query.Get("Recursive") != "false" || query.Get("ReplaceAllImages") != "false" {
+				t.Errorf("unexpected poster refresh query: %s", request.URL.RawQuery)
+			}
+			refreshed.Store(true)
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer embyServer.Close()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSetting("emby_url", embyServer.URL); err != nil {
+		t.Fatal(err)
+	}
+	queue := NewTaskQueueService(db, NewDriveService(db, "", ""), NewEmbyService(db))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := queue.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Stop()
+	task, err := queue.Enqueue("emby_missing_posters", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, db, task.ID, "completed")
+	stored, err := db.GetAsyncTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Found           int `json:"found"`
+		RepairRequested int `json:"repair_requested"`
+		Repaired        int `json:"repaired"`
+		Remaining       int `json:"remaining"`
+	}
+	if err := json.Unmarshal([]byte(stored.Result), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed.Load() || result.Found != 1 || result.RepairRequested != 1 || result.Repaired != 1 || result.Remaining != 0 {
+		t.Fatalf("poster was not repaired and verified: %+v raw=%s", result, stored.Result)
+	}
+}
+
 func TestTaskQueueFailsInterruptedWorkBeforeRetry(t *testing.T) {
 	db, err := storage.Open(":memory:")
 	if err != nil {

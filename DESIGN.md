@@ -44,6 +44,8 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - Dialogs own focus, Escape dismissal, submission feedback, and return focus to their opener.
 - Failed reads remain distinct from successful empty results; stale results show their age.
 - Automatic episode completion is a locked-scope operations flow: library checkboxes, transfer/preview modes, bounded candidate controls, an explicit destructive completed-pack switch, and a four-stage inspection-to-verification ledger. Replacement state distinguishes staged, retained-old, and completed deletion outcomes.
+- Poster maintenance is presented as one inspect–repair–verify task; completed runs remain warnings when any poster is still missing or a refresh request failed.
+- Metadata repair pairs one confidence statement with a bounded work limit and explicit auto-apply switch; execution cards separate auto-matched, review, and no-candidate outcomes and expose provider candidates progressively.
 
 ## Composition
 Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options.

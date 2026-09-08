@@ -91,7 +91,8 @@ const taskBadgeClass = (status: string) => {
 const taskDefinition = (type: string) => ({
   series_auto_fill: ['自动补集', '检查追更库已播缺集，精确转存匹配集并在 Emby 扫描后复查。'],
   emby_refresh: ['同步媒体并刷新 Emby', '先生成和校验 STRM，再跟踪 Emby 全库扫描到完成。'],
-  emby_missing_posters: ['检查缺失海报', '检查没有主海报的 Emby 媒体条目。'],
+  emby_missing_posters: ['检查并修复海报', '刷新缺少主海报的电影和剧集，并复查实际修复结果。'],
+  emby_metadata_repair: ['检查并修复元数据', '为缺少 TMDB 身份的条目寻找候选，仅应用安全唯一匹配。'],
   emby_match: ['修正媒体匹配', '将指定 Emby 条目匹配到明确的 TMDB 条目。'],
   strm_sync: ['同步 STRM 文件', '根据媒体源目录创建或更新 STRM 文件。'],
   strm_verify: ['检查 STRM 链接', '检查 STRM 是否仍指向媒体源目录中的有效文件。'],

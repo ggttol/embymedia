@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { Activity, CalendarClock, FileText, FolderDown, ListTodo, Loader2, Play, Plus, RefreshCcw, RotateCcw, ScanSearch, ShieldCheck, X } from 'lucide-vue-next'
+import { Activity, CalendarClock, FileText, FolderDown, ListTodo, Loader2, Play, Plus, RefreshCcw, RotateCcw, ScanSearch, ShieldCheck, WandSparkles, X } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
-type TaskType = 'series_auto_fill' | 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
+type TaskType = 'series_auto_fill' | 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'emby_metadata_repair' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
 
 interface AsyncTask {
   id: string
@@ -49,11 +49,12 @@ interface TaskDefinition {
   defaultName: string
 }
 
-const taskTypeOrder: TaskType[] = ['series_auto_fill', 'emby_refresh', 'emby_missing_posters', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
+const taskTypeOrder: TaskType[] = ['series_auto_fill', 'emby_metadata_repair', 'emby_missing_posters', 'emby_refresh', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
 const taskDefinitions: Record<TaskType, TaskDefinition> = {
   series_auto_fill: { label: '自动补集', description: '只检查“电视剧追更”和“综艺追更”的已播缺集；验证资源内的准确集号后，精确转存到原剧集目录并刷新 Emby。', defaultName: '每日自动补集' },
   emby_refresh: { label: '同步媒体并刷新 Emby', description: '先把网盘视频同步为 STRM，再跟踪 Emby 全库扫描直到结束；指定媒体库 ID 时只提交该库刷新。', defaultName: '每日同步媒体并刷新 Emby' },
-  emby_missing_posters: { label: '检查缺失海报', description: '找出没有主海报的 Emby 条目，结果会保存在执行记录中。', defaultName: '每日检查缺失海报' },
+  emby_missing_posters: { label: '检查并修复海报', description: '检查没有主海报的电影和剧集，向 Emby 请求完整图片刷新，并复查实际修复结果。', defaultName: '每周检查并修复海报' },
+  emby_metadata_repair: { label: '检查并修复元数据', description: '检查缺少 TMDB 身份的电影和剧集；仅自动应用标题、年份、类型唯一一致且不会产生重复条目的候选。', defaultName: '每周检查并修复元数据' },
   emby_match: { label: '修正媒体匹配', description: '把一个 Emby 条目明确匹配到指定 TMDB 条目。', defaultName: '修正媒体匹配' },
   strm_sync: { label: '同步 STRM 文件', description: '根据媒体源目录创建或更新 STRM 文件。', defaultName: '每日同步 STRM' },
   strm_verify: { label: '检查 STRM 链接', description: '检查 STRM 是否仍指向媒体源目录中的有效文件。', defaultName: '每日检查 STRM' },
@@ -89,6 +90,8 @@ function newScheduleForm() {
     candidate_limit: '10',
     max_series: '20',
     replace_completed_pack: true,
+    metadata_limit: '100',
+    metadata_auto_apply: true,
   }
 }
 
@@ -176,7 +179,8 @@ function taskHasFindings(task: AsyncTask) {
   if (task.status !== 'completed') return false
   const result = resultRecord(task)
   if (!result) return false
-  if (task.type === 'emby_missing_posters') return Number(result.total_missing ?? result.returned ?? 0) > 0
+  if (task.type === 'emby_missing_posters') return Number(result.remaining || 0) > 0 || (Array.isArray(result.failed) && result.failed.length > 0)
+  if (task.type === 'emby_metadata_repair') return Number(result.needs_review || 0) > 0 || Number(result.no_match || 0) > 0
   if (task.type === 'series_auto_fill') return Number(result.remaining || 0) > 0 || (Array.isArray(result.libraries) && result.libraries.some((library) => typeof library === 'object' && library !== null && Array.isArray((library as Record<string, unknown>).issues) && ((library as Record<string, unknown>).issues as unknown[]).length > 0))
   if (task.type === 'strm_sync' || task.type === 'strm_verify' || task.type === 'emby_refresh') {
     const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
@@ -205,10 +209,10 @@ function resultSummary(task: AsyncTask) {
         : 'Emby 已接受指定媒体库刷新；该范围不提供后台完成状态。'
     }
     case 'emby_missing_posters': {
-      const total = Number(result.total_missing ?? result.returned ?? 0)
-      const returned = Number(result.returned || 0)
-      return result.truncated === true ? `发现 ${total} 个缺少海报的条目，显示前 ${returned} 个。` : `发现 ${total} 个缺少海报的条目。`
+      const suffix = result.timed_out === true ? '，验证等待已超时' : ''
+      return `发现 ${Number(result.found || 0)} 个缺失海报，已提交 ${Number(result.repair_requested || 0)} 个刷新，下载候选 ${Number(result.candidate_downloaded || 0)} 个，确认修复 ${Number(result.repaired || 0)} 个，仍缺 ${Number(result.remaining || 0)} 个${suffix}。`
     }
+    case 'emby_metadata_repair': return `扫描 ${Number(result.scanned || 0)} 个条目，缺少 TMDB ${Number(result.missing_identity || 0)} 个；本次处理 ${Number(result.processed || 0)} 个，自动修复 ${Number(result.auto_matched || 0)} 个，待确认 ${Number(result.needs_review || 0)} 个，无候选 ${Number(result.no_match || 0)} 个。`
     case 'emby_match': return `已向 Emby 提交 TMDB ${String(result.tmdb_id || '')} 的匹配结果。`
     case 'c115_save_share': return `已转存 ${Number(result.count || 0)} 个项目${result.title ? ` · ${String(result.title)}` : ''}。`
     case 'c115_offline_download': return `已提交 ${Array.isArray(result.task_ids) ? result.task_ids.length : 0} 个离线任务。`
@@ -271,6 +275,7 @@ function taskSummary(type: string, payload: Record<string, unknown> = {}) {
     case 'emby_refresh': return payload.library_id ? `媒体库 ID：${payload.library_id}` : '范围：全部媒体源与 Emby 媒体库'
     case 'emby_missing_posters': return '范围：全部 Emby 媒体条目'
     case 'emby_match': return `Emby 条目 ${payload.item_id || '未填写'} → TMDB ${payload.tmdb_id || '未填写'}`
+    case 'emby_metadata_repair': return `${payload.auto_apply === false ? '仅生成候选' : '安全自动匹配'} · 本次最多 ${Number(payload.limit || 100)} 个条目`
     case 'strm_sync': return payload.library ? `媒体目录：${payload.library}` : '范围：全部已配置媒体目录'
     case 'strm_verify': return payload.library ? `检查目录：${payload.library}` : '范围：全部 STRM 文件'
     case 'c115_save_share': return `分享链接：${payload.url || '未填写'}${payload.target_cid ? ` · 保存到 CID ${payload.target_cid}` : ''}`
@@ -301,6 +306,7 @@ function buildPayload(): Record<string, unknown> {
       }
     case 'emby_refresh': return form.library_id.trim() ? { library_id: form.library_id.trim() } : {}
     case 'emby_missing_posters': return {}
+    case 'emby_metadata_repair': return { limit: Number(form.metadata_limit), auto_apply: form.metadata_auto_apply }
     case 'emby_match':
       if (!form.item_id.trim() || !form.tmdb_id.trim()) throw new Error('请填写 Emby 条目 ID 和 TMDB ID。')
       return { item_id: form.item_id.trim(), tmdb_id: form.tmdb_id.trim() }
@@ -498,8 +504,10 @@ function formatLog(line: string) {
   if (line === 'Emby accepted the item refresh; this endpoint does not expose completion state') return 'Emby 已接受指定媒体库刷新；该接口不提供后台完成状态。'
   const progress = /^Emby scan progress (\d+)%$/.exec(line)
   if (progress) return `Emby 扫描进度：${progress[1]}%`
-  const posterFindings = /^Emby missing-poster findings total=(\d+) returned=(\d+) truncated=(true|false)$/.exec(line)
-  if (posterFindings) return `Emby 缺失海报：共 ${posterFindings[1]} 个，本次返回 ${posterFindings[2]} 个${posterFindings[3] === 'true' ? '，结果已截断' : ''}。`
+  const posterRepair = /^Emby poster repair found=(\d+) requested=(\d+) downloaded=(\d+) repaired=(\d+) remaining=(\d+) failed=(\d+)$/.exec(line)
+  if (posterRepair) return `Emby 海报修复：发现 ${posterRepair[1]} 个，提交刷新 ${posterRepair[2]} 个，下载候选 ${posterRepair[3]} 个，确认修复 ${posterRepair[4]} 个，仍缺 ${posterRepair[5]} 个，请求失败 ${posterRepair[6]} 个。`
+  const metadataRepair = /^Emby metadata repair scanned=(\d+) missing=(\d+) processed=(\d+) matched=(\d+) review=(\d+) no_match=(\d+)$/.exec(line)
+  if (metadataRepair) return `Emby 元数据修复：扫描 ${metadataRepair[1]} 个，缺少 TMDB ${metadataRepair[2]} 个，处理 ${metadataRepair[3]} 个，自动修复 ${metadataRepair[4]} 个，待确认 ${metadataRepair[5]} 个，无候选 ${metadataRepair[6]} 个。`
   const sync = /^STRM sync media=(\d+) created=(\d+) updated=(\d+) removed=(\d+) prune=(\S+)$/.exec(line)
   if (sync) return `STRM 同步：媒体 ${sync[1]} 个，新建 ${sync[2]} 个，更新 ${sync[3]} 个，清理旧文件 ${sync[4]} 个；清理状态 ${sync[5]}。`
   const findings = /^STRM findings valid=(\d+) missing=(\d+) invalid=(\d+)$/.exec(line)
@@ -717,7 +725,11 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
             <div><label for="target-cid" class="block mb-2 text-xs font-medium text-text-muted">保存目录 CID（可选）</label><input id="target-cid" v-model="scheduleForm.target_cid" placeholder="留空时使用根目录" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
             <div><label for="account-id" class="block mb-2 text-xs font-medium text-text-muted">115 账号 ID（可选）</label><input id="account-id" v-model="scheduleForm.account_id" placeholder="留空时使用默认账号" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           </template>
-          <p v-if="scheduleForm.type === 'emby_missing_posters'" class="md:col-span-2 p-4 rounded-xl border border-border/70 bg-bg text-sm text-text-muted">无需额外参数。系统会检查全部 Emby 媒体条目。</p>
+          <div v-if="scheduleForm.type === 'emby_metadata_repair'" class="md:col-span-2 space-y-4">
+            <div class="flex items-start gap-3 border-l-4 border-accent bg-accent/5 p-4"><WandSparkles class="mt-0.5 h-5 w-5 shrink-0 text-accent" /><div><strong class="font-serif text-text">唯一匹配才自动应用</strong><p class="mt-1 text-xs leading-5 text-text-muted">标题、首播年份和媒体类型必须同时一致；同一 TMDB 对应多个目录、候选接近或类型可疑时只列入待确认，不会自动改写。</p></div></div>
+            <div class="grid gap-4 sm:grid-cols-2"><div><label for="metadata-limit" class="mb-2 block text-xs font-medium text-text-muted">本次最多处理</label><select id="metadata-limit" v-model="scheduleForm.metadata_limit" class="min-h-11 w-full border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none"><option value="50">50 个</option><option value="100">100 个 · 推荐</option><option value="200">200 个</option><option value="500">500 个 · 最大范围</option></select></div><label class="flex min-h-11 items-center gap-3 self-end border border-border/80 bg-surface px-4 py-2.5 text-sm"><input v-model="scheduleForm.metadata_auto_apply" type="checkbox" class="accent-accent" /><span><strong class="block text-text">应用安全唯一候选</strong><small class="text-text-faint">关闭后只生成候选报告</small></span></label></div>
+          </div>
+          <p v-if="scheduleForm.type === 'emby_missing_posters'" class="md:col-span-2 p-4 rounded-xl border border-border/70 bg-bg text-sm text-text-muted">无需额外参数。任务会检查全部 Emby 电影和剧集，为缺少主海报的条目请求完整图片刷新，并在结果稳定后复查。</p>
         </div>
       </div>
 
@@ -810,6 +822,11 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
                 </ul>
               </details>
             </section>
+          </div>
+          <div v-if="task.type === 'emby_metadata_repair'" class="mt-4 border border-border/70 bg-surface">
+            <header class="flex items-center gap-2 border-b border-border/60 px-3.5 py-3"><WandSparkles class="h-4 w-4 text-accent" /><strong class="font-serif text-text">元数据处理明细</strong></header>
+            <dl class="grid grid-cols-2 sm:grid-cols-4"><div class="auto-fill-result-stat"><dt>缺少身份</dt><dd>{{ Number(resultRecord(task)?.missing_identity || 0) }}</dd></div><div class="auto-fill-result-stat"><dt>自动修复</dt><dd class="text-ok">{{ Number(resultRecord(task)?.auto_matched || 0) }}</dd></div><div class="auto-fill-result-stat"><dt>待确认</dt><dd class="text-warn">{{ Number(resultRecord(task)?.needs_review || 0) }}</dd></div><div class="auto-fill-result-stat"><dt>无候选</dt><dd>{{ Number(resultRecord(task)?.no_match || 0) }}</dd></div></dl>
+            <details v-if="recordList(resultRecord(task)?.items).length" class="border-t border-border/60 px-3.5"><summary class="min-h-11 cursor-pointer py-3 text-xs font-medium text-text-muted">查看 {{ recordList(resultRecord(task)?.items).length }} 个条目</summary><ul class="space-y-2 pb-3.5"><li v-for="item in recordList(resultRecord(task)?.items)" :key="String(item.item_id)" class="border-l-2 px-3 py-2" :class="item.status === 'matched' ? 'border-ok bg-ok/5' : 'border-warn bg-warn/5'"><div class="flex flex-wrap justify-between gap-2"><strong class="text-sm text-text">{{ item.name }}</strong><span class="font-mono text-[10px] text-text-faint">{{ item.type }} · {{ item.production_year || '年份未知' }}</span></div><p class="mt-1 text-xs text-text-muted">检索名：{{ item.search_name }}<span v-if="item.applied_tmdb_id"> · 已匹配 TMDB {{ item.applied_tmdb_id }}</span></p><p v-if="item.reason" class="mt-1 text-xs text-warn">{{ item.reason }}</p><p v-if="recordList(item.candidates).length" class="mt-1 text-xs text-text-faint">候选：{{ recordList(item.candidates).map(candidate => `${candidate.name} (${candidate.production_year || '年份未知'}) · TMDB ${recordList([candidate])[0].provider_ids && typeof recordList([candidate])[0].provider_ids === 'object' ? (recordList([candidate])[0].provider_ids as Record<string, unknown>).Tmdb || '—' : '—'}`).join('；') }}</p></li></ul></details>
           </div>
           <details class="mt-2"><summary class="min-h-11 cursor-pointer py-2 text-xs text-text-muted hover:text-text">查看完整执行结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-bg p-3 font-mono text-xs">{{ resultDetails(task) }}</pre></details>
         </div>

@@ -23,6 +23,7 @@ var supportedTaskTypes = []string{
 	"emby_match",
 	"emby_refresh",
 	"emby_missing_posters",
+	"emby_metadata_repair",
 	"series_auto_fill",
 	"strm_sync",
 	"strm_verify",
@@ -146,6 +147,9 @@ func validateTask(taskType string, payload map[string]any) error {
 		return err
 	case "emby_missing_posters":
 		return nil
+	case "emby_metadata_repair":
+		_, _, err := resolveMetadataRepairSpec(payload)
+		return err
 	case "series_auto_fill":
 		_, err := resolveSeriesAutoFillSpec(payload)
 		return err
@@ -390,17 +394,27 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 		}
 		return map[string]any{"item_id": itemID, "tmdb_id": tmdbID, "matched": true}, nil
 	case "emby_missing_posters":
-		report, err := s.embySvc.GetMediaWithoutPostersCtx(ctx)
+		repair, err := s.embySvc.RepairMissingPostersCtx(ctx, s.taskProgress(task.ID, 10, 99))
 		if err != nil {
 			return nil, err
 		}
-		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Emby missing-poster findings total=%d returned=%d truncated=%t", report.Total, report.Returned, report.Truncated)); err != nil {
+		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Emby poster repair found=%d requested=%d downloaded=%d repaired=%d remaining=%d failed=%d", repair.Found, repair.RepairRequested, repair.CandidateDownloaded, repair.Repaired, repair.Remaining, len(repair.Failed))); err != nil {
 			return nil, err
 		}
 		return map[string]any{
-			"items": report.Items, "total_missing": report.Total,
-			"returned": report.Returned, "truncated": report.Truncated,
+			"found": repair.Found, "repair_requested": repair.RepairRequested, "candidate_downloaded": repair.CandidateDownloaded, "repaired": repair.Repaired,
+			"remaining": repair.Remaining, "failed": repair.Failed, "remaining_items": repair.RemainingItems, "timed_out": repair.TimedOut,
 		}, nil
+	case "emby_metadata_repair":
+		limit, autoApply, _ := resolveMetadataRepairSpec(task.Payload)
+		repair, err := s.embySvc.RepairMetadataCtx(ctx, limit, autoApply, s.taskProgress(task.ID, 10, 99))
+		if err != nil {
+			return nil, err
+		}
+		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Emby metadata repair scanned=%d missing=%d processed=%d matched=%d review=%d no_match=%d", repair.Scanned, repair.MissingIdentity, repair.Processed, repair.AutoMatched, repair.NeedsReview, repair.NoMatch)); err != nil {
+			return nil, err
+		}
+		return map[string]any{"scanned": repair.Scanned, "missing_identity": repair.MissingIdentity, "processed": repair.Processed, "auto_matched": repair.AutoMatched, "needs_review": repair.NeedsReview, "no_match": repair.NoMatch, "items": repair.Items}, nil
 	case "series_auto_fill":
 		return s.runSeriesAutoFill(ctx, task)
 	case "c115_save_share":

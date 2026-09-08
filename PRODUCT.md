@@ -9,7 +9,7 @@ EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 1
 
 ## Allowed visible capabilities
 - Live dependency, 115 account, VIP, quota, CloudDrive mount, and filesystem status.
-- Emby library inventory, exact item inspection, refresh, explicit TMDB matching, and missing-poster inspection.
+- Emby library inventory, exact item inspection, refresh, explicit TMDB matching, scheduled metadata repair with unique title/year/type confidence, and poster repair with verified remaining findings.
 - 115 file lifecycle, share receive/create, offline download, and indexed resource search.
 - STRM synchronization and containment-aware target verification.
 - Persistent task, schedule, execution-attempt, cancellation, retry, and audit state, including automatic aired-episode completion restricted to the `电视剧追更` and `综艺追更` libraries.
@@ -32,7 +32,7 @@ EmbyMedia is a self-hosted Go and Vue operations system for Emby, CloudDrive2, 1
 ## Missing facts
 - No supplied product logo beyond the current EmbyMedia mark.
 - No hardware-transcoding capability.
-- Missing-poster inspection and explicit TMDB-ID application are implemented; automatic TMDB candidate selection remains intentionally absent because ambiguous matches require an operator choice.
+- Automatic TMDB selection is limited to one high-confidence candidate whose normalized title, production year, and media type agree and whose TMDB ID does not collide with another item; ambiguous, duplicate, wrong-type, and unmatched items require operator review.
 
 ## Working assumptions
 - The same-host Debian deployment is the primary Agent runtime.
