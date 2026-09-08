@@ -116,7 +116,7 @@ go build -trimpath -o bin/embymedia ./cmd/server
 sudo deploy/scripts/install-release.sh "$PWD" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-Installer 校验 artifact，安装不可变 release，以服务用户检查数据库，持久化 webhook secret，并原子切换 `current`。激活失败时恢复上一版本、已安装配置与服务状态；数据库迁移和身份数据不会回退。恢复失败会保留已保存配置，且不会删除当前版本。
+Installer 校验 artifact，安装不可变 release，以服务用户检查数据库，持久化 webhook secret，并原子切换 `current`。它安装 Caddy systemd override 以禁用环境变量日志，并 reload 运行中的 Caddy 进程而不中断共享路由。激活失败时恢复上一版本、已安装配置与服务状态；数据库迁移和身份数据不会回退。恢复失败会保留已保存配置，且不会删除当前版本。
 
 ## 安全
 

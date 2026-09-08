@@ -116,7 +116,7 @@ The host release root is `/opt/embymedia-v2/current`. Build `bin/embymedia-linux
 sudo deploy/scripts/install-release.sh "$PWD" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-The installer verifies the artifact, installs an immutable release, checks the database as the service user, persists the webhook secret, and atomically switches `current`. Failed activation restores the previous release, installed configurations, and service states; database migrations and identity data are not reversed. A failed recovery retains its saved configurations and never deletes the active release.
+The installer verifies the artifact, installs an immutable release, checks the database as the service user, persists the webhook secret, and atomically switches `current`. It installs a Caddy systemd override that disables environment logging and reloads an active Caddy process without interrupting shared routes. Failed activation restores the previous release, installed configurations, and service states; database migrations and identity data are not reversed. A failed recovery retains its saved configurations and never deletes the active release.
 
 ## Safety
 

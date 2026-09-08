@@ -190,7 +190,7 @@ class DeploymentScriptsTest(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('old ' + file.name)
             self.initial_configs[target] = target.read_bytes()
-        for filename in ('etc/caddy/Caddyfile', 'home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md'):
+        for filename in ('etc/caddy/Caddyfile', 'etc/systemd/system/caddy.service.d/embymedia-login.conf', 'home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md'):
             target = self.root / filename
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('old configuration')
@@ -264,12 +264,24 @@ class DeploymentScriptsTest(unittest.TestCase):
         webhook = self.login.parent.parent / 'clouddrive/config/webhooks/webhook.toml'
         self.assertEqual(webhook.read_text(), '[file_system_watcher]\nenabled = true\nurl = "http://host.docker.internal/hooks/clouddrive2?key=webhook-secret"\nmethod = "POST"\n')
         self.assertEqual(webhook.stat().st_mode & 0o777, 0o600)
+        caddy_override = self.root / 'etc/systemd/system/caddy.service.d/embymedia-login.conf'
+        self.assertEqual(caddy_override.read_text(), (self.source / 'deploy/caddy/embymedia-login.conf').read_text())
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        self.assertTrue(any(command[:3] == ['systemctl', 'start', 'caddy.service'] for command in commands))
+        self.assertFalse(any(command[:3] == ['systemctl', 'restart', 'caddy.service'] for command in commands))
+
+    def test_existing_caddy_is_reloaded_without_restart(self):
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        self.assertTrue(any(command[:3] == ['systemctl', 'reload', 'caddy.service'] for command in commands))
+        self.assertFalse(any(command[:3] == ['systemctl', 'restart', 'caddy.service'] for command in commands))
 
     def test_database_failure_restarts_previous_service(self):
         self.assert_recovered(self.install(FAIL_COMMAND='embymedia -check-db'))
 
     def test_late_caddy_failure_restores_binary_and_configs(self):
-        self.assert_recovered(self.install(FAIL_COMMAND='systemctl restart caddy.service'))
+        self.assert_recovered(self.install(FAIL_COMMAND='systemctl reload caddy.service'))
 
     def test_configuration_install_failure_restores_previous_deployment(self):
         self.assert_recovered(self.install(FAIL_COMMAND='install -o gaotao -g gaotao -m 0644'))
@@ -284,7 +296,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.assert_recovered(self.install(FAIL_HEALTH='1'))
 
     def test_failed_symlink_rollback_retains_active_binary(self):
-        result = self.install(FAIL_COMMAND='systemctl restart caddy.service', FAIL_ROLLBACK='1')
+        result = self.install(FAIL_COMMAND='systemctl reload caddy.service', FAIL_ROLLBACK='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.current.resolve().name, 'new')
         self.assertTrue((self.current / 'bin/embymedia').is_file())
@@ -295,7 +307,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         alias = self.root / 'alias'
         alias.symlink_to(self.root, target_is_directory=True)
         self.root = alias
-        result = self.install(FAIL_COMMAND='systemctl restart caddy.service', FAIL_ROLLBACK='1')
+        result = self.install(FAIL_COMMAND='systemctl reload caddy.service', FAIL_ROLLBACK='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.current.resolve().name, 'new')
         self.assertTrue((self.current / 'bin/embymedia').is_file())
@@ -304,7 +316,7 @@ class DeploymentScriptsTest(unittest.TestCase):
     def test_first_install_failure_preserves_identity_without_dangling_link(self):
         self.current.unlink()
         (self.root / 'services.json').write_text('{}')
-        result = self.install(FAIL_COMMAND='systemctl restart caddy.service')
+        result = self.install(FAIL_COMMAND='systemctl start caddy.service')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.current.is_symlink())
         self.assertEqual(json.loads(self.login.read_text()), self.identity)

@@ -85,7 +85,11 @@ finish() {
         systemctl enable "$unit" || recovery_failed=1
       fi
       if [ -f "$state/$unit.active" ]; then
-        systemctl restart "$unit" || recovery_failed=1
+        if [ "$unit" = caddy.service ]; then
+          systemctl reload "$unit" || recovery_failed=1
+        else
+          systemctl restart "$unit" || recovery_failed=1
+        fi
         systemctl is-active --quiet "$unit" || recovery_failed=1
       fi
     done
@@ -131,7 +135,7 @@ chmod -R a+rX "$release/deploy"
 for file in "$release"/deploy/systemd/*.service "$release"/deploy/systemd/*.timer; do
   printf '/etc/systemd/system/%s\n' "$(basename "$file")" >> "$state/configs"
 done
-printf '%s\n' /etc/caddy/Caddyfile /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md /srv/embymedia/data/clouddrive/config/webhooks/webhook.toml >> "$state/configs"
+printf '%s\n' /etc/caddy/Caddyfile /etc/systemd/system/caddy.service.d/embymedia-login.conf /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md /srv/embymedia/data/clouddrive/config/webhooks/webhook.toml >> "$state/configs"
 while IFS= read -r destination; do
   if [ -e "$destination" ] || [ -L "$destination" ]; then
     mkdir -p "$state/files$(dirname "$destination")"
@@ -191,6 +195,8 @@ mv -Tf "$current.next" "$current"
 
 install -o root -g root -m 0644 "$release"/deploy/systemd/*.service "$release"/deploy/systemd/*.timer /etc/systemd/system/
 install -o root -g root -m 0644 "$release/deploy/caddy/Caddyfile" /etc/caddy/Caddyfile
+install -o root -g root -m 0755 -d /etc/systemd/system/caddy.service.d
+install -o root -g root -m 0644 "$release/deploy/caddy/embymedia-login.conf" /etc/systemd/system/caddy.service.d/embymedia-login.conf
 skill_source="$release/deploy/hermes/skills/embymedia-v2-operator/SKILL.md"
 install -o gaotao -g gaotao -m 0755 -d /home/gaotao/.hermes/skills/embymedia-v2-operator
 install -o gaotao -g gaotao -m 0644 "$skill_source" /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md
@@ -202,7 +208,11 @@ systemctl restart embymedia-http-login.service
 systemctl restart embymedia-v2.service
 wait_http http://127.0.0.1:9092/health
 wait_http -H 'Remote-User: release-probe' http://127.0.0.1:3080/api/v1/openapi.json
-systemctl restart caddy.service
+if systemctl is-active --quiet caddy.service; then
+  systemctl reload caddy.service
+else
+  systemctl start caddy.service
+fi
 systemctl is-active --quiet caddy.service
 committed=1
 printf '%s\n' "$release"
