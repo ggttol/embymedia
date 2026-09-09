@@ -20,6 +20,7 @@ Caddy 验证浏览器流量。携带 `X-Agent-Token` 或 `Authorization` 的 `/a
 - 验证 CloudDrive2 webhook 事件，并把文件变化防抖为一个持久入库任务；该任务先完成 STRM 同步，再启动 Emby 扫描。
 - 列出 Emby 媒体库，按确切条目 ID 检查，提交指定媒体库刷新，在全库刷新前同步全部媒体，跟踪该 Emby 扫描直至记录完成，并检查或修复元数据和缺失的主海报。元数据修复会从每个未匹配路径推导干净标题与年份，查询 Emby 已配置的 provider，只应用一个不会与其他条目重复、类型一致且置信度高的 TMDB 候选，并返回有歧义的候选供检查。海报修复会先请求完整图片刷新；仅刷新仍缺失时，它会下载唯一的远程海报候选而不更改 identity，并报告已提交、候选下载、确认修复、请求失败和仍然缺失的数量。
 - 从已配置媒体树同步 STRM 文件且不跟随输出 symlink；无论服务 umask 如何，都确保生成目录可由 Emby 读取和穿过；只有媒体挂载 canary 存在时，才删除目标已消失的生成 STRM 文件；清除因此变空的目录，使 Emby 在下次扫描时移除已删除标题；并验证每个剩余 target 均位于媒体根目录内且真实存在。文件协调与 target 检查使用两个有界 worker，映射到同一输出的媒体文件仍保持确定的源目录顺序。
+- 将直接包含剧集文件的 `SEnn` 季目录及明确匹配的季集标记规范为 `Season NN` 和 `SnnEnn` STRM 名称，不重命名源视频，也不合并剧集目录。编号有歧义或规范输出冲突时会报错。按源路径指定媒体库范围时，也会选中其规范输出；仅在挂载 canary 存在、旧文件与原目标内容逐字节一致且替代文件已确认时，才移除旧镜像文件。手工修改的镜像保持不变。
 - 使用关联自动计划的执行 ID，以及持久化的尝试记录、开始／结束时间、进度、结果、错误、日志、取消与显式评审重试来执行经过校验的后台操作。`series_auto_fill` 仅处理 `电视剧追更` 和 `综艺追更`：它验证唯一的 canonical TMDB Series 和 115 目录，接收准确匹配已播缺集的受支持视频叶文件，并报告所有剩余缺集或身份失败。启用明确的完结整包选项及危险操作后，它也可以先暂存覆盖全部预期已播集的独立根目录，在扫描后验证新的相同 TMDB Series，再删除旧 Emby 条目、回收旧 115 根、移除旧 STRM 根并再次扫描。中断的 effectful 工作会失败，而非自动重放。
 - 通过 stdio、Streamable HTTP 与旧式 SSE MCP 暴露完整 REST API 和三十四个明确的运营工具。Discovery 工具先解析账号、已有文件、分享、条目、会话、任务与计划 ID，再执行写操作。
 
@@ -116,7 +117,7 @@ go build -trimpath -o bin/embymedia ./cmd/server
 sudo deploy/scripts/install-release.sh "$PWD" "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-Installer 校验 artifact，安装不可变 release，以服务用户检查数据库，持久化 webhook secret，并原子切换 `current`。应用处于运行状态时，它会在停止服务前最多等待一小时，让当前后台执行完成；等待超时会保持现有 release 不变。只有立即激活 release 比保留当前执行更重要时，才设置 `EMBYMEDIA_DEPLOY_FORCE=1`，因为该模式会取消当前执行。新应用进程只启动一次；内容完全相同的 CloudDrive webhook 配置会保留原文件，避免部署触发错误的媒体变化事件。它安装 Caddy systemd override 以禁用环境变量日志，并 reload 运行中的 Caddy 进程而不中断共享路由。激活失败时恢复上一版本、已安装配置与服务状态；数据库迁移和身份数据不会回退。恢复失败会保留已保存配置，且不会删除当前版本。
+Installer 校验 artifact，安装不可变 release，以服务用户检查数据库，持久化 webhook secret，并原子切换 `current`。应用处于运行状态时，它会在停止服务前最多等待一小时，让当前后台执行完成；等待超时会保持现有 release 不变。只有立即激活 release 比保留当前执行更重要时，才设置 `EMBYMEDIA_DEPLOY_FORCE=1`，因为该模式会取消当前执行。新应用进程只启动一次，并保留现有 webhook 启用开关；内容完全相同的 CloudDrive webhook 配置会保留原文件，避免部署触发错误的媒体变化事件。它安装 Caddy systemd override 以禁用环境变量日志，并 reload 运行中的 Caddy 进程而不中断共享路由。激活失败时恢复上一版本、已安装配置与服务状态；数据库迁移和身份数据不会回退。恢复失败会保留已保存配置，且不会删除当前版本。
 
 ## 安全
 

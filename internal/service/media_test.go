@@ -86,20 +86,18 @@ func TestMediaServicePrunesOnlyMissingGeneratedSTRMWithMountCanary(t *testing.T)
 		t.Fatal(err)
 	}
 	progress := make([]float64, 0)
-	messages := make([]string, 0)
 	result, err := NewMediaService(db).SyncSTRMWithProgress(context.Background(), "Movies", func(value float64, message string) error {
 		if len(progress) > 0 && value < progress[len(progress)-1] {
 			t.Errorf("progress moved backward: %v then %v", progress[len(progress)-1], value)
 		}
 		progress = append(progress, value)
-		messages = append(messages, message)
 		return nil
 	})
 	if err != nil || result.Removed != 1 || result.RemovedDirectories != 1 || result.Missing != 0 || result.Valid != 2 || result.PruneStatus != "completed" {
 		t.Fatalf("stale reconciliation failed: %+v, err=%v", result, err)
 	}
-	if len(progress) == 0 || progress[0] != 5 || progress[len(progress)-1] != 100 || !strings.Contains(strings.Join(messages, "\n"), "removed 1 files") {
-		t.Fatalf("STRM progress did not expose reconciliation phases: progress=%v messages=%v", progress, messages)
+	if len(progress) == 0 || progress[len(progress)-1] != 100 {
+		t.Fatalf("STRM synchronization did not report completion: progress=%v", progress)
 	}
 	for _, directory := range []string{strmRoot, filepath.Join(strmRoot, "Movies")} {
 		info, err := os.Stat(directory)

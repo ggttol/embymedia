@@ -286,10 +286,11 @@ class DeploymentScriptsTest(unittest.TestCase):
     def test_unchanged_webhook_configuration_is_not_replaced(self):
         webhook = self.login.parent.parent / 'clouddrive/config/webhooks/webhook.toml'
         webhook.parent.mkdir(parents=True, exist_ok=True)
-        webhook.write_text('[file_system_watcher]\nenabled = true\nurl = "http://host.docker.internal/hooks/clouddrive2?key=webhook-secret"\nmethod = "POST"\n')
+        webhook.write_text('[file_system_watcher]\nenabled = false\nurl = "http://host.docker.internal/hooks/clouddrive2?key=webhook-secret"\nmethod = "POST"\n')
         inode = webhook.stat().st_ino
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('enabled = false\n', webhook.read_text())
         self.assertEqual(webhook.stat().st_ino, inode)
 
     def test_active_service_is_started_once_after_task_drain(self):

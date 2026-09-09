@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -122,7 +123,7 @@ func (s *MediaService) paths(subpath string) (string, string, string, string, er
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("resolve strm_root: %w", err)
 	}
-	strmBase := filepath.Join(strmRoot, library)
+	strmBase := filepath.Join(strmRoot, canonicalSTRMDirectory(library))
 	if resolved, err := filepath.EvalSymlinks(strmBase); err == nil {
 		if !inside(strmRoot, resolved) {
 			return "", "", "", "", fmt.Errorf("STRM library resolves outside strm_root")
@@ -206,7 +207,7 @@ func writeAtomic(path string, content []byte) error {
 	return nil
 }
 
-func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string, expected map[string]struct{}, result *STRMResult) error {
+func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string, expected map[string]struct{}, relocations map[string]strmRelocation, result *STRMResult) error {
 	canary, err := os.Stat(filepath.Join(mediaRoot, ".embymedia-health-canary"))
 	if err != nil || !canary.Mode().IsRegular() {
 		result.PruneStatus = "skipped_no_mount_canary"
@@ -216,6 +217,9 @@ func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string,
 	emptied := make(map[string]struct{})
 	if err := filepath.WalkDir(strmBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if path == strmBase && os.IsNotExist(walkErr) {
+				return nil
+			}
 			return walkErr
 		}
 		if err := ctx.Err(); err != nil {
@@ -234,20 +238,41 @@ func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string,
 		if err != nil {
 			return err
 		}
-		target := strings.TrimSpace(string(content))
-		prefix := embyPrefix + "/"
-		if !strings.HasPrefix(target, prefix) {
-			return nil
-		}
-		relative, err := cleanRelative(filepath.FromSlash(strings.TrimPrefix(target, prefix)), "STRM target")
-		if err != nil || relative == "" {
-			return nil
-		}
-		candidate := filepath.Join(mediaRoot, relative)
-		if _, err := filepath.EvalSymlinks(candidate); err == nil {
-			return nil
-		} else if !os.IsNotExist(err) {
-			return err
+		relocation, moving := relocations[path]
+		if moving {
+			if !bytes.Equal(content, relocation.contents) {
+				return nil
+			}
+			info, err := os.Lstat(relocation.output)
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("canonical STRM %s is not a regular file", relocation.output)
+			}
+			replacement, err := os.ReadFile(relocation.output)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(content, replacement) {
+				return fmt.Errorf("canonical STRM %s no longer references the original source", relocation.output)
+			}
+		} else {
+			target := strings.TrimSpace(string(content))
+			prefix := embyPrefix + "/"
+			if !strings.HasPrefix(target, prefix) {
+				return nil
+			}
+			relative, err := cleanRelative(filepath.FromSlash(strings.TrimPrefix(target, prefix)), "STRM target")
+			if err != nil || relative == "" {
+				return nil
+			}
+			candidate := filepath.Join(mediaRoot, relative)
+			if _, err := filepath.EvalSymlinks(candidate); err == nil {
+				return nil
+			} else if !os.IsNotExist(err) {
+				return err
+			}
 		}
 		if err := os.Remove(path); err != nil {
 			return err
@@ -255,6 +280,9 @@ func pruneStaleSTRM(ctx context.Context, mediaRoot, strmBase, embyPrefix string,
 		result.Removed++
 		for directory := filepath.Dir(path); directory != strmBase && inside(strmBase, directory); directory = filepath.Dir(directory) {
 			emptied[directory] = struct{}{}
+		}
+		if moving && filepath.Dir(path) == strmBase && filepath.Dir(relocation.output) != strmBase {
+			emptied[strmBase] = struct{}{}
 		}
 		return nil
 	}); err != nil {
@@ -334,6 +362,12 @@ send:
 type strmSyncJob struct {
 	outputRelative string
 	contents       [][]byte
+	normalized     bool
+}
+
+type strmRelocation struct {
+	output   string
+	contents []byte
 }
 
 type strmVerifyJob struct {
@@ -406,12 +440,12 @@ func addConcurrentExample(mu *sync.Mutex, examples *[]string, value string) {
 	}
 }
 
-// SyncSTRM creates or updates one STRM file for each supported video file and then verifies the result.
+// SyncSTRM synchronizes a source-relative library, canonicalizes legacy season names, and verifies original media targets.
 func (s *MediaService) SyncSTRM(ctx context.Context, library string) (STRMResult, error) {
 	return s.SyncSTRMWithProgress(ctx, library, nil)
 }
 
-// SyncSTRMWithProgress reports durable phase and processed-item updates while synchronizing.
+// SyncSTRMWithProgress reports durable progress while synchronizing a source-relative library into canonical STRM paths.
 func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string, update func(float64, string) error) (STRMResult, error) {
 	mediaRoot, mediaBase, strmBase, embyPrefix, err := s.paths(library)
 	if err != nil {
@@ -425,14 +459,15 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 	if err != nil {
 		return STRMResult{}, err
 	}
-	libraryRelative, err := filepath.Rel(strmRoot, strmBase)
-	if err != nil || !inside(strmRoot, strmBase) {
+	originalBase := filepath.Join(strmRoot, filepath.Clean(library))
+	if !inside(strmRoot, strmBase) || !inside(strmRoot, originalBase) {
 		return STRMResult{}, fmt.Errorf("STRM library escapes strm_root")
 	}
 	result := STRMResult{}
 	expected := make(map[string]struct{})
 	jobs := make([]strmSyncJob, 0, 1024)
 	jobIndex := make(map[string]int)
+	var relocations map[string]strmRelocation
 	err = filepath.WalkDir(mediaBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -459,22 +494,36 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 		if err != nil {
 			return err
 		}
-		outputRelative := filepath.Join(libraryRelative, strings.TrimSuffix(relative, filepath.Ext(relative))+".strm")
+		targetRelative := relative
+		if strings.TrimSpace(library) != "" {
+			targetRelative = filepath.Join(filepath.Clean(library), relative)
+		}
+		outputRelative, err := canonicalSTRMPath(targetRelative)
+		if err != nil {
+			return err
+		}
 		cleanOutput, err := cleanRelative(outputRelative, "STRM output")
 		if err != nil || cleanOutput == "" {
 			return fmt.Errorf("invalid STRM output path")
 		}
 		expected[filepath.Join(strmRoot, cleanOutput)] = struct{}{}
-		targetRelative := relative
-		if strings.TrimSpace(library) != "" {
-			targetRelative = filepath.Join(filepath.Clean(library), relative)
-		}
 		content := []byte(embyPrefix + "/" + filepath.ToSlash(targetRelative) + "\n")
+		originalRelative := strings.TrimSuffix(targetRelative, filepath.Ext(targetRelative)) + ".strm"
+		normalized := cleanOutput != originalRelative
 		if index, exists := jobIndex[cleanOutput]; exists {
+			if normalized || jobs[index].normalized {
+				return fmt.Errorf("different media sources map to canonical STRM %s", cleanOutput)
+			}
 			jobs[index].contents = append(jobs[index].contents, content)
 		} else {
 			jobIndex[cleanOutput] = len(jobs)
-			jobs = append(jobs, strmSyncJob{outputRelative: cleanOutput, contents: [][]byte{content}})
+			jobs = append(jobs, strmSyncJob{outputRelative: cleanOutput, contents: [][]byte{content}, normalized: normalized})
+		}
+		if normalized {
+			if relocations == nil {
+				relocations = make(map[string]strmRelocation)
+			}
+			relocations[filepath.Join(strmRoot, originalRelative)] = strmRelocation{output: filepath.Join(strmRoot, cleanOutput), contents: content}
 		}
 		return nil
 	})
@@ -494,11 +543,14 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 		}
 		for _, content := range job.contents {
 			existing, readErr := os.ReadFile(output)
-			if readErr == nil && string(existing) == string(content) {
+			if readErr == nil && bytes.Equal(existing, content) {
 				unchanged.Add(1)
 			} else {
 				if readErr != nil && !os.IsNotExist(readErr) {
 					return readErr
+				}
+				if job.normalized && readErr == nil {
+					return fmt.Errorf("canonical STRM %s already references a different source", output)
 				}
 				if err := writeAtomic(output, content); err != nil {
 					return err
@@ -536,8 +588,13 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 	if err := reportMediaProgress(update, 60, fmt.Sprintf("STRM source scan completed with %d media files", result.MediaFiles)); err != nil {
 		return result, err
 	}
-	if err := pruneStaleSTRM(ctx, mediaRoot, strmBase, embyPrefix, expected, &result); err != nil {
+	if err := pruneStaleSTRM(ctx, mediaRoot, originalBase, embyPrefix, expected, relocations, &result); err != nil {
 		return result, err
+	}
+	if originalBase != strmBase {
+		if err := pruneStaleSTRM(ctx, mediaRoot, strmBase, embyPrefix, expected, relocations, &result); err != nil {
+			return result, err
+		}
 	}
 	if err := reportMediaProgress(update, 70, fmt.Sprintf("STRM stale reconciliation removed %d files and %d empty directories with status %s", result.Removed, result.RemovedDirectories, result.PruneStatus)); err != nil {
 
@@ -559,12 +616,12 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 	return result, nil
 }
 
-// VerifySTRM validates STRM targets against the configured media tree without changing files.
+// VerifySTRM validates generated targets for a source-relative library without changing files.
 func (s *MediaService) VerifySTRM(ctx context.Context, library string) (STRMResult, error) {
 	return s.VerifySTRMWithProgress(ctx, library, nil)
 }
 
-// VerifySTRMWithProgress reports processed-item updates while validating every STRM target.
+// VerifySTRMWithProgress reports processed-item updates while validating the generated targets of a source-relative library.
 func (s *MediaService) VerifySTRMWithProgress(ctx context.Context, library string, update func(float64, string) error) (STRMResult, error) {
 	mediaRoot, _, strmBase, embyPrefix, err := s.paths(library)
 	if err != nil {

@@ -191,10 +191,21 @@ secret_input=$(mktemp /srv/embymedia/data/.webhook-secret-XXXXXXXX)
 install -o embymedia -g embymedia -m 0600 /etc/embymedia/secrets/clouddrive-webhook-secret "$secret_input"
 webhook_config_dir=/srv/embymedia/data/clouddrive/config/webhooks
 webhook_config=$webhook_config_dir/webhook.toml
+webhook_enabled=true
+if [ -f "$webhook_config" ]; then
+  webhook_enabled=$(/usr/bin/python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as stream:
+    enabled = tomllib.load(stream)["file_system_watcher"]["enabled"]
+if not isinstance(enabled, bool):
+    raise ValueError("file_system_watcher.enabled must be a boolean")
+print("true" if enabled else "false")
+' "$webhook_config")
+fi
 install -o root -g root -m 0700 -d "$webhook_config_dir"
 webhook_config_temp=$(mktemp "$webhook_config_dir/.webhook-XXXXXXXX")
 {
-  printf '%s\n' '[file_system_watcher]' 'enabled = true'
+  printf '%s\n' '[file_system_watcher]' "enabled = $webhook_enabled"
   printf '%s' 'url = "http://host.docker.internal/hooks/clouddrive2?key='
   tr -d '\r\n' < "$secret_input"
   printf '%s\n' '"' 'method = "POST"'
