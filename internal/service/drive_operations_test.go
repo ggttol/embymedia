@@ -31,7 +31,7 @@ func TestDriveProviderOperations(t *testing.T) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/files":
-			_, _ = io.WriteString(response, `{"state":true,"count":2,"data":[{"fid":"11","pid":"0","n":"movie.mkv","s":"1024"},{"cid":"12","pid":"0","n":"Series"}]}`)
+			_, _ = io.WriteString(response, `{"state":true,"count":2,"data":[{"fid":"11","cid":"0","n":"movie.mkv","s":"1024"},{"cid":"12","pid":"0","n":"Series"}]}`)
 		case "/files/search":
 			_, _ = io.WriteString(response, `{"state":true,"count":1,"data":[{"fid":"21","cid":"12","n":"Titanic.mkv","s":"2048","fc":1,"te":"1788367119"}]}`)
 		case "/files/index_info":
@@ -83,6 +83,9 @@ func TestDriveProviderOperations(t *testing.T) {
 		t.Fatalf("open storage: %v", err)
 	}
 	defer db.Close()
+	if err := db.SetSetting("share_snapshot_interval_ms", "0"); err != nil {
+		t.Fatal(err)
+	}
 	account := &domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "UID=42_A1; CID=test; SEID=test", IsDefault: true}
 	if err := db.SaveAccount(account); err != nil {
 		t.Fatalf("save account: %v", err)
@@ -260,6 +263,9 @@ func TestSaveSharePaginatesEveryTopLevelEntry(t *testing.T) {
 		t.Fatalf("open storage: %v", err)
 	}
 	defer db.Close()
+	if err := db.SetSetting("share_snapshot_interval_ms", "0"); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.SaveAccount(&domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "cookie", IsDefault: true, Status: "active"}); err != nil {
 		t.Fatalf("save account: %v", err)
 	}
@@ -273,5 +279,86 @@ func TestSaveSharePaginatesEveryTopLevelEntry(t *testing.T) {
 	count, title, err := service.SaveShareCtx(context.Background(), "account", "https://115.com/s/shared", "", "0")
 	if err != nil || count != 1001 || title != "Large" {
 		t.Fatalf("paginated share save: count=%d title=%s err=%v", count, title, err)
+	}
+}
+
+func TestDriveListFallsBackFromMethodNotAllowed(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SaveAccount(&domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "cookie", IsDefault: true, Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	var hosts []string
+	service := NewDriveService(db, "", "")
+	service.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		hosts = append(hosts, request.URL.Host)
+		status := http.StatusOK
+		body := `{"state":true,"count":1,"data":[{"fid":"file","cid":"0","n":"Movie.mkv","s":"10"}]}`
+		if request.URL.Host == "webapi.115.com" {
+			status = http.StatusMethodNotAllowed
+			body = ""
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	files, total, err := service.ListFilesPageCtx(context.Background(), "account", "0", 0, 1000)
+	if err != nil || total != 1 || len(files) != 1 || files[0].FileID != "file" {
+		t.Fatalf("fallback listing failed: files=%+v total=%d err=%v", files, total, err)
+	}
+	if len(hosts) != 2 || hosts[0] != "webapi.115.com" || hosts[1] != "aps.115.com" {
+		t.Fatalf("unexpected listing endpoints: %v", hosts)
+	}
+}
+
+func TestDriveListingPreservesLargeIDsAndFileParents(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SaveAccount(&domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "cookie", IsDefault: true}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewDriveService(db, "", "")
+	svc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"state":true,"count":2,"data":[{"fid":3435279884306493457,"cid":9007199254740993,"pid":"wrong","n":"episode.mkv","s":"1024"},{"cid":3435279884306493459,"pid":9007199254740993,"n":"Season 01"}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	files, _, err := svc.ListFilesPageCtx(context.Background(), "account", "9007199254740993", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || files[0].FileID != "3435279884306493457" || files[0].ParentID != "9007199254740993" || files[1].FileID != "3435279884306493459" || files[1].ParentID != "9007199254740993" {
+		t.Fatalf("listing changed opaque object identity: %+v", files)
+	}
+}
+
+func TestDriveListingRejectsUnverifiableDeletionEvidence(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SaveAccount(&domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "cookie", IsDefault: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, body string }{
+		{"missing total", `{"state":true,"data":[]}`},
+		{"missing entries", `{"state":true,"count":0}`},
+		{"unknown size", `{"state":true,"count":1,"data":[{"fid":"file","cid":"0","n":"episode.mkv"}]}`},
+		{"fractional size", `{"state":true,"count":1,"data":[{"fid":"file","cid":"0","n":"episode.mkv","s":1.5}]}`},
+		{"foreign parent", `{"state":true,"count":1,"data":[{"fid":"file","cid":"other","n":"episode.mkv","s":1}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewDriveService(db, "", "")
+			svc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tc.body)), Request: request}, nil
+			})
+			if _, _, err := svc.ListFilesPageCtx(context.Background(), "account", "0", 0, 1000); err == nil {
+				t.Fatal("unverifiable listing was accepted")
+			}
+		})
 	}
 }

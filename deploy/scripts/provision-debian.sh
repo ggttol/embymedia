@@ -9,7 +9,7 @@ repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg caddy restic util-linux nftables rsync python3
+apt-get install -y ca-certificates curl gnupg caddy restic util-linux nftables rsync python3 acl
 rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc
 apt-get update
 apt-get install -y docker.io docker-compose
@@ -37,11 +37,11 @@ install -o embymedia -g embymedia -m 0750 -d \
   /srv/embymedia/data/clouddrive/config \
   /srv/embymedia/data/clouddrive/CloudNAS \
   /srv/embymedia/data/clouddrive/update-disabled \
-  /srv/embymedia/data/strm \
+  /srv/embymedia/data/strm-v2 \
   /srv/embymedia/data/authelia \
   /srv/embymedia/backups
 
 find /etc/embymedia/secrets -type f -exec chown root:embymedia {} + -exec chmod 0640 {} +
-chown -R embymedia:embymedia /srv/embymedia/data/strm
+chown -R embymedia:embymedia /srv/embymedia/data/strm-v2
 systemctl daemon-reload
 systemctl enable docker.service containerd.service caddy.service nftables.service

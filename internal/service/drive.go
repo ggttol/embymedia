@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,10 +19,12 @@ import (
 )
 
 type DriveService struct {
-	db            *storage.DB
-	client        *http.Client
-	resourceURL   string
-	resourceToken string
+	db                     *storage.DB
+	client                 *http.Client
+	resourceURL            string
+	resourceToken          string
+	shareSnapshotRequests  chan struct{}
+	shareSnapshotCompleted time.Time
 }
 
 func NewDriveService(db *storage.DB, resourceURL, resourceToken string) *DriveService {
@@ -29,18 +32,29 @@ func NewDriveService(db *storage.DB, resourceURL, resourceToken string) *DriveSe
 		resourceURL = "http://127.0.0.1:8100"
 	}
 	return &DriveService{
-		db:            db,
-		resourceURL:   resourceURL,
-		resourceToken: resourceToken,
+		db:                    db,
+		resourceURL:           resourceURL,
+		resourceToken:         resourceToken,
+		shareSnapshotRequests: make(chan struct{}, 1),
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
 }
 
+// ProviderHTTPError reports an unsuccessful HTTP response without interpreting its body.
+type ProviderHTTPError struct {
+	Operation  string
+	StatusCode int
+}
+
+func (e *ProviderHTTPError) Error() string {
+	return fmt.Sprintf("%s returned HTTP %d", e.Operation, e.StatusCode)
+}
+
 func decodeProviderJSON(response *http.Response, operation string, target any) error {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("%s returned HTTP %d", operation, response.StatusCode)
+		return &ProviderHTTPError{Operation: operation, StatusCode: response.StatusCode}
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(target); err != nil {
 		return fmt.Errorf("decode %s response: %w", operation, err)
@@ -186,16 +200,24 @@ func (s *DriveService) listFiles(ctx context.Context, accountID, cid string, off
 	if limit > 1000 {
 		limit = 1000
 	}
-	reqURL := fmt.Sprintf("https://webapi.115.com/files?aid=1&cid=%s&o=user_ptime&asc=0&offset=%d&show_dir=1&limit=%d&code=&scid=&snap=0&natsort=1&record_open_time=1&source=&format=json", url.QueryEscape(cid), offset, limit)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-	req.Header.Set("Cookie", account.Cookie)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("115 files request: %w", err)
+	query := fmt.Sprintf("aid=1&cid=%s&o=user_ptime&asc=0&offset=%d&show_dir=1&limit=%d&code=&scid=&snap=0&natsort=1&record_open_time=1&source=&format=json", url.QueryEscape(cid), offset, limit)
+	var resp *http.Response
+	for index, endpoint := range []string{"https://webapi.115.com/files?", "https://aps.115.com/natsort/files.php?"} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+query, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+		req.Header.Set("Cookie", account.Cookie)
+		resp, err = s.client.Do(req)
+		if err != nil {
+			return nil, 0, fmt.Errorf("115 files request: %w", err)
+		}
+		if resp.StatusCode == http.StatusMethodNotAllowed && index == 0 {
+			resp.Body.Close()
+			continue
+		}
+		break
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -208,7 +230,7 @@ func (s *DriveService) listFiles(ctx context.Context, accountID, cid string, off
 	var raw struct {
 		State bool   `json:"state"`
 		Error string `json:"error"`
-		Count int64  `json:"count"`
+		Count *int64 `json:"count"`
 		Data  []struct {
 			Fid  any    `json:"fid"`
 			Cid  any    `json:"cid"`
@@ -221,26 +243,52 @@ func (s *DriveService) listFiles(ctx context.Context, accountID, cid string, off
 			Te   string `json:"te"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
 		return nil, 0, fmt.Errorf("parse 115 files: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, 0, fmt.Errorf("115 files response contains trailing JSON data")
 	}
 	if !raw.State {
 		return nil, 0, fmt.Errorf("115 files rejected: %s", raw.Error)
 	}
+	if raw.Count == nil || *raw.Count < int64(len(raw.Data)) || raw.Data == nil {
+		return nil, 0, fmt.Errorf("115 files response has an incomplete directory inventory")
+	}
+	scalar := func(value any) string {
+		switch value := value.(type) {
+		case string:
+			return value
+		case json.Number:
+			return value.String()
+		default:
+			return ""
+		}
+	}
 	files := make([]domain.DriveFile, 0, len(raw.Data))
 	for _, item := range raw.Data {
-		fileID := fmt.Sprintf("%v", item.Fid)
-		isFolder := false
-		if fileID == "" || fileID == "0" || fileID == "<nil>" {
-			fileID = fmt.Sprintf("%v", item.Cid)
-			isFolder = true
+		fileID := scalar(item.Fid)
+		parentID := scalar(item.Cid)
+		isFolder := item.Fid == nil || fileID == "0" || fileID == ""
+		if isFolder {
+			if item.Fid != nil && fileID != "0" && item.Fid != "" {
+				return nil, 0, fmt.Errorf("115 files response contains an invalid file ID")
+			}
+			fileID = scalar(item.Cid)
+			parentID = scalar(item.Pid)
+		}
+		if fileID == "" || fileID == "0" || parentID != cid || item.Name == "" || item.Name == "." || item.Name == ".." || strings.ContainsAny(item.Name, "/\x00") {
+			return nil, 0, fmt.Errorf("115 files response contains an invalid or foreign-parent object")
 		}
 		var size int64
-		switch value := item.Size.(type) {
-		case float64:
-			size = int64(value)
-		case string:
-			size, _ = strconv.ParseInt(value, 10, 64)
+		if item.Size != nil || !isFolder {
+			var err error
+			size, err = strconv.ParseInt(scalar(item.Size), 10, 64)
+			if err != nil || size < 0 {
+				return nil, 0, fmt.Errorf("115 object %s has an invalid file size", fileID)
+			}
 		}
 		updatedValue := item.Te
 		if updatedValue == "" {
@@ -251,11 +299,11 @@ func (s *DriveService) listFiles(ctx context.Context, accountID, cid string, off
 			updatedAt = time.Unix(timestamp, 0)
 		}
 		files = append(files, domain.DriveFile{
-			FileID: fileID, ParentID: fmt.Sprintf("%v", item.Pid), Name: item.Name, Size: size,
+			FileID: fileID, ParentID: parentID, Name: item.Name, Size: size,
 			PickCode: item.Pc, Sha1: item.Sha1, IsFolder: isFolder, UpdatedTime: updatedAt,
 		})
 	}
-	return files, raw.Count, nil
+	return files, *raw.Count, nil
 }
 
 // ResolveDeleteTargetsCtx verifies that every requested object is present in one freshly read directory.
@@ -567,6 +615,50 @@ func ParseShareCode(rawURL, password string) (string, string, error) {
 	return code, receive, nil
 }
 
+// The request slot stays occupied through decoding and closing the response body.
+func (s *DriveService) decodeShareSnapshot(req *http.Request, target any) error {
+	ctx := req.Context()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case s.shareSnapshotRequests <- struct{}{}:
+	}
+	defer func() { <-s.shareSnapshotRequests }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	value, err := s.db.GetSetting("share_snapshot_interval_ms")
+	if err != nil {
+		return err
+	}
+	interval, err := parseShareSnapshotInterval(value)
+	if err != nil {
+		return err
+	}
+	if delay := time.Until(s.shareSnapshotCompleted.Add(interval)); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	defer func() { s.shareSnapshotCompleted = time.Now() }()
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("115 分享预检请求失败: %w", err)
+	}
+	decodeErr := decodeProviderJSON(resp, "115 share snapshot", target)
+	if err := resp.Body.Close(); err != nil {
+		return errors.Join(decodeErr, fmt.Errorf("close 115 share snapshot response: %w", err))
+	}
+	return decodeErr
+}
+
 func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain.DriveAccount, shareCode, receiveCode, cid string) (string, []ShareEntry, error) {
 	const pageSize = 1000
 	const maxEntries = 50000
@@ -577,15 +669,11 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 		reqURL := fmt.Sprintf("https://webapi.115.com/share/snap?share_code=%s&receive_code=%s&cid=%s&offset=%d&limit=%d", url.QueryEscape(shareCode), url.QueryEscape(receiveCode), url.QueryEscape(cid), offset, pageSize)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
-			return "", nil, err
+			return title, entries, err
 		}
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
 		req.Header.Set("Referer", "https://115.com/")
 		req.Header.Set("Cookie", account.Cookie)
-		resp, err := s.client.Do(req)
-		if err != nil {
-			return "", nil, fmt.Errorf("115 分享预检请求失败: %w", err)
-		}
 		var raw struct {
 			State bool   `json:"state"`
 			Error string `json:"error"`
@@ -604,13 +692,11 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 				} `json:"list"`
 			} `json:"data"`
 		}
-		decodeErr := decodeProviderJSON(resp, "115 share snapshot", &raw)
-		resp.Body.Close()
-		if decodeErr != nil {
-			return "", nil, decodeErr
+		if err := s.decodeShareSnapshot(req, &raw); err != nil {
+			return title, entries, err
 		}
 		if !raw.State {
-			return "", nil, fmt.Errorf("115 分享预检被拒绝: %s", raw.Error)
+			return title, entries, fmt.Errorf("115 分享预检被拒绝: %s", raw.Error)
 		}
 		if title == "" {
 			title = raw.Data.ShareInfo.ShareTitle
@@ -635,7 +721,7 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 			seen[id] = struct{}{}
 			entries = append(entries, ShareEntry{ID: id, Name: item.N, Size: item.S, IsDir: isDirectory})
 			if len(entries) > maxEntries {
-				return "", nil, fmt.Errorf("115 share contains more than %d top-level entries", maxEntries)
+				return title, entries, fmt.Errorf("115 share contains more than %d top-level entries", maxEntries)
 			}
 		}
 		total := raw.Data.Count
@@ -643,14 +729,14 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 			total = raw.Count
 		}
 		if total > maxEntries {
-			return "", nil, fmt.Errorf("115 share contains %d top-level entries; maximum is %d", total, maxEntries)
+			return title, entries, fmt.Errorf("115 share contains %d top-level entries; maximum is %d", total, maxEntries)
 		}
 		if total > 0 && len(entries) >= total {
 			break
 		}
 		if len(raw.Data.List) < pageSize {
 			if total > 0 && len(entries) < total {
-				return "", nil, fmt.Errorf("115 share snapshot ended at %d of %d entries", len(entries), total)
+				return title, entries, fmt.Errorf("115 share snapshot ended at %d of %d entries", len(entries), total)
 			}
 			break
 		}
@@ -664,7 +750,8 @@ func (s *DriveService) SnapshotShare(accountID, rawURL, password string) (string
 	return s.SnapshotShareCtx(context.Background(), accountID, rawURL, password)
 }
 
-// SnapshotShareCtx lists one share's top-level contents with cancellation.
+// SnapshotShareCtx returns completed pages with any error, including cancellation.
+// Requests across this service wait share_snapshot_interval_ms after the previous response closes.
 func (s *DriveService) SnapshotShareCtx(ctx context.Context, accountID, rawURL, password string) (string, []ShareEntry, error) {
 	acc, err := s.getAccount(accountID)
 	if err != nil {

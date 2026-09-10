@@ -85,6 +85,24 @@ func TestSettingsStateOmitsUnknownPersistedKeys(t *testing.T) {
 	}
 }
 
+func TestSettingsValidateImmediateMediaExclusionRoots(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	settings := NewSettingsService(db)
+	if err := settings.Update(map[string]string{"media_excluded_roots": `["_待整理","_待回收"]`}); err != nil {
+		t.Fatalf("save media exclusions: %v", err)
+	}
+	if stored, err := settings.Get("media_excluded_roots"); err != nil || stored != `["_待整理","_待回收"]` {
+		t.Fatalf("unexpected media exclusions: %q, err=%v", stored, err)
+	}
+	if err := settings.Update(map[string]string{"media_excluded_roots": `["nested/review"]`}); err == nil {
+		t.Fatal("nested media exclusion was accepted")
+	}
+}
+
 func TestEmbyHealthDoesNotExposeKeyOnConnectionFailure(t *testing.T) {
 	db, err := storage.Open(":memory:")
 	if err != nil {
@@ -112,5 +130,23 @@ func TestEmbyHealthDoesNotExposeKeyOnConnectionFailure(t *testing.T) {
 	health := settings.CheckAvailability("emby")
 	if health.Status != "error" || strings.Contains(health.Message, "private-health-key") {
 		t.Fatalf("outage response leaked credentials or hid failure: %+v", health)
+	}
+}
+
+func TestSettingsRejectNegativeShareSnapshotInterval(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	settings := NewSettingsService(db)
+	if err := settings.Update(map[string]string{"share_snapshot_interval_ms": "1000"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Update(map[string]string{"share_snapshot_interval_ms": "-1"}); err == nil {
+		t.Fatal("negative snapshot interval was accepted")
+	}
+	if value, err := settings.Get("share_snapshot_interval_ms"); err != nil || value != "1000" {
+		t.Fatalf("rejected interval replaced saved pacing: value=%q err=%v", value, err)
 	}
 }

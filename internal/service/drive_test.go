@@ -15,7 +15,7 @@ func TestDriveServiceMock(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/files" {
-			w.Write([]byte(`{"state":true,"count":2,"data":[{"fid":123,"pid":0,"n":"Movie.mp4","s":1024000,"pc":"pick1","sha":"sha123","t":"2026-09-04"},{"cid":456,"pid":0,"n":"Series","s":0,"pc":"","sha":"","t":"2026-09-04"}]}`))
+			w.Write([]byte(`{"state":true,"count":2,"data":[{"fid":123,"cid":0,"n":"Movie.mp4","s":1024000,"pc":"pick1","sha":"sha123","t":"2026-09-04"},{"cid":456,"pid":0,"n":"Series","s":0,"pc":"","sha":"","t":"2026-09-04"}]}`))
 			return
 		}
 		if r.URL.Path == "/web/lixian/" {

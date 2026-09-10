@@ -38,3 +38,4 @@ EmbyMedia 2.1.0 is a self-hosted Go and Vue operations system for Emby, CloudDri
 - The same-host Debian deployment is the primary Agent runtime.
 - Public browser access remains protected by the existing login proxy.
 - CloudDrive container restarts require an Emby restart and media-canary verification before playback resumes.
+- The approved media catalog keeps the existing 115 `emby` root and aligns its immediate library names with generated STRM roots and Emby libraries. `电视剧追更` and `综艺追更` remain first-class Emby libraries; no family-video library is created. High-bitrate films use a distinct `IMAX巨幕` library, while uncertain identities remain outside Emby until reviewed.

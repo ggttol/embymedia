@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -16,7 +17,8 @@ import (
 )
 
 var videoExtensions = map[string]struct{}{
-	".m2ts": {}, ".m4v": {}, ".mkv": {}, ".mov": {}, ".mp4": {}, ".mpeg": {}, ".mpg": {}, ".ts": {}, ".webm": {},
+	".avi": {}, ".flv": {}, ".iso": {}, ".m2ts": {}, ".m4v": {}, ".mkv": {}, ".mov": {}, ".mp4": {},
+	".mpeg": {}, ".mpg": {}, ".rm": {}, ".rmvb": {}, ".ts": {}, ".vob": {}, ".webm": {}, ".wmv": {},
 }
 
 // STRMResult reports observable synchronization and validation counts.
@@ -42,6 +44,36 @@ type MediaService struct {
 // NewMediaService creates a filesystem media service.
 func NewMediaService(db *storage.DB) *MediaService {
 	return &MediaService{db: db}
+}
+
+func parseMediaExcludedRoots(raw string) (map[string]struct{}, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return nil, fmt.Errorf("decode media_excluded_roots: %w", err)
+	}
+	excluded := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		clean, err := cleanRelative(name, "excluded media root")
+		if err != nil || clean == "" || filepath.Dir(clean) != "." {
+			return nil, fmt.Errorf("media_excluded_roots must contain immediate directory names")
+		}
+		if _, duplicate := excluded[clean]; duplicate {
+			return nil, fmt.Errorf("media_excluded_roots must not contain duplicates")
+		}
+		excluded[clean] = struct{}{}
+	}
+	return excluded, nil
+}
+
+func (s *MediaService) excludedRoots(library string) (map[string]struct{}, error) {
+	if strings.TrimSpace(library) != "" {
+		return nil, nil
+	}
+	raw, _ := s.db.GetSetting("media_excluded_roots")
+	return parseMediaExcludedRoots(raw)
 }
 
 func cleanRelative(value, label string) (string, error) {
@@ -153,7 +185,8 @@ func safeOutputPath(root, relative string) (string, error) {
 			current = filepath.Join(current, segment)
 			info, err := os.Lstat(current)
 			if os.IsNotExist(err) {
-				if err := os.Mkdir(current, 0755); err != nil && !os.IsExist(err) {
+				// Default STRM ACLs retain group write access under the private service umask.
+				if err := os.Mkdir(current, 0775); err != nil && !os.IsExist(err) {
 					return "", err
 				}
 				info, err = os.Lstat(current)
@@ -451,6 +484,10 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 	if err != nil {
 		return STRMResult{}, err
 	}
+	excludedRoots, err := s.excludedRoots(library)
+	if err != nil {
+		return STRMResult{}, err
+	}
 	if err := reportMediaProgress(update, 5, "STRM source scan started"); err != nil {
 		return STRMResult{}, err
 	}
@@ -476,6 +513,17 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 			return err
 		}
 		if entry.IsDir() {
+			if path != mediaBase {
+				relative, err := filepath.Rel(mediaBase, path)
+				if err != nil {
+					return err
+				}
+				if filepath.Dir(relative) == "." {
+					if _, excluded := excludedRoots[relative]; excluded {
+						return filepath.SkipDir
+					}
+				}
+			}
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {

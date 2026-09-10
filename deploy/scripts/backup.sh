@@ -38,7 +38,7 @@ export RESTIC_CACHE_DIR="$cache_dir"
   "$login_config" \
   /srv/embymedia/data/emby/config \
   /srv/embymedia/data/clouddrive/config \
-  /srv/embymedia/data/strm \
+  /srv/embymedia/data/strm-v2 \
   /srv/embymedia/data/authelia \
   /etc/embymedia/authelia \
   /etc/embymedia/secrets/authelia-users.yml

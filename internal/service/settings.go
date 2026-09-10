@@ -25,11 +25,12 @@ var secretSettingKeys = map[string]struct{}{
 var allowedSettingKeys = map[string]struct{}{
 	"115_cookie": {}, "c115_cid_map": {},
 	"emby_url": {}, "emby_api_key": {},
-	"media_root": {}, "strm_root": {}, "emby_media_prefix": {},
+	"media_root": {}, "strm_root": {}, "emby_media_prefix": {}, "media_excluded_roots": {},
 	"clouddrive_url": {}, "clouddrive_api_token": {}, "clouddrive_mount_path": {}, "clouddrive_source_path": {},
 	"clouddrive_webhook_secret": {}, "clouddrive_webhook_debounce_seconds": {},
 	"resource_api_url": {}, "resource_api_token": {},
-	"dangerous_actions_enabled": {},
+	"share_snapshot_interval_ms": {},
+	"dangerous_actions_enabled":  {},
 }
 
 type monitoredComponent struct {
@@ -216,6 +217,18 @@ func (s *SettingsService) State() (SettingsState, error) {
 	}, nil
 }
 
+func parseShareSnapshotInterval(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Second, nil
+	}
+	milliseconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || milliseconds < 0 || milliseconds > int64((1<<63-1)/time.Millisecond) {
+		return 0, fmt.Errorf("share_snapshot_interval_ms must be a nonnegative integer no greater than %d", int64((1<<63-1)/time.Millisecond))
+	}
+	return time.Duration(milliseconds) * time.Millisecond, nil
+}
+
 // Update atomically persists validated settings; empty secret fields preserve stored values.
 func (s *SettingsService) Update(values map[string]string) error {
 	filtered := make(map[string]string, len(values))
@@ -239,6 +252,11 @@ func (s *SettingsService) Update(values map[string]string) error {
 		if key == "dangerous_actions_enabled" && value != "true" && value != "false" {
 			return fmt.Errorf("dangerous_actions_enabled must be true or false")
 		}
+		if key == "share_snapshot_interval_ms" {
+			if _, err := parseShareSnapshotInterval(value); err != nil {
+				return err
+			}
+		}
 		if key == "clouddrive_webhook_debounce_seconds" && value != "" {
 			seconds, err := strconv.Atoi(value)
 			if err != nil || seconds < 1 || seconds > 300 {
@@ -249,6 +267,11 @@ func (s *SettingsService) Update(values map[string]string) error {
 			var cidMap map[string]string
 			if err := json.Unmarshal([]byte(value), &cidMap); err != nil {
 				return fmt.Errorf("c115_cid_map must be a JSON object: %w", err)
+			}
+		}
+		if key == "media_excluded_roots" {
+			if _, err := parseMediaExcludedRoots(value); err != nil {
+				return err
 			}
 		}
 		filtered[key] = value

@@ -34,15 +34,15 @@ services:
     environment:
       UID: ${MEDIA_UID:?set inventory MEDIA_UID}
       GID: ${MEDIA_GID:?set inventory MEDIA_GID}
-      GIDLIST: ${MEDIA_GID:?set inventory MEDIA_GID}
+      GIDLIST: ${MEDIA_GID:?set inventory MEDIA_GID},${STRM_GID:?configure shared STRM access}
       ALL_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
       HTTP_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
       HTTPS_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
       NO_PROXY: 127.0.0.1,localhost,::1,172.16.0.0/12,192.168.0.0/16
     volumes:
       - /srv/embymedia/data/emby/config:/config
-      - /srv/embymedia/data/clouddrive/CloudNAS/CloudDrive:/media:ro
-      - /srv/embymedia/data/strm:/strm:ro
+      - /srv/embymedia/data/clouddrive/CloudNAS/CloudDrive:/media:rw
+      - /srv/embymedia/data/strm-v2:/strm-v2:rw
     ports:
       - 127.0.0.1:8096:8096
     healthcheck:

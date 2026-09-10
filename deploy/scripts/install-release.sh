@@ -163,6 +163,7 @@ for file in "$release"/deploy/systemd/*.service "$release"/deploy/systemd/*.time
   printf '/etc/systemd/system/%s\n' "$(basename "$file")" >> "$state/configs"
 done
 printf '%s\n' /etc/caddy/Caddyfile /etc/systemd/system/caddy.service.d/embymedia-login.conf /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md /srv/embymedia/data/clouddrive/config/webhooks/webhook.toml >> "$state/configs"
+printf '%s\n' /etc/embymedia/stack.env >> "$state/configs"
 while IFS= read -r destination; do
   if [ -e "$destination" ] || [ -L "$destination" ]; then
     mkdir -p "$state/files$(dirname "$destination")"
@@ -178,7 +179,8 @@ if [ -f "$state/embymedia-v2.service.active" ] && [ "$force" -ne 1 ]; then wait_
 changed=1
 if [ -f "$state/embymedia-v2.service.active" ]; then systemctl stop embymedia-v2.service; fi
 systemctl disable --now embymedia-dsh.service embymedia-control-helper.service 2>/dev/null || true
-install -o embymedia -g embymedia -m 0750 -d /srv/embymedia /srv/embymedia/data
+install -o embymedia -g embymedia -m 0750 -d /srv/embymedia /srv/embymedia/data /srv/embymedia/data/strm-v2
+"$release/deploy/scripts/configure-strm-access.sh" /srv/embymedia/data/strm-v2 /etc/embymedia/stack.env
 for file in "$database" "$database-wal" "$database-shm" "$database-journal" "$database.owner.lock"; do
   if [ -e "$file" ]; then
     chown embymedia:embymedia "$file"
@@ -258,5 +260,6 @@ else
   systemctl start caddy.service
 fi
 systemctl is-active --quiet caddy.service
+if [ -f "$state/embymedia-stack.service.active" ]; then systemctl reload embymedia-stack.service; fi
 committed=1
 printf '%s\n' "$release"

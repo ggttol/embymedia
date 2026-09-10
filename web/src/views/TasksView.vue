@@ -727,7 +727,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
             </fieldset>
             <label v-if="scheduleForm.auto_fill_mode === 'transfer'" class="flex cursor-pointer items-start gap-3 border-2 border-danger/40 bg-danger/5 p-4 text-sm text-text">
               <input v-model="scheduleForm.replace_completed_pack" type="checkbox" class="mt-0.5 accent-danger" />
-              <span><strong class="block text-danger">完结整包自动替换旧版本</strong><small class="mt-1 block leading-5 text-text-muted">仅当整包覆盖全部已播集、新 Series 已绑定同一 TMDB 且扫描后无缺集时执行；随后自动删除旧 Emby 条目，并把旧 115 目录移入回收站。需要在系统设置中开启危险操作。</small></span>
+              <span><strong class="block text-danger">完结整包自动替换旧版本</strong><small class="mt-1 block leading-5 text-text-muted">仅当整包身份一致、覆盖全部已播集且扫描后无缺集时执行；保留原规范目录，并验证用户播放与收藏状态。旧资源和恢复记录移至运行库外保留，失败时尝试恢复原目录。需要在系统设置中开启危险操作。</small></span>
             </label>
 
             <div class="grid gap-4 sm:grid-cols-2">
@@ -866,7 +866,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
                   <li v-for="series in recordList(library.series)" :key="String(series.series_id)" class="border-l-2 px-3 py-2" :class="series.issue || textList(series.remaining_episodes).length ? 'border-warn bg-warn/5' : 'border-ok bg-ok/5'">
                     <div class="flex flex-wrap items-center justify-between gap-2"><strong class="text-sm text-text">{{ series.series_name }}</strong><span class="font-mono text-[10px] text-text-faint">{{ series.folder || series.series_id }}</span></div>
                     <p class="mt-1 text-xs text-text-muted">缺集 {{ textList(series.missing_episodes).join('、') || '—' }}<span v-if="textList(series.matched_episodes).length"> · 候选匹配 {{ textList(series.matched_episodes).join('、') }}</span><span v-if="textList(series.transferred_episodes).length"> · 已转存 {{ textList(series.transferred_episodes).join('、') }}</span><span v-if="textList(series.remaining_episodes).length"> · 仍缺 {{ textList(series.remaining_episodes).join('、') }}</span></p>
-                    <p v-if="series.replacement_status" class="mt-1 text-xs font-medium" :class="series.replacement_status === 'replaced' ? 'text-ok' : 'text-warn'">{{ series.replacement_status === 'replaced' ? `整包替换完成：旧版本已删除，新目录 ${series.replacement_folder}` : series.replacement_status === 'staged' ? '新整包已转存，正在验证后续删除。' : '新整包未通过完整验证，旧版本已保留。' }}</p>
+                    <p v-if="series.replacement_status" class="mt-1 text-xs font-medium" :class="series.replacement_status === 'replaced' ? 'text-ok' : 'text-warn'">{{ series.replacement_status === 'replaced' ? `整包替换完成：规范目录 ${series.replacement_folder}，旧资源与恢复记录已保留。` : series.replacement_status === 'staged' ? '新整包已暂存，正在验证规范目录切换。' : series.replacement_status === 'recovery_required' ? '替换或回滚未完成，请根据恢复记录检查目录与用户状态。' : '整包替换未完成，原目录已恢复。' }}</p>
                     <p v-if="series.issue" class="mt-1 text-xs text-warn">{{ userError(String(series.issue)) }}</p>
                   </li>
                 </ul>

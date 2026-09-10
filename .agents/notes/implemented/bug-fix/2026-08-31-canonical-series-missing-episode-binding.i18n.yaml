@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-31-canonical-series-missing-episode-binding.md
-2026-08-31-canonical-series-missing-episode-binding.md: 7e89bc3fd7873bec91c42d303428acec33fe4b40
-2026-08-31-canonical-series-missing-episode-binding.zh.md: 8930a42404a06fcc794f61a4e8c752c23b15b011
+2026-08-31-canonical-series-missing-episode-binding.md: b3839260d48ed0b50da2c2c1ac78b9aa060eefc4
+2026-08-31-canonical-series-missing-episode-binding.zh.md: 2859c38ea3638f2c407d836908309df53e64669c

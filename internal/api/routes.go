@@ -68,6 +68,8 @@ func (s *Server) Close() {
 }
 
 func (s *Server) registerRoutes() {
+	s.echo.Any("/internal/emby-delete/*", s.handleEmbyDeletion)
+
 	// OpenAPI 3.1 schema
 	s.echo.GET("/openapi.json", s.handleOpenAPI)
 	s.echo.GET("/api/v1/openapi.json", s.handleOpenAPI)

@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "provider_root": {
+    "account_id": "default",
+    "cid": "3435279884306493457",
+    "name": "emby"
+  },
+  "reserved_directories": [
+    ".embymedia-health-canary",
+    "_迁移暂存",
+    "_待整理",
+    "_待回收"
+  ],
+  "library_order": [
+    "电视剧追更",
+    "综艺追更",
+    "最新电影",
+    "电影",
+    "IMAX巨幕",
+    "电视剧",
+    "动漫",
+    "动漫电影",
+    "儿童",
+    "综艺",
+    "纪录片"
+  ],
+  "system_library_posters": {
+    "boxsets": "12-合集.jpg"
+  },
+  "libraries": [
+    {
+      "name": "电视剧追更",
+      "collection_type": "tvshows",
+      "poster": "01-电视剧追更.jpg",
+      "policy": "Series currently tracked for new episodes; this classification outranks genre."
+    },
+    {
+      "name": "综艺追更",
+      "collection_type": "tvshows",
+      "poster": "02-综艺追更.jpg",
+      "policy": "Variety Series currently tracked for new episodes; this classification outranks genre."
+    },
+    {
+      "name": "最新电影",
+      "collection_type": "movies",
+      "poster": "03-最新电影.jpg",
+      "policy": "Recent non-animation Movie entries that do not meet the high-bandwidth rule."
+    },
+    {
+      "name": "电影",
+      "collection_type": "movies",
+      "poster": "04-电影.jpg",
+      "policy": "Identified Movie entries not selected by a higher-priority rule."
+    },
+    {
+      "name": "IMAX巨幕",
+      "collection_type": "movies",
+      "poster": "05-IMAX巨幕.jpg",
+      "policy": "Movie video at least 45 GB or at least 45 Mbps. The name does not assert an official IMAX release."
+    },
+    {
+      "name": "电视剧",
+      "collection_type": "tvshows",
+      "poster": "06-电视剧.jpg",
+      "policy": "Identified archived Series not selected as animation, variety, documentary, or active tracking."
+    },
+    {
+      "name": "动漫",
+      "collection_type": "tvshows",
+      "poster": "07-动漫.jpg",
+      "policy": "Archived Series whose verified Emby genres include Animation or 动画."
+    },
+    {
+      "name": "动漫电影",
+      "collection_type": "movies",
+      "poster": "08-动漫电影.jpg",
+      "policy": "Movie entries from 剧场版 or with a verified Animation or 动画 genre, except child-curated entries."
+    },
+    {
+      "name": "儿童",
+      "collection_type": "movies",
+      "poster": "09-儿童.jpg",
+      "policy": "Movie entries already curated under 儿童 whose verified genres include Family, 家庭, Animation, or 动画."
+    },
+    {
+      "name": "综艺",
+      "collection_type": "tvshows",
+      "poster": "10-综艺.jpg",
+      "policy": "Archived Series whose verified genres include Reality, 真人秀, Talk, or 脱口秀, plus entries already under 综艺."
+    },
+    {
+      "name": "纪录片",
+      "collection_type": "tvshows",
+      "poster": "11-纪录片.jpg",
+      "policy": "Series already curated under 纪录片; documentary films remain Movies until a separately verified film library is justified."
+    }
+  ],
+  "identity_overrides": {
+    "213367": {"kind": "series", "tmdb_id": "78191", "title": "你", "year": 2018, "destination": "电视剧"},
+    "213392": {"kind": "series", "tmdb_id": "89852", "title": "窃窕淑女", "year": 2019, "destination": "电视剧"},
+    "213370": {"kind": "series", "tmdb_id": "57059", "title": "他们在毕业的前一天爆炸", "year": 2010, "destination": "电视剧"},
+    "194556": {"kind": "series", "tmdb_id": "16964", "title": "壹号皇庭", "year": 1992, "destination": "电视剧"},
+    "194565": {"kind": "series", "tmdb_id": "16964", "title": "壹号皇庭", "year": 1992, "destination": "电视剧"},
+    "194534": {"kind": "series", "tmdb_id": "16964", "title": "壹号皇庭", "year": 1992, "destination": "电视剧"},
+    "194528": {"kind": "series", "tmdb_id": "16964", "title": "壹号皇庭", "year": 1992, "destination": "电视剧"},
+    "213363": {"kind": "movie", "tmdb_id": "17903", "title": "霜花店", "year": 2008, "destination": "电影"},
+    "213343": {"kind": "movie", "tmdb_id": "613504", "title": "之后2", "year": 2020, "destination": "电影"},
+    "213349": {"kind": "movie", "tmdb_id": "744275", "title": "之后3", "year": 2021, "destination": "电影"},
+    "213378": {"kind": "movie", "tmdb_id": "406125", "title": "六弄咖啡馆", "year": 2016, "destination": "电影"},
+    "213414": {"kind": "series", "tmdb_id": "97173", "title": "她的双眼背后", "year": 2021, "destination": "电视剧"},
+    "216198": {"kind": "series", "tmdb_id": "69557", "title": "高墙边的混乱", "year": 2015, "destination": "电视剧"},
+    "216190": {"kind": "series", "tmdb_id": "69557", "title": "高墙边的混乱", "year": 2015, "destination": "电视剧"},
+    "213379": {"kind": "movie", "tmdb_id": "506053", "title": "角头2：王者再起", "year": 2018, "destination": "电影"},
+    "213401": {"kind": "series", "tmdb_id": "83639", "title": "禁忌女孩", "year": 2018, "destination": "电视剧"},
+    "213400": {"kind": "series", "tmdb_id": "91699", "title": "不老之域", "year": 2019, "destination": "电视剧"},
+    "213411": {"kind": "series", "tmdb_id": "62127", "title": "铁拳", "year": 2017, "destination": "电视剧"},
+    "213356": {"kind": "series", "tmdb_id": "100833", "title": "周游记", "year": 2020, "destination": "综艺"},
+    "213403": {"kind": "movie", "tmdb_id": "693359", "title": "花之屋：葬礼", "year": 2019, "destination": "电影"},
+    "213417": {"kind": "series", "tmdb_id": "89641", "title": "喜欢的话请响铃", "year": 2019, "destination": "电视剧"},
+    "213375": {"kind": "series", "tmdb_id": "80968", "title": "毒枭：墨西哥", "year": 2018, "destination": "电视剧"},
+    "213389": {"kind": "series", "tmdb_id": "80968", "title": "毒枭：墨西哥", "year": 2018, "destination": "电视剧"},
+    "213415": {"kind": "series", "tmdb_id": "61664", "title": "超感猎杀", "year": 2015, "destination": "电视剧"},
+    "213380": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "213350": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "213384": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "213421": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "213391": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "213387": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "194569": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "194575": {"kind": "series", "tmdb_id": "1402", "title": "行尸走肉", "year": 2010, "destination": "电视剧"},
+    "213413": {"kind": "series", "tmdb_id": "88324", "title": "维琴河", "year": 2019, "destination": "电视剧"},
+    "150156": {"kind": "series", "tmdb_id": "75091", "title": "敦煌", "year": 2010, "destination": "纪录片"}
+  },
+  "file_identity_overrides": {
+    "3445334972374856236": {"tmdb_id": "75091", "title": "敦煌", "year": 2010, "destination": "纪录片", "season": 1, "episode": 1, "episode_end": 4},
+    "3445334972349690411": {"tmdb_id": "75091", "title": "敦煌", "year": 2010, "destination": "纪录片", "season": 1, "episode": 5, "episode_end": 7},
+    "3445334972324524586": {"tmdb_id": "75091", "title": "敦煌", "year": 2010, "destination": "纪录片", "season": 1, "episode": 8, "episode_end": 10}
+  },
+  "user_state_identity_overrides": {
+    "161460": "episode:75091:1:1"
+  },
+  "deleted_identities": [
+    "series:91759"
+  ],
+  "classification_precedence": [
+    "unidentified_or_conflicting -> _待整理",
+    "电视剧追更 -> 电视剧追更",
+    "综艺追更 -> 综艺追更",
+    "Movie and measured high-bandwidth -> IMAX巨幕",
+    "Movie and existing child curation with child or animation genre -> 儿童",
+    "Movie and animation genre or source 剧场版 -> 动漫电影",
+    "Movie and source 最新电影 -> 最新电影",
+    "Movie -> 电影",
+    "Series and source 纪录片 -> 纪录片",
+    "Series and animation genre -> 动漫",
+    "Series and variety genre or source 综艺 -> 综艺",
+    "Series -> 电视剧"
+  ],
+  "naming": {
+    "movie_directory": "{localized_title} ({year}) [tmdbid={tmdb_id}]",
+    "movie_file": "{localized_title} ({year}) [tmdbid={tmdb_id}] - {version}{extension}",
+    "series_directory": "{localized_title} ({year}) [tmdbid={tmdb_id}]",
+    "season_directory": "Season {season:02d}",
+    "episode_file": "{localized_title} S{season:02d}E{episode:02d} - {version}{extension}",
+    "multi_episode_file": "{localized_title} S{season:02d}E{first:02d}-E{last:02d} - {version}{extension}"
+  },
+  "deduplication": {
+    "proof": "same non-empty SHA1 and byte size",
+    "action": "retain one canonical object and stage every other copy under _待回收",
+    "permanent_delete": false
+  },
+  "conflicts": {
+    "ambiguous_identity": "_待整理",
+    "different_sha1_same_episode": "_待整理",
+    "different_sha1_same_movie_version": "_待整理",
+    "unsupported_media": "retain in place unless explicitly classified"
+  }
+}

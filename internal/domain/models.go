@@ -95,14 +95,15 @@ type EmbyLibrary struct {
 
 // EmbyMediaItem represents a movie or episode in Emby
 type EmbyMediaItem struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Type         string            `json:"type"` // "Movie", "Series", "Season", "Episode"
-	Path         string            `json:"path"`
-	PremiereDate string            `json:"premiere_date,omitempty"`
-	HasPoster    bool              `json:"has_poster"`
-	HasBackdrop  bool              `json:"has_backdrop"`
-	ProviderIDs  map[string]string `json:"provider_ids,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	OriginalTitle string            `json:"original_title,omitempty"`
+	Type          string            `json:"type"` // "Movie", "Series", "Season", "Episode"
+	Path          string            `json:"path"`
+	PremiereDate  string            `json:"premiere_date,omitempty"`
+	HasPoster     bool              `json:"has_poster"`
+	HasBackdrop   bool              `json:"has_backdrop"`
+	ProviderIDs   map[string]string `json:"provider_ids,omitempty"`
 }
 
 // EmbyPlaybackSession represents an active streaming session on Emby

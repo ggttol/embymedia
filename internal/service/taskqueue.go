@@ -41,6 +41,8 @@ type TaskQueueService struct {
 	embySvc  *EmbyService
 	mediaSvc *MediaService
 
+	mediaMu sync.Mutex
+
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
 	cancel  context.CancelFunc
@@ -50,6 +52,19 @@ type TaskQueueService struct {
 // NewTaskQueueService creates a stopped persistent task queue.
 func NewTaskQueueService(db *storage.DB, driveSvc *DriveService, embySvc *EmbyService) *TaskQueueService {
 	return &TaskQueueService{db: db, driveSvc: driveSvc, embySvc: embySvc, mediaSvc: NewMediaService(db), running: make(map[string]context.CancelFunc)}
+}
+
+// ErrMediaMutationBusy means a worker or another deletion owns media mutation.
+var ErrMediaMutationBusy = errors.New("media mutation is busy; retry after the active operation completes")
+
+// TryMediaMutation runs fn exclusively with worker tasks, or returns ErrMediaMutationBusy
+// without calling fn. The callback must not reenter this method or wait for queued tasks.
+func (s *TaskQueueService) TryMediaMutation(fn func() error) error {
+	if !s.mediaMu.TryLock() {
+		return ErrMediaMutationBusy
+	}
+	defer s.mediaMu.Unlock()
+	return fn()
 }
 
 // Start recovers interrupted state and starts processing pending tasks.
@@ -270,6 +285,15 @@ func (s *TaskQueueService) processPendingTasks(ctx context.Context) {
 }
 
 func (s *TaskQueueService) executeTask(parent context.Context, task domain.AsyncTask) {
+	// Leave the task pending while a user deletion owns the media, so Stop and Cancel
+	// never wait for an unrelated HTTP request to release the mutation lock.
+	if !s.mediaMu.TryLock() {
+		return
+	}
+	defer s.mediaMu.Unlock()
+	if parent.Err() != nil {
+		return
+	}
 	if _, claimed, err := s.db.BeginAsyncTask(task.ID); err != nil {
 		log.Printf("claim task %s: %v", task.ID, err)
 		return
@@ -301,6 +325,14 @@ func (s *TaskQueueService) executeTask(parent context.Context, task domain.Async
 		return
 	}
 	result, err := s.run(ctx, task)
+	encoded := []byte(nil)
+	if result != nil {
+		var encodeErr error
+		encoded, encodeErr = json.Marshal(result)
+		if encodeErr != nil {
+			err = errors.Join(err, fmt.Errorf("encode task result: %w", encodeErr))
+		}
+	}
 	if err != nil {
 		status := "failed"
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
@@ -310,16 +342,8 @@ func (s *TaskQueueService) executeTask(parent context.Context, task domain.Async
 		if current, readErr := s.db.GetAsyncTask(task.ID); readErr == nil {
 			progress = current.Progress
 		}
-		if persistErr := s.db.FinishAsyncTask(task.ID, status, progress, "", err.Error(), status+": "+err.Error()); persistErr != nil {
+		if persistErr := s.db.FinishAsyncTask(task.ID, status, progress, string(encoded), err.Error(), status+": "+err.Error()); persistErr != nil {
 			log.Printf("finish task %s: %v", task.ID, persistErr)
-		}
-		return
-	}
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		message := "encode task result: " + err.Error()
-		if finishErr := s.db.FinishAsyncTask(task.ID, "failed", 10, "", message, "failed: "+message); finishErr != nil {
-			log.Printf("finish task %s after result failure: %v", task.ID, finishErr)
 		}
 		return
 	}

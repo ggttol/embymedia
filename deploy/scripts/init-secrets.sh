@@ -89,6 +89,7 @@ CLOUDDRIVE_ADMIN_PORT=19798
 EOF
 chown root:root /etc/embymedia/stack.env
 chmod 0640 /etc/embymedia/stack.env
+"$(dirname "$0")/configure-strm-access.sh" /srv/embymedia/data/strm-v2 /etc/embymedia/stack.env
 
 cat > /etc/embymedia/v2.env <<EOF
 RESOURCE_INDEX_URL=http://127.0.0.1:8100

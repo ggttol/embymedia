@@ -414,7 +414,7 @@ func (s *EmbyService) GetItemCtx(ctx context.Context, itemID string) (*domain.Em
 	if itemID == "" {
 		return nil, fmt.Errorf("Emby item ID is required")
 	}
-	query := url.Values{"Ids": {itemID}, "Recursive": {"true"}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}}
+	query := url.Values{"Ids": {itemID}, "Recursive": {"true"}, "Fields": {"Path,OriginalTitle,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}}
 	req, err := s.newRequest(ctx, http.MethodGet, "/Items?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
@@ -433,6 +433,7 @@ func (s *EmbyService) GetItemCtx(ctx context.Context, itemID string) (*domain.Em
 	type rawItem struct {
 		ID                string            `json:"Id"`
 		Name              string            `json:"Name"`
+		OriginalTitle     string            `json:"OriginalTitle"`
 		Type              string            `json:"Type"`
 		Path              string            `json:"Path"`
 		PremiereDate      string            `json:"PremiereDate"`
@@ -452,14 +453,15 @@ func (s *EmbyService) GetItemCtx(ctx context.Context, itemID string) (*domain.Em
 	raw := result.Items[0]
 	_, hasPoster := raw.ImageTags["Primary"]
 	return &domain.EmbyMediaItem{
-		ID:           raw.ID,
-		Name:         raw.Name,
-		Type:         raw.Type,
-		Path:         raw.Path,
-		PremiereDate: raw.PremiereDate,
-		HasPoster:    hasPoster,
-		HasBackdrop:  len(raw.BackdropImageTags) > 0,
-		ProviderIDs:  raw.ProviderIDs,
+		ID:            raw.ID,
+		Name:          raw.Name,
+		OriginalTitle: raw.OriginalTitle,
+		Type:          raw.Type,
+		Path:          raw.Path,
+		PremiereDate:  raw.PremiereDate,
+		HasPoster:     hasPoster,
+		HasBackdrop:   len(raw.BackdropImageTags) > 0,
+		ProviderIDs:   raw.ProviderIDs,
 	}, nil
 }
 
@@ -513,7 +515,7 @@ func (s *EmbyService) SearchMediaCtx(ctx context.Context, term string, limit int
 	if limit > 100 {
 		limit = 100
 	}
-	query := url.Values{"SearchTerm": {term}, "Recursive": {"true"}, "Limit": {fmt.Sprint(limit)}, "Fields": {"Path,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}}
+	query := url.Values{"SearchTerm": {term}, "Recursive": {"true"}, "Limit": {fmt.Sprint(limit)}, "Fields": {"Path,OriginalTitle,PremiereDate,ProviderIds,ImageTags,BackdropImageTags"}}
 	req, err := s.newRequest(ctx, http.MethodGet, "/Items?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
@@ -528,10 +530,10 @@ func (s *EmbyService) SearchMediaCtx(ctx context.Context, term string, limit int
 	}
 	var raw struct {
 		Items []struct {
-			ID, Name, Type, Path, PremiereDate string
-			ImageTags                          map[string]string
-			BackdropImageTags                  []string
-			ProviderIds                        map[string]string
+			ID, Name, OriginalTitle, Type, Path, PremiereDate string
+			ImageTags                                         map[string]string
+			BackdropImageTags                                 []string
+			ProviderIds                                       map[string]string
 		}
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&raw); err != nil {
@@ -540,7 +542,7 @@ func (s *EmbyService) SearchMediaCtx(ctx context.Context, term string, limit int
 	res := make([]domain.EmbyMediaItem, 0, len(raw.Items))
 	for _, item := range raw.Items {
 		_, hasPrimary := item.ImageTags["Primary"]
-		res = append(res, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, Type: item.Type, Path: item.Path, PremiereDate: item.PremiereDate, HasPoster: hasPrimary, HasBackdrop: len(item.BackdropImageTags) > 0, ProviderIDs: item.ProviderIds})
+		res = append(res, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, OriginalTitle: item.OriginalTitle, Type: item.Type, Path: item.Path, PremiereDate: item.PremiereDate, HasPoster: hasPrimary, HasBackdrop: len(item.BackdropImageTags) > 0, ProviderIDs: item.ProviderIds})
 	}
 	return res, nil
 }
@@ -555,7 +557,7 @@ func (s *EmbyService) ListSeriesCtx(ctx context.Context, libraryID string) ([]do
 	series := make([]domain.EmbyMediaItem, 0)
 	for startIndex := 0; ; {
 		query := url.Values{
-			"ParentId": {libraryID}, "Recursive": {"true"}, "IncludeItemTypes": {"Series"}, "Fields": {"Path,ProviderIds"},
+			"ParentId": {libraryID}, "Recursive": {"true"}, "IncludeItemTypes": {"Series"}, "Fields": {"Path,OriginalTitle,PremiereDate,ProviderIds"},
 			"StartIndex": {strconv.Itoa(startIndex)}, "Limit": {strconv.Itoa(pageSize)}, "EnableTotalRecordCount": {"true"},
 		}
 		req, err := s.newRequest(ctx, http.MethodGet, "/Items?"+query.Encode(), nil)
@@ -572,8 +574,8 @@ func (s *EmbyService) ListSeriesCtx(ctx context.Context, libraryID string) ([]do
 		}
 		var raw struct {
 			Items []struct {
-				ID, Name, Type, Path string
-				ProviderIDs          map[string]string `json:"ProviderIds"`
+				ID, Name, OriginalTitle, Type, Path, PremiereDate string
+				ProviderIDs                                       map[string]string `json:"ProviderIds"`
 			}
 			Total int `json:"TotalRecordCount"`
 		}
@@ -583,7 +585,7 @@ func (s *EmbyService) ListSeriesCtx(ctx context.Context, libraryID string) ([]do
 			return nil, fmt.Errorf("decode Emby Series list: %w", decodeErr)
 		}
 		for _, item := range raw.Items {
-			series = append(series, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, Type: item.Type, Path: item.Path, ProviderIDs: item.ProviderIDs})
+			series = append(series, domain.EmbyMediaItem{ID: item.ID, Name: item.Name, OriginalTitle: item.OriginalTitle, Type: item.Type, Path: item.Path, PremiereDate: item.PremiereDate, ProviderIDs: item.ProviderIDs})
 		}
 		startIndex += len(raw.Items)
 		if len(raw.Items) == 0 || startIndex >= raw.Total {
@@ -694,24 +696,6 @@ func (s *EmbyService) ListAiredSeriesEpisodesCtx(ctx context.Context, seriesID s
 		episodes = append(episodes, EmbyMissingEpisode{SeriesID: seriesID, SeasonNumber: item.ParentIndexNumber, EpisodeNumber: item.IndexNumber, PremiereDate: item.PremiereDate})
 	}
 	return episodes, nil
-}
-
-// DeleteItemCtx removes one exact Emby item before its verified obsolete storage root is recycled.
-func (s *EmbyService) DeleteItemCtx(ctx context.Context, itemID string) error {
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return fmt.Errorf("Emby item ID is required")
-	}
-	req, err := s.newRequest(ctx, http.MethodDelete, "/Items/"+url.PathEscape(itemID), nil)
-	if err != nil {
-		return err
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("delete Emby item: %w", err)
-	}
-	defer resp.Body.Close()
-	return requireEmbyResponse(resp, "Emby item deletion")
 }
 
 // EmbyMissingPosterReport returns a bounded page and the complete matching count.

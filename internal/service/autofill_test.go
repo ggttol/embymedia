@@ -123,7 +123,9 @@ func TestSeriesAutoFillTransfersExactMissingEpisodeAndVerifiesEmby(t *testing.T)
 			_, _ = io.WriteString(response, `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"追更剧 (2026)","s":"0"}]}`)
 		case "/share/snap":
 			if request.URL.Query().Get("cid") == "0" {
-				_, _ = io.WriteString(response, `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"追更剧 (2026)"},"list":[{"cid":"share-root","n":"追更剧 (2026)","s":0}]}}`)
+				_, _ = io.WriteString(response, `{"state":true,"data":{"count":2,"shareinfo":{"share_title":"追更剧 (2026)"},"list":[{"cid":"other-root","n":"另一部剧 (2026) {tmdb-999}","s":0},{"cid":"share-root","n":"追更剧 (2026)","s":0}]}}`)
+			} else if request.URL.Query().Get("cid") == "other-root" {
+				_, _ = io.WriteString(response, `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"追更剧 (2026)"},"list":[{"fid":"wrong-episode","cid":"other-root","n":"S01E02.mkv","s":1024}]}}`)
 			} else {
 				_, _ = io.WriteString(response, `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"追更剧 (2026)"},"list":[{"fid":"episode-file","cid":"share-root","n":"追更剧.S01E02.2160p.mkv","s":1024}]}}`)
 			}
@@ -159,7 +161,8 @@ func TestSeriesAutoFillTransfersExactMissingEpisodeAndVerifiesEmby(t *testing.T)
 	if err := db.SetSettings(map[string]string{
 		"emby_url": provider.URL, "resource_api_url": provider.URL,
 		"media_root": mediaRoot, "strm_root": strmRoot, "emby_media_prefix": "/media",
-		"c115_cid_map": `{"电视剧追更":"library-cid","综艺追更":"variety-cid"}`,
+		"c115_cid_map":               `{"电视剧追更":"library-cid","综艺追更":"variety-cid"}`,
+		"share_snapshot_interval_ms": "0",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -229,5 +232,134 @@ func TestListAiredMissingEpisodesExcludesFutureAndUnnumberedItems(t *testing.T) 
 	missing, err := NewEmbyService(db).ListAiredMissingEpisodesCtx(context.Background(), "library", time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC))
 	if err != nil || len(missing) != 1 || missing[0].SeriesID != "aired" {
 		t.Fatalf("aired missing episode filter failed: %+v, err=%v", missing, err)
+	}
+}
+
+func TestSeriesAutoFillStopsTerminalProbesAndRetainsMatches(t *testing.T) {
+	for _, failure := range []string{"405", "429", "canceled", "message-only"} {
+		t.Run(failure, func(t *testing.T) {
+			drive, db := newSnapshotTestDrive(t, "0")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var probes []string
+			drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				status := http.StatusOK
+				body := ""
+				switch request.URL.Path {
+				case "/files":
+					body = `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"Show (2026)"}]}`
+				case "/search":
+					body = `{"links":[{"id":1,"title":"Show (2026)","url":"https://115.com/s/first","health_status":"valid"},{"id":2,"title":"Show (2026)","url":"https://115.com/s/rejected","health_status":"valid"},{"id":3,"title":"Show (2026)","url":"https://115.com/s/last","health_status":"valid"}]}`
+				case "/share/snap":
+					code := request.URL.Query().Get("share_code")
+					probes = append(probes, code)
+					switch code {
+					case "first":
+						body = `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"Show (2026)"},"list":[{"fid":"episode-1","n":"Show.2026.S01E01.mkv"}]}}`
+					case "rejected":
+						switch failure {
+						case "405":
+							status = http.StatusMethodNotAllowed
+						case "429":
+							status = http.StatusTooManyRequests
+						case "canceled":
+							cancel()
+							return nil, ctx.Err()
+						}
+						body = `{"state":false,"error":"unavailable share 405429"}`
+					case "last":
+						body = `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"Show (2026)"},"list":[{"fid":"episode-2","n":"Show.2026.S01E02.mkv"}]}}`
+					}
+				default:
+					t.Errorf("unexpected provider operation: %s", request.URL.Path)
+					status = http.StatusNotFound
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+			canonical := &domain.EmbyMediaItem{ID: "series", Name: "Show", Type: "Series", Path: "/strm/电视剧追更/Show (2026)", ProviderIDs: map[string]string{"Tmdb": "42"}}
+			result, paths := queue.processAutoFillSeries(ctx, domain.EmbyLibrary{Name: "电视剧追更"}, "library-cid",
+				map[episodeKey]struct{}{{Season: 1, Episode: 1}: {}, {Season: 1, Episode: 2}: {}},
+				canonical.ID, canonical.Name, canonical, 1, seriesAutoFillSpec{CandidateLimit: 10})
+			if len(paths) != 0 || len(result.Transferred) != 0 || strings.Join(result.MissingEpisodes, ",") != "S01E01,S01E02" {
+				t.Fatalf("inspection changed transfer or gap data: result=%+v paths=%v", result, paths)
+			}
+			if failure == "message-only" {
+				if strings.Join(probes, ",") != "first,rejected,last" || result.CandidatesChecked != 3 || strings.Join(result.MatchedEpisodes, ",") != "S01E01,S01E02" || len(result.RemainingEpisodes) != 0 || result.Issue != "" {
+					t.Fatalf("status-like message incorrectly stopped inspection: probes=%v result=%+v", probes, result)
+				}
+				return
+			}
+			if strings.Join(probes, ",") != "first,rejected" || result.CandidatesChecked != 2 || strings.Join(result.MatchedEpisodes, ",") != "S01E01" || strings.Join(result.RemainingEpisodes, ",") != "S01E02" || result.Issue == "" {
+				t.Fatalf("terminal rejection lost results or continued probing: probes=%v result=%+v", probes, result)
+			}
+		})
+	}
+}
+
+func TestSeriesAutoFillTaskStopsShareProbesAfterRejection(t *testing.T) {
+	var probes atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/Library/VirtualFolders":
+			_, _ = io.WriteString(response, `[{"Name":"电视剧追更","CollectionType":"tvshows","ItemId":"library"}]`)
+		case "/Shows/Missing":
+			_, _ = io.WriteString(response, `{"Items":[{"SeriesId":"first","SeriesName":"First","ParentIndexNumber":1,"IndexNumber":1,"PremiereDate":"2026-01-01T00:00:00Z"},{"SeriesId":"second","SeriesName":"Second","ParentIndexNumber":1,"IndexNumber":1,"PremiereDate":"2026-01-01T00:00:00Z"}],"TotalRecordCount":2}`)
+		case "/Items":
+			_, _ = io.WriteString(response, `{"Items":[{"Id":"first","Name":"First","Type":"Series","Path":"/strm/电视剧追更/First (2026)","ProviderIds":{"Tmdb":"1"}},{"Id":"second","Name":"Second","Type":"Series","Path":"/strm/电视剧追更/Second (2026)","ProviderIds":{"Tmdb":"2"}}]}`)
+		case "/files":
+			_, _ = io.WriteString(response, `{"state":true,"count":2,"data":[{"cid":"first-cid","pid":"library-cid","n":"First (2026)"},{"cid":"second-cid","pid":"library-cid","n":"Second (2026)"}]}`)
+		case "/search":
+			_, _ = io.WriteString(response, `{"links":[{"id":1,"title":"Show (2026)","url":"https://115.com/s/rejected","health_status":"valid"}]}`)
+		case "/share/snap":
+			probes.Add(1)
+			response.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(response, "provider rejected snapshot")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer provider.Close()
+	drive, db := newSnapshotTestDrive(t, "0")
+	if err := db.SetSettings(map[string]string{"emby_url": provider.URL, "resource_api_url": provider.URL, "c115_cid_map": `{"电视剧追更":"library-cid"}`}); err != nil {
+		t.Fatal(err)
+	}
+	providerURL, _ := url.Parse(provider.URL)
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme, clone.URL.Host = providerURL.Scheme, providerURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := queue.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Stop()
+	task, err := queue.Enqueue("series_auto_fill", map[string]any{"libraries": []string{"电视剧追更"}, "transfer": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, db, task.ID, "failed")
+	stored, err := db.GetAsyncTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probes.Load() != 1 || !strings.Contains(stored.Error, "HTTP 429") {
+		t.Fatalf("task continued to another series after rejection: probes=%d error=%s", probes.Load(), stored.Error)
+	}
+	var outcome struct {
+		Libraries            []LibraryAutoFillResult `json:"libraries"`
+		Missing              int                     `json:"missing"`
+		Remaining            int                     `json:"remaining"`
+		VerificationComplete bool                    `json:"verification_complete"`
+	}
+	if err := json.Unmarshal([]byte(stored.Result), &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Libraries) != 1 || len(outcome.Libraries[0].Series) != 1 || outcome.Libraries[0].Series[0].Issue == "" || outcome.Missing != 2 || outcome.Remaining != 2 || outcome.VerificationComplete {
+		t.Fatalf("task lost unresolved gaps or rejection diagnostics: %+v", outcome)
 	}
 }

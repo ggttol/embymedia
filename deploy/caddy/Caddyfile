@@ -2,6 +2,17 @@
 	admin 127.0.0.1:2019
 }
 
+(emby-media-proxy) {
+	@embyDeletion expression `(method('GET') && path_regexp('(?i)^/(emby/)?Items/[^/]+/DeleteInfo/?$')) || (method('DELETE') && path_regexp('(?i)^/(emby/)?Items(/[^/]+)?/?$')) || (method('POST') && path_regexp('(?i)^/(emby/)?Items(/[^/]+)?/Delete/?$'))`
+	handle @embyDeletion {
+		rewrite * /internal/emby-delete{uri}
+		reverse_proxy 127.0.0.1:3080
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8096
+	}
+}
+
 # Self-use HTTP mode (no TLS, no ACME, no Authelia forward_auth gate).
 # The http:// scheme forces Caddy to serve plain HTTP (no automatic HTTPS).
 # The webhook bridge converts the configured query key to X-Webhook-Secret so
@@ -61,7 +72,7 @@ http://gaotao.cc {
 
 	@emby header Host gaotao.cc:8096
 	handle @emby {
-		reverse_proxy 127.0.0.1:8096
+		import emby-media-proxy
 	}
 
 	@clouddrive header Host gaotao.cc:19798
@@ -116,7 +127,7 @@ http://host.docker.internal {
 }
 
 http://emby.gaotao.cc {
-	reverse_proxy 127.0.0.1:8096
+	import emby-media-proxy
 }
 
 http://auth.gaotao.cc {

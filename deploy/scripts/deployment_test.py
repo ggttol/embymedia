@@ -37,6 +37,8 @@ if command == 'id':
     print(0)
 elif command == 'flock':
     pass
+elif command == 'setfacl':
+    pass
 elif command == 'sleep':
     pass
 elif command == 'timeout':
@@ -175,7 +177,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         shim = self.fake_bin / 'shim'
         shim.write_text(f'#!{sys.executable}\n' + MOCK)
         shim.chmod(0o755)
-        for name in ('id', 'flock', 'sleep', 'timeout', 'findmnt', 'umount', 'docker', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'restic'):
+        for name in ('id', 'flock', 'setfacl', 'sleep', 'timeout', 'findmnt', 'umount', 'docker', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'restic'):
             (self.fake_bin / name).symlink_to(shim)
         self.env['PATH'] = str(self.fake_bin) + os.pathsep + os.environ['PATH']
         self.source = self.root / 'source'
@@ -201,6 +203,10 @@ class DeploymentScriptsTest(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('old configuration')
             self.initial_configs[target] = target.read_bytes()
+        stack_env = self.root / 'etc/embymedia/stack.env'
+        stack_env.parent.mkdir(parents=True, exist_ok=True)
+        stack_env.write_text('MEDIA_UID=1026\nMEDIA_GID=100\n')
+        self.initial_configs[stack_env] = stack_env.read_bytes()
         (self.root / 'run/lock').mkdir(parents=True)
         secrets = self.root / 'etc/embymedia/secrets'
         secrets.mkdir(parents=True)
@@ -218,7 +224,7 @@ class DeploymentScriptsTest(unittest.TestCase):
              'passwordHash': encoded(b'h' * 32), 'iterations': 600000, 'sessionVersion': 'persistent-session-version'}]}
         self.login.write_text(json.dumps(self.identity))
         self.login.chmod(0o600)
-        for folder in ('emby/config', 'clouddrive/config', 'strm', 'authelia'):
+        for folder in ('emby/config', 'clouddrive/config', 'strm', 'strm-v2', 'authelia'):
             (self.login.parent.parent / folder).mkdir(parents=True)
         self.initial_services = {name: {'active': True, 'enabled': True} for name in (
             'docker.service', 'embymedia-v2.service', 'embymedia-http-login.service', 'embymedia-stack.service', 'caddy.service', 'embymedia-backup.timer')}
@@ -397,6 +403,16 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.assertEqual(restored.stat().st_mode & 0o777, 0o600)
         self.assertEqual(target.stat().st_mode & 0o777, 0o700)
         self.assertEqual(database.read_bytes(), b'')
+
+    def test_restore_creates_missing_normalized_strm_root(self):
+        snapshot = self.root / 'snapshot/srv/embymedia/data'
+        shutil.copytree(self.login.parent.parent, snapshot)
+        shutil.rmtree(snapshot / 'strm-v2')
+        (snapshot / 'embymedia.db').write_bytes(b'')
+        target = self.root / 'srv/embymedia/restore-before-strm-v2'
+        result = self.run_script('restore-isolated.sh', 'latest', target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((target / 'srv/embymedia/data/strm-v2').is_dir())
 
     def test_restore_rejects_missing_or_corrupt_browser_auth(self):
         snapshot = self.root / 'snapshot/srv/embymedia/data'

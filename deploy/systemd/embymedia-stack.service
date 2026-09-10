@@ -13,6 +13,7 @@ EnvironmentFile=/etc/embymedia/stack.env
 ExecStartPre=/opt/embymedia-v2/current/deploy/scripts/validate-images.sh
 ExecStartPre=/opt/embymedia-v2/current/deploy/scripts/clouddrive-recover.sh prepare
 ExecStart=/usr/bin/docker compose --env-file /etc/embymedia/stack.env -f /opt/embymedia-v2/current/deploy/compose.yml up -d --wait
+ExecReload=/usr/bin/docker compose --env-file /etc/embymedia/stack.env -f /opt/embymedia-v2/current/deploy/compose.yml up -d --wait
 ExecStop=/opt/embymedia-v2/current/deploy/scripts/clouddrive-recover.sh stop-stack
 TimeoutStartSec=600
 TimeoutStopSec=300

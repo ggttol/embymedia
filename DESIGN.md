@@ -50,9 +50,10 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - Metadata repair pairs one confidence statement with a bounded work limit and explicit auto-apply switch; execution cards separate auto-matched, review, and no-candidate outcomes and expose provider candidates progressively.
 - The Task Center places the schedule inventory before execution history. History renders the five newest filtered records first and expands in five-record increments, with an explicit collapse action.
 - Hourly schedules sort by minute within the Task Center so automatic episode completion, STRM synchronization, and Emby refresh read in execution order. Metadata repair, poster repair, and read-only STRM verification run once daily at 04:10, 04:20, and 04:40.
+- Library artwork uses one 16:9 projection-booth archive system: oversized Chinese titles, a physical media symbol, a library index code, and one continuous film-perforation rail. Each library owns one material color and symbol; copyrighted title art, third-party logos, gradients, and interchangeable media thumbnails are excluded. The `IMAX巨幕` artwork states `高码率 · 大文件` so the display name does not claim that every title is an official IMAX release.
 
 ## Composition
-Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options.
+Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options. The library-artwork set forms a horizontal projection-booth index whose film-perforation rail aligns when Emby displays the libraries together; the two追更 libraries lead the sequence.
 
 ## Motion
 Status pulse and 180ms control transitions only. No scroll reveal. Reduced motion removes pulses/transitions while preserving state.
