@@ -345,6 +345,35 @@ func TestCompletedPackFailedTransferCleansCreatedCIDNotSharedSource(t *testing.T
 	}
 }
 
+func TestCompletedPackRetainsEachCandidateInspectionFailure(t *testing.T) {
+	fixture := newReplacementFixture(t, "")
+	transport := fixture.queue.driveSvc.client.Transport
+	fixture.queue.driveSvc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/share/snap" {
+			return transport.RoundTrip(request)
+		}
+		message := "访问码错误"
+		if request.URL.Query().Get("share_code") == "missingcode" {
+			message = "请输入访问码"
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"state":false,"error":"` + message + `"}`))}, nil
+	})
+	series := &domain.EmbyMediaItem{ID: "old", Type: "Series", Name: "Show", Path: "/strm/电视剧追更/Old", ProviderIDs: map[string]string{"Tmdb": "42"}}
+	candidates := []autoFillCandidate{
+		{ID: "101", Title: "Show (2026)", URL: "https://115.com/s/wrongcode", Password: "bad1"},
+		{ID: "103", Title: "Show (2026)", URL: "https://115.com/s/missingcode"},
+	}
+	staged, paths, issue := fixture.queue.stageCompletedPack(context.Background(), domain.EmbyLibrary{ID: "library", Name: "电视剧追更"}, "library-cid", map[episodeKey]struct{}{{Season: 1, Episode: 2}: {}}, series, candidates)
+	if staged != nil || len(paths) != 0 || issue == nil || fixture.stagingFailed || len(fixture.deleted) != 0 {
+		t.Fatalf("failed inspection changed replacement storage: staged=%v paths=%v issue=%v received=%t deleted=%v", staged, paths, issue, fixture.stagingFailed, fixture.deleted)
+	}
+	for _, diagnostic := range []string{"101", "访问码错误", "103", "请输入访问码"} {
+		if !strings.Contains(issue.Error(), diagnostic) {
+			t.Errorf("candidate failure %q missing from %q", diagnostic, issue)
+		}
+	}
+}
+
 func TestReplacementSTRMRollbackRejectsReusedPath(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "staging")
 	if err := os.Mkdir(root, 0755); err != nil {

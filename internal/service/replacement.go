@@ -189,13 +189,14 @@ func (s *TaskQueueService) stageCompletedPack(ctx context.Context, library domai
 	if err != nil {
 		return nil, nil, err
 	}
-	var lastInspectionErr error
+	var inspectionErrors []error
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
 		shareCode, receiveCode, err := ParseShareCode(candidate.URL, candidate.Password)
 		if err != nil {
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %w", candidate.ID, err))
 			continue
 		}
 		shareTitle, roots, err := s.driveSvc.snapshotShareEntries(ctx, account, shareCode, receiveCode, "0")
@@ -203,7 +204,7 @@ func (s *TaskQueueService) stageCompletedPack(ctx context.Context, library domai
 			if stopAutoFillShareProbes(err) {
 				return nil, nil, err
 			}
-			lastInspectionErr = err
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %w", candidate.ID, err))
 			continue
 		}
 		if len(roots) != 1 || !roots[0].IsDir {
@@ -218,7 +219,7 @@ func (s *TaskQueueService) stageCompletedPack(ctx context.Context, library domai
 			if stopAutoFillShareProbes(err) {
 				return nil, nil, err
 			}
-			lastInspectionErr = err
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %w", candidate.ID, err))
 			continue
 		}
 		if !coversEpisodes(leaves, expected) {
@@ -239,7 +240,7 @@ func (s *TaskQueueService) stageCompletedPack(ctx context.Context, library domai
 			if stopAutoFillShareProbes(err) {
 				return nil, nil, err
 			}
-			lastInspectionErr = err
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %w", candidate.ID, err))
 			continue
 		}
 		if len(contents) == 0 {
@@ -292,7 +293,7 @@ func (s *TaskQueueService) stageCompletedPack(ctx context.Context, library domai
 		}
 		return replacement, []string{newPath}, nil
 	}
-	return nil, nil, lastInspectionErr
+	return nil, nil, errors.Join(inspectionErrors...)
 }
 
 func removeOwnedReplacementRoot(path string, owned os.FileInfo) error {

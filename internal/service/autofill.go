@@ -218,8 +218,7 @@ func parseAutoFillCandidates(result map[string]any) []autoFillCandidate {
 		}
 		rawURL, _ := link["url"].(string)
 		title, _ := link["title"].(string)
-		health, _ := link["health_status"].(string)
-		if rawURL == "" || title == "" || health != "valid" {
+		if rawURL == "" || title == "" {
 			continue
 		}
 		if _, duplicate := seen[rawURL]; duplicate {
@@ -227,7 +226,13 @@ func parseAutoFillCandidates(result map[string]any) []autoFillCandidate {
 		}
 		seen[rawURL] = struct{}{}
 		password, _ := link["password"].(string)
-		id := fmt.Sprint(link["id"])
+		var id string
+		switch value := link["id"].(type) {
+		case float64:
+			id = strconv.FormatFloat(value, 'f', -1, 64)
+		default:
+			id = fmt.Sprint(value)
+		}
 		candidates = append(candidates, autoFillCandidate{ID: id, Title: title, URL: rawURL, Password: password})
 	}
 	return candidates
@@ -235,7 +240,7 @@ func parseAutoFillCandidates(result map[string]any) []autoFillCandidate {
 
 func (s *TaskQueueService) searchAutoFillCandidates(ctx context.Context, seriesName string, limit int) ([]autoFillCandidate, error) {
 	result, err := s.driveSvc.SearchResourcesCtx(ctx, url.Values{
-		"q": {seriesName}, "disk_type": {"115"}, "health_status": {"valid"}, "sort": {"latest"}, "limit": {strconv.Itoa(limit)},
+		"q": {seriesName}, "disk_type": {"115"}, "sort": {"latest"}, "limit": {strconv.Itoa(limit)},
 	})
 	if err != nil {
 		return nil, err
@@ -440,7 +445,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 	matched := make(map[episodeKey]struct{})
 	transferred := make(map[episodeKey]struct{})
 	lastTransferError := ""
-	lastInspectionError := ""
+	var inspectionErrors []error
 	transferredPaths := make([]string, 0)
 	mediaRoot, _ := s.db.GetSetting("media_root")
 	for _, candidate := range candidates {
@@ -449,14 +454,14 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		}
 		if err := ctx.Err(); err != nil {
 			result.probeErr = err
-			lastInspectionError = err.Error()
+			result.Issue = err.Error()
 			break
 		}
 		result.CandidatesChecked++
 		shareTitle, leaves, scanErr := s.scanAutoFillShare(ctx, candidate)
 		if scanErr != nil {
 			result.probeErr = scanErr
-			lastInspectionError = scanErr.Error()
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %w", candidate.ID, scanErr))
 		}
 		selectedIDs := make([]string, 0)
 		selectedKeys := make([]episodeKey, 0)
@@ -527,8 +532,8 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		switch {
 		case spec.Transfer && lastTransferError != "":
 			result.Issue = "matched episode resources could not be transferred: " + lastTransferError
-		case lastInspectionError != "":
-			result.Issue = "episode resources could not be fully inspected: " + lastInspectionError
+		case len(inspectionErrors) > 0:
+			result.Issue = fmt.Sprintf("%d of %d candidate inspections failed; %d episode(s) remain unmatched: %v", len(inspectionErrors), result.CandidatesChecked, len(unmatched), errors.Join(inspectionErrors...))
 		}
 	}
 	result.MatchedEpisodes = sortedEpisodeLabels(matched)

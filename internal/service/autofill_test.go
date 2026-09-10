@@ -112,16 +112,23 @@ func TestSeriesAutoFillTransfersExactMissingEpisodeAndVerifiesEmby(t *testing.T)
 		case "/Items":
 			_, _ = io.WriteString(response, `{"Items":[{"Id":"series-1","Name":"追更剧","Type":"Series","Path":"/strm/电视剧追更/追更剧 (2026)","ProviderIds":{"Tmdb":"123"}}]}`)
 		case "/search":
-			if request.URL.Query().Get("q") != "追更剧" || request.URL.Query().Get("health_status") != "valid" {
-				t.Errorf("unexpected resource query: %s", request.URL.RawQuery)
+			rejected := `{"id":6,"title":"追更剧 (2026) S01E02","url":"https://115.com/s/rejected","password":"bad1","health_status":"valid"}`
+			usable := `{"id":7,"title":"追更剧 (2026) S01E02","disk_type":"115","url":"https://115.com/s/sharecode","password":"abcd","health_status":"invalid"}`
+			links := rejected
+			if request.URL.Query().Get("health_status") == "" {
+				links += "," + usable
 			}
-			_, _ = io.WriteString(response, `{"links":[{"id":7,"title":"追更剧 (2026) S01E02","disk_type":"115","url":"https://115.com/s/sharecode","password":"abcd","health_status":"valid"}],"total":1}`)
+			_, _ = io.WriteString(response, `{"links":[`+links+`]}`)
 		case "/files":
 			if request.URL.Query().Get("cid") != "library-cid" {
 				t.Errorf("unexpected library CID: %s", request.URL.Query().Get("cid"))
 			}
 			_, _ = io.WriteString(response, `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"追更剧 (2026)","s":"0"}]}`)
 		case "/share/snap":
+			if request.URL.Query().Get("share_code") == "rejected" {
+				_, _ = io.WriteString(response, `{"state":false,"error":"访问码错误"}`)
+				return
+			}
 			if request.URL.Query().Get("cid") == "0" {
 				_, _ = io.WriteString(response, `{"state":true,"data":{"count":2,"shareinfo":{"share_title":"追更剧 (2026)"},"list":[{"cid":"other-root","n":"另一部剧 (2026) {tmdb-999}","s":0},{"cid":"share-root","n":"追更剧 (2026)","s":0}]}}`)
 			} else if request.URL.Query().Get("cid") == "other-root" {
@@ -361,5 +368,46 @@ func TestSeriesAutoFillTaskStopsShareProbesAfterRejection(t *testing.T) {
 	}
 	if len(outcome.Libraries) != 1 || len(outcome.Libraries[0].Series) != 1 || outcome.Libraries[0].Series[0].Issue == "" || outcome.Missing != 2 || outcome.Remaining != 2 || outcome.VerificationComplete {
 		t.Fatalf("task lost unresolved gaps or rejection diagnostics: %+v", outcome)
+	}
+}
+
+func TestSeriesAutoFillRetainsEachCandidateFailureForUnmatchedEpisodes(t *testing.T) {
+	drive, db := newSnapshotTestDrive(t, "0")
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := ""
+		switch request.URL.Path {
+		case "/files":
+			body = `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"Show (2026)"}]}`
+		case "/search":
+			body = `{"links":[{"id":9753945,"title":"Show (2026)","url":"https://115.com/s/wrongcode","password":"bad1","health_status":"valid"},{"id":102,"title":"Show (2026)","url":"https://115.com/s/available"},{"id":103,"title":"Show (2026)","url":"https://115.com/s/missingcode","health_status":"valid"}]}`
+		case "/share/snap":
+			switch request.URL.Query().Get("share_code") {
+			case "wrongcode":
+				body = `{"state":false,"error":"访问码错误"}`
+			case "available":
+				body = `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"Show (2026)"},"list":[{"fid":"episode-1","n":"Show.2026.S01E01.mkv"}]}}`
+			case "missingcode":
+				body = `{"state":false,"error":"请输入访问码"}`
+			}
+		default:
+			t.Errorf("unexpected provider operation: %s", request.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+	canonical := &domain.EmbyMediaItem{ID: "series", Name: "Show", Type: "Series", Path: "/strm/电视剧追更/Show (2026)", ProviderIDs: map[string]string{"Tmdb": "42"}}
+	result, paths := queue.processAutoFillSeries(context.Background(), domain.EmbyLibrary{Name: "电视剧追更"}, "library-cid",
+		map[episodeKey]struct{}{{Season: 1, Episode: 2}: {}},
+		canonical.ID, canonical.Name, canonical, 1, seriesAutoFillSpec{CandidateLimit: 10})
+	if result.CandidatesChecked != 3 || len(result.MatchedEpisodes) != 0 || len(result.Transferred) != 0 || len(paths) != 0 || strings.Join(result.RemainingEpisodes, ",") != "S01E02" {
+		t.Fatalf("candidate failures changed the unresolved episode: result=%+v paths=%v", result, paths)
+	}
+	for _, diagnostic := range []string{"9753945", "访问码错误", "103", "请输入访问码"} {
+		if !strings.Contains(result.Issue, diagnostic) {
+			t.Errorf("candidate failure %q missing from %q", diagnostic, result.Issue)
+		}
+	}
+	if strings.Contains(result.Issue, "102") {
+		t.Fatalf("readable candidate reported as a failed inspection: %s", result.Issue)
 	}
 }
