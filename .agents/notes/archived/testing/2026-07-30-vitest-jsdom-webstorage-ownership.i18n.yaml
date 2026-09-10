@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/testing/2026-07-30-vitest-jsdom-webstorage-ownership.md
+2026-07-30-vitest-jsdom-webstorage-ownership.md: 11afe151a4a17618bd4c1a0279e76da8172a9769
+2026-07-30-vitest-jsdom-webstorage-ownership.zh.md: f9fee894f18488c54467138a837f2198c4bdc48e

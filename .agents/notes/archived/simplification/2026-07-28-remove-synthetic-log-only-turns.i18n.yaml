@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/simplification/2026-07-28-remove-synthetic-log-only-turns.md
+2026-07-28-remove-synthetic-log-only-turns.md: 63494a2aa45ad006197bbd0432b0146f38b43d04
+2026-07-28-remove-synthetic-log-only-turns.zh.md: 9e7ab0e8e2ec71f7bf5e31a9a8c4227f3cba87e7

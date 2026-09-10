@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-07-22-unified-send-and-coalesced-user-messages.md
+2026-07-22-unified-send-and-coalesced-user-messages.md: 4142a8998924438fe7c7a6a2687e13f384dac777
+2026-07-22-unified-send-and-coalesced-user-messages.zh.md: 93097112a68f6219ccb274221d40fa0550111b37

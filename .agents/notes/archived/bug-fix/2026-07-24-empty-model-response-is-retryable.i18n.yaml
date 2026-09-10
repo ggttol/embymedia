@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-07-24-empty-model-response-is-retryable.md
+2026-07-24-empty-model-response-is-retryable.md: 2814cc5a3f07acfad5bda6617e70648679afa657
+2026-07-24-empty-model-response-is-retryable.zh.md: caa4c99444d089fb0292810fcec7f8994450b0f6

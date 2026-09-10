@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-06-onboarding-step-owned-takeover-chrome.md
+2026-08-06-onboarding-step-owned-takeover-chrome.md: 2210242c7be58672b6154549ac372a51a14adc2f
+2026-08-06-onboarding-step-owned-takeover-chrome.zh.md: 3c3ba0338b41f46d1f597bc0821f534e77b30626

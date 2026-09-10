@@ -1,0 +1,4 @@
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-08-12-pi-ai-route-default-input-modalities.md: e22162ae31e944c3a527f7adfbc505bc847be8ee
+2026-08-12-pi-ai-route-default-input-modalities.zh.md: a2c3879c9d9e45e93200f80d45647efcb3406cb8

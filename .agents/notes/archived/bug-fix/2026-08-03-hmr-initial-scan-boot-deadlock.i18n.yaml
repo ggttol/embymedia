@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-03-hmr-initial-scan-boot-deadlock.md
+2026-08-03-hmr-initial-scan-boot-deadlock.md: d130966543ef0d330f71b9e09411bb9b09875abb
+2026-08-03-hmr-initial-scan-boot-deadlock.zh.md: 03cb5baccf402ba36f995f2ef221fb1bc6fa9b49

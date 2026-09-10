@@ -1,6 +1,4 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-08-embymedia-fuse-self-recovery.md
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
 2026-09-08-embymedia-fuse-self-recovery.md: 7648b9bf10fac881a4bf10d3e3ec34361b90fc0f
 2026-09-08-embymedia-fuse-self-recovery.zh.md: 0b025137f1287c9b49d54180db16f9965ed29df2

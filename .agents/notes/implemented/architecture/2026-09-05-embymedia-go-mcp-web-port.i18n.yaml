@@ -1,6 +1,4 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-05-embymedia-go-mcp-web-port.md
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
 2026-09-05-embymedia-go-mcp-web-port.md: 420dd868d9b01a12894870ccae93c4e0df0ca23d
 2026-09-05-embymedia-go-mcp-web-port.zh.md: b686d133d79bb82abaed5386b92b6983dd11af41

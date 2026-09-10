@@ -2,138 +2,51 @@
 
 [English](README.md) | 中文
 
-EmbyMedia 2.1.0 是面向 115、CloudDrive2、Emby、STRM 文件、持久任务、REST、OpenAPI 与 MCP 的自托管 Go 和 Vue 运营系统。受支持 runtime 是一个内嵌浏览器应用的 Go 二进制；Node、Cordis、DSH 与 PostgreSQL 都不是生产依赖。
+## 概要
 
-## Runtime
+EmbyMedia 通过 Vue 浏览器应用、REST、OpenAPI 与 MCP 管理 115 账号和文件、CloudDrive2 挂载、Emby 媒体库、STRM 输出及持久媒体任务。一个 Go 二进制内嵌浏览器应用。生产运行既不需要 Node.js，也不需要 DeepSeek API 凭据。
 
-Debian 部署通过 `embymedia-v2.service` 在 loopback 3080 端口运行独立二进制。同一个 listener 提供 Web UI、`/api/v1/*`、`/api/v1/openapi.json` 与 `/mcp` 上的 Streamable HTTP MCP。可选的旧式 SSE 监听 loopback 3081 端口，`-mcp` 则通过 stdio 提供相同 registry。
+## 目录
 
-Caddy 验证浏览器流量。携带 `X-Agent-Token` 或 `Authorization` 的 `/api/v1/*` 或 `/mcp` 请求绕过浏览器登录，删除调用方提供的浏览器身份 header，再由 Go 服务校验。数据库只保存 token secret 的 SHA-256 摘要；管理员创建 token 时，明文只返回一次。
+- [构建与运行](#构建与运行)
+- [安全运维](#安全运维)
+- [进一步了解](#进一步了解)
+- [许可证](#许可证)
 
-`/srv/embymedia/data/embymedia.db` 中的 SQLite 负责设置、受管账号、定时任务、任务执行记录、Agent token 与审计。CloudDrive2、Emby 与登录服务仍是由 Compose stack 管理的外部依赖。
+## 构建与运行
 
-## 能力
-
-- 管理多个 115 账号且不返回 Cookie；刷新凭据、VIP 到期与存储配额状态；选择默认账号，并在默认账号不可用时选用另一个 active 账号。
-- 列出、创建、重命名、移动与回收 115 文件和目录；检查并转存 115 分享；创建分享链接；提交离线下载；搜索已配置的资源索引。
-- 通过版本匹配的 gRPC API 读取 CloudDrive2 系统和挂载状态，以 `statfs` 测量文件系统容量，并用授权 API token 卸载和挂载已配置挂载点。
-- 验证 CloudDrive2 webhook 事件，并把文件变化防抖为一个持久入库任务；该任务先完成 STRM 同步，再启动 Emby 扫描。
-- 列出 Emby 媒体库，按确切条目 ID 检查，提交指定媒体库刷新，在全库刷新前同步全部媒体，跟踪该 Emby 扫描直至记录完成，并检查或修复元数据和缺失的主海报。元数据修复会从每个未匹配路径推导干净标题与年份，查询 Emby 已配置的 provider，只应用一个不会与其他条目重复、类型一致且置信度高的 TMDB 候选，并返回有歧义的候选供检查。海报修复会先请求完整图片刷新；仅刷新仍缺失时，它会下载唯一的远程海报候选而不更改 identity，并报告已提交、候选下载、确认修复、请求失败和仍然缺失的数量。
-- 从已配置媒体树同步 STRM 文件且不跟随输出 symlink；无论服务 umask 如何，都确保生成目录可由 Emby 读取和穿过；只有媒体挂载 canary 存在时，才删除目标已消失的生成 STRM 文件；清除因此变空的目录，使 Emby 在下次扫描时移除已删除标题；并验证每个剩余 target 均位于媒体根目录内且真实存在。文件协调与 target 检查使用两个有界 worker，映射到同一输出的媒体文件仍保持确定的源目录顺序。
-- 将直接包含剧集文件的 `SEnn` 季目录及明确匹配的季集标记规范为 `Season NN` 和 `SnnEnn` STRM 名称，不重命名源视频，也不合并剧集目录。编号有歧义或规范输出冲突时会报错。按源路径指定媒体库范围时，也会选中其规范输出；仅在挂载 canary 存在、旧文件与原目标内容逐字节一致且替代文件已确认时，才移除旧镜像文件。手工修改的镜像保持不变。
-- 根据冻结的 115、STRM 与 Emby 清单，通过绑定文件 ID 的 SQLite 计划规范托管的 115 媒体根。执行器会重新检查父目录、名称、大小与 SHA1，跳过已完成操作，保留匹配的外挂字幕，将身份一致的重复视频暂存到 `_待回收`，并把无法匹配的源目录结构隔离到 `_待整理`，不执行永久删除。全量 STRM 同步接受配置的直接排除根目录，并在已有容器之外识别 AVI、FLV、ISO、RealMedia、VOB 与 WMV。
-- 使用关联自动计划的执行 ID，以及持久化的尝试记录、开始／结束时间、进度、结果、错误、日志、取消与显式评审重试来执行经过校验的后台操作。`series_auto_fill` 仅处理 `电视剧追更` 和 `综艺追更`：它验证唯一的 canonical TMDB Series 和 115 目录，接收准确匹配已播缺集的受支持视频叶文件，并报告所有剩余缺集或身份失败。启用明确的完结整包选项及危险操作后，它也可以先暂存覆盖全部预期已播集的独立根目录，在扫描后验证新的相同 TMDB Series，再删除旧 Emby 条目、回收旧 115 根、移除旧 STRM 根并再次扫描。中断的 effectful 工作会失败，而非自动重放。
-- 串行发送 115 分享快照请求，涵盖分页与递归检查。`share_snapshot_interval_ms` 默认 `1000` 毫秒，从上一响应关闭后计时，再发送下一请求；`0` 仅关闭间隔，仍保持串行。取消会停止等待，真实 HTTP 405/429 会停止后续补集探测并保留部分结果。请求间隔不能保证 115 接受分享或凭据。
-- 通过 stdio、Streamable HTTP 与旧式 SSE MCP 暴露完整 REST API 和三十四个明确的运营工具。Discovery 工具先解析账号、已有文件、分享、条目、会话、任务与计划 ID，再执行写操作。
-
-## 浏览器工作流
-
-从详情页返回时，资源检索保留筛选条件、已加载分页与滚动位置。检索、详情与收藏共享转存目标；已保存的目录不可用时，必须重新选择目标才能转存。收藏支持撤销移除。115 文件浏览器把粘贴的分享链接转存到当前显示的账号与目录；失败时保留链接和提取码，成功后刷新目录。文件弹窗明确账号与目标目录，失败时保留输入，并将键盘焦点限制在弹窗内。任务中心用范围锁定的四阶段流程展示自动补集，提供准确的可用媒体库选择、预检或转存模式、有界候选控制，以及扫描后的剩余缺集计数。立即执行自动计划时，页面会在 worker 启动前创建并显示持久执行记录；执行中的详情每秒更新，并显示开始、结束、耗时、provider 进度、日志、错误与完整存储结果。已完成但包含发现的检查会计入待处理数量并使用警告样式，正常操作仍显示绿色。较长的任务历史使用页面滚动，并确保最后一项自动计划位于手机导航上方。剪贴板复制失败会打开手动复制弹窗，而非显示成功。
-
-Emby 原生删除供未被禁用、且已认证设备会话对每个所选条目都具有删除权限的 Emby 管理员使用。确认框同时列出 STRM 与原视频路径；原生删除成功后还会回收经过核验的 115 原文件。应用 API key 和 Agent token 不能授权此操作。源文件回收失败会明确报告部分完成：进一步操作前先检查删除审计与 115 状态，不要盲目重复删除。
-
-## Agent 接入
-
-浏览器控制中心位于 `/agent`。该页面执行 MCP 初始化、工具发现、安全只读调用与 OpenAPI 请求。页面可见时，每 30 秒刷新连接与工具发现，每 10 秒读取最近 100 条审计记录。每个工具显示最近一次审计调用的成功或失败、调用方与时间。自主运行令牌默认具有读写权限和每分钟 120 次请求额度。浏览器和 Agent 发起的 115 删除需要一个有效期 15 分钟、绑定准确目标的请求，并由已登录浏览器用户一次性批准；Agent token 不能批准请求、开启浏览器删除开关或调用 REST 删除路由。显式配置的完结整包任务是唯一自动删除路径，仍受该开关和转存后验证约束。系统不暴露 Emby 媒体库删除能力。
-
-`/agent` 的 MCP 日志查询可按 Agent 令牌名称、准确工具名、结果、时间范围，以及脱敏参数或输出中的字面文本筛选持久化调用。每页显示 25 条；调用总数、失败率／拒绝率和逐工具平均耗时覆盖全部匹配记录。详情是已保存且可能截断的摘要，不包含用户原始指令、Agent 思考过程或完整对话。每个 Agent 实例使用单独命名的令牌；共用令牌无法区分，无令牌 stdio 的身份保留为未知。
-
-Hermes 使用 loopback Streamable HTTP endpoint 与 full-access Agent token：
+安装 Go 1.26、Node.js 22.19.0、pnpm 11.7.0、Python 3 与 Make。在仓库根目录运行以下命令；独立 web 项目拥有自己的锁文件。
 
 ```sh
-hermes mcp add embymedia --url http://127.0.0.1:3080/mcp --auth header
-hermes mcp test embymedia
+make install-web
+make build
+make test
+make check
+./bin/embymedia -db /tmp/embymedia-dev.db
 ```
 
-出现提示时，把 `/agent` 创建后只显示一次的 secret 作为 API key / Bearer token 输入。Hermes 会把 secret 存储在 `config.yaml` 之外，并发送 `Authorization: Bearer`；服务端同时接受该 header 与 `X-Agent-Token`。Release 会安装 `deploy/hermes/skills/embymedia-v2-operator/SKILL.md`；该技能只使用独立 registry，并拒绝已移除的 DSH 工具词汇。
+`make install-web` 按冻结锁文件安装 web 依赖。`make build` 构建 Vue 资源与 Go 二进制。`make test` 运行 Go 竞态测试及部署 Python 测试；`make check` 运行 Vue 类型检查、Go vet 与文档检查。这些目标按需构建内嵌 web 资源。开发时使用新的可丢弃数据库，绝不复用生产数据库。
 
-Stdio 客户端可以启动单独配置的实例，并独占其数据库。不要让 stdio 指向正在运行的生产数据库：第二个进程会在迁移、任务恢复和调度之前被拒绝。需要共享生产账号、任务和日志时，使用生产 `/mcp` HTTP endpoint。隔离的 stdio 配置如下：
+打开 `http://127.0.0.1:8080`。HTTP 提供浏览器应用、`/api/v1/*`、`/api/v1/openapi.json` 与 `/mcp`；旧式 MCP SSE 使用回环端口 8081。运行媒体操作前先配置 provider 账号与服务端点。能打开浏览器界面或发现工具，不代表外部 provider 已连接。
 
-```json
-{
-  "mcpServers": {
-    "embymedia": {
-      "command": "/opt/embymedia-v2/current/bin/embymedia",
-      "args": ["-mcp", "-db", "/srv/embymedia/stdio/embymedia.db"]
-    }
-  }
-}
-```
+服务还支持通过 `-mcp` 提供 stdio，以及通过 `-check-db` 打开并迁移隔离数据库而不启动 worker。每个数据库只允许一个拥有进程。客户端应连接运行中服务的 HTTP MCP 端点，而不是对它的数据库另启 stdio。
 
-OpenClaw 使用同一个 Streamable HTTP MCP registry。把 `<one-time-token>` 替换为 `/agent` 创建的 secret，保护生成的用户配置，并探测实时工具列表：
+## 安全运维
 
-```sh
-openclaw mcp add embymedia --url http://gaotao.cc:3080/mcp --transport streamable-http --header 'X-Agent-Token: <one-time-token>'
-openclaw mcp probe embymedia
-```
+Debian 部署通过 `/opt/embymedia-v2/current` 运行 `embymedia-v2.service`，数据库位于 `/srv/embymedia/data/embymedia.db`。Caddy 与 HTTP 登录服务保护浏览器访问；Agent 客户端使用分别命名的令牌。Emby 与 CloudDrive2 仍是外部服务。安装 release 或修改访问权限前，请阅读[运维指南](docs/operations.zh.md)。
 
-Oh My Pi 从 `.omp/mcp.json` 读取服务器；header 值从 `EMBYMEDIA_AGENT_TOKEN` 环境变量解析：
+生产变更前先备份。使用在线快照备份流程，不要直接复制运行中的 SQLite 数据库及其 WAL/SHM 文件。备份包含浏览器用户数据库与生成的 STRM 目录，但不能替代原始媒体的独立副本，也不能替代恢复 secret 的安全保管。先还原至全新隔离目录并验证，再进行另行授权的生产恢复。
 
-```json
-{
-  "mcpServers": {
-    "embymedia": {
-      "type": "http",
-      "url": "http://gaotao.cc:3080/mcp",
-      "headers": { "X-Agent-Token": "EMBYMEDIA_AGENT_TOKEN" }
-    }
-  }
-}
-```
+provider Cookie、API key、Agent token、登录 secret、数据库与原始媒体不属于源码清理范围。保留 Emby 共享 STRM 文件系统 ACL。破坏性操作需要单独授权；重试中断或部分完成的工作前，必须检查 provider 状态。[安全说明](SAFETY.zh.md)解释这些限制。
 
-具有 OpenAPI importer 的客户端仍可使用 `http://gaotao.cc:3080/api/v1/openapi.json`。公网携带 token 的 Agent 路径直接转发到 fail-closed Go 授权 middleware；不含该 header 的浏览器请求仍使用登录服务。
+## 进一步了解
 
-## 仓库布局
-
-```text
-cmd/server/                 binary assembly and embedded Vue assets
-internal/api/               REST, OpenAPI, browser/Agent authorization
-internal/mcp/               34-tool autonomous MCP registry
-internal/service/           115, CloudDrive2, Emby, STRM, task, schedule, webhook logic
-internal/storage/           monotonic SQLite schema and queries
-web/                        Vue 3 browser application
-deploy/                     Compose dependencies, Caddy, systemd, backups, Hermes skill
-```
-
-仓库仍保留历史 Harness 源码用于历史开发工作，但它不在受支持 V2 的 service graph、release installer、Caddy route、Hermes 配置或备份／恢复路径中。
-
-<a id="run"></a><a id="run-from-source"></a>
-
-## 开发
-
-前置条件：Go 1.26、Node.js 22.19 或更新版本，以及 pnpm 11.7.0。Node 只用于构建内嵌 Vue assets。
-
-```sh
-pnpm install --frozen-lockfile --filter embymedia-web...
-pnpm --dir web build
-rm -rf cmd/server/dist && cp -R web/dist cmd/server/dist
-go test ./internal/... ./cmd/server
-go build -trimpath -o bin/embymedia ./cmd/server
-```
-
-开发环境默认使用 loopback 8080 与 8081 端口。通过 `-host`、`-port`、`-mcp-host`、`-mcp-port` 和 `-db` 明确指定 runtime 地址与状态。`-check-db` 只执行 SQLite 打开与迁移，不启动 worker 或 schedule。
-
-## 部署
-
-主机 release 根目录是 `/opt/embymedia-v2/current`。构建 `bin/embymedia-linux-amd64`，并在同目录写入标准 `sha256sum` 文件 `bin/embymedia-linux-amd64.sha256`，然后运行：
-
-```sh
-sudo deploy/scripts/install-release.sh "$PWD" "$(date -u +%Y%m%dT%H%M%SZ)"
-```
-
-Installer 校验 artifact，安装不可变 release，以服务用户检查数据库，持久化 webhook secret，并原子切换 `current`。应用处于运行状态时，它会在停止服务前最多等待一小时，让当前后台执行完成；等待超时会保持现有 release 不变。只有立即激活 release 比保留当前执行更重要时，才设置 `EMBYMEDIA_DEPLOY_FORCE=1`，因为该模式会取消当前执行。新应用进程只启动一次，并保留现有 webhook 启用开关；内容完全相同的 CloudDrive webhook 配置会保留原文件，避免部署触发错误的媒体变化事件。它安装 Caddy systemd override 以禁用环境变量日志，并 reload 运行中的 Caddy 进程而不中断共享路由。激活失败时恢复上一版本、已安装配置与服务状态；数据库迁移和身份数据不会回退。恢复失败会保留已保存配置，且不会删除当前版本。
-
-Compose 部署将规范生成的 STRM 根挂载到 `/strm-v2`。Provisioning、release 安装、备份和隔离恢复会创建或保留该根目录；规范目录生成前创建的备份会将它恢复为空的生成目录。
-
-## 安全
-
-- 禁止把 115 Cookie、Emby key、CloudDrive token、webhook secret 或 Agent token 明文写入仓库和日志。
-- 浏览器文件删除要求启用 `dangerous_actions_enabled` 并在 UI 中明确确认。Agent token 不能使用该路由或开启其开关；MCP 删除要求提交绑定最新目标的请求，由浏览器用户在 15 分钟内批准，并且只能执行一次。
-- 工具 discovery 只证明注册，不证明 provider 成功。仅根据无错误 result 报告操作成功；异步操作只有在 `status=completed` 后才能报告成功。
-- 服务重启会把中断的 effectful 任务标为失败。创建显式 retry 前应检查 provider 当前状态。
-- `embymedia-clouddrive-recovery.timer` 每分钟检查容器和挂载健康标记。容器不健康或连续三次无法读取健康标记时，它会执行有界的 CloudDrive 和 Emby 重启、惰性删除失效的 FUSE 挂载、检查宿主机及 `/media` 健康标记，并恢复 V2；十五分钟冷却期防止重启循环。服务栈停止时也会删除残留的 FUSE 挂载。
-- 备份期间 V2 和 Compose 服务栈保持运行。备份会对每个检测到的数据库使用 SQLite 在线备份 API，重试复制过程中发生变化的普通文件，在生成检查点一致的副本后省略 WAL／SHM companion，通过 `PRAGMA quick_check` 验证每个数据库，再把私有暂存树交给 Restic。隔离恢复会识别该树，恢复规范路径和 owner，验证浏览器 identity，并通过 `-check-db` 检查 SQLite，之后才能执行任何生产恢复。
+- [架构](docs/architecture.zh.md)：运行时所有权与数据流。
+- [开发](docs/development.zh.md)与[测试](docs/testing.zh.md)：本地流程及验证范围。
+- [运维](docs/operations.zh.md)：部署、Agent 访问、备份与恢复。
+- [产品](PRODUCT.md)与[设计](DESIGN.md)：媒体工作流及产品设计。
+- [Agent Notes](.agents/notes/README.zh.md)：当前决策与冻结的历史记录。
 
 ## 许可证
 
-[MIT](LICENSE) — 参见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+[MIT](LICENSE)。保留现有版权声明与[第三方声明](THIRD_PARTY_NOTICES.zh.md)。

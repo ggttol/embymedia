@@ -28,7 +28,6 @@ test -r "$database"
 test -d "$target/srv/embymedia/data/emby/config"
 test -d "$target/srv/embymedia/data/clouddrive/config"
 install -m 0750 -d "$target/srv/embymedia/data/strm-v2"
-test -d "$target/srv/embymedia/data/authelia"
 login_config="$target/srv/embymedia/data/auth/http-login.json"
 test -s "$login_config"
 /usr/bin/python3 - /opt/embymedia-v2/current/deploy/scripts/http-login.py "$target" "$database" "$login_config" <<'PY'

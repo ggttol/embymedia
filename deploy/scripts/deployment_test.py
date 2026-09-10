@@ -212,10 +212,6 @@ class DeploymentScriptsTest(unittest.TestCase):
         secrets.mkdir(parents=True)
         (secrets / 'clouddrive-webhook-secret').write_text('webhook-secret\n')
         (secrets / 'restic-local-password').write_text('backup-secret')
-        (secrets / 'authelia-users.yml').write_text('users: {}\n')
-        authelia = self.root / 'etc/embymedia/authelia'
-        authelia.mkdir(parents=True)
-        (authelia / 'configuration.yml').write_text('theme: auto\n')
         self.login = self.root / 'srv/embymedia/data/auth/http-login.json'
         self.login.parent.mkdir(parents=True)
         encoded = lambda value: base64.urlsafe_b64encode(value).decode().rstrip('=')
@@ -224,7 +220,7 @@ class DeploymentScriptsTest(unittest.TestCase):
              'passwordHash': encoded(b'h' * 32), 'iterations': 600000, 'sessionVersion': 'persistent-session-version'}]}
         self.login.write_text(json.dumps(self.identity))
         self.login.chmod(0o600)
-        for folder in ('emby/config', 'clouddrive/config', 'strm', 'strm-v2', 'authelia'):
+        for folder in ('emby/config', 'clouddrive/config', 'strm-v2'):
             (self.login.parent.parent / folder).mkdir(parents=True)
         self.initial_services = {name: {'active': True, 'enabled': True} for name in (
             'docker.service', 'embymedia-v2.service', 'embymedia-http-login.service', 'embymedia-stack.service', 'caddy.service', 'embymedia-backup.timer')}
@@ -317,6 +313,40 @@ class DeploymentScriptsTest(unittest.TestCase):
         commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
         self.assertFalse(any('/api/v1/async-tasks?status=running' in command[-1] for command in commands))
         self.assertTrue(any(command[:3] == ['systemctl', 'stop', 'embymedia-v2.service'] for command in commands))
+
+    def test_successful_release_disables_retired_services(self):
+        retired = ('embymedia-dsh.service', 'embymedia-control-helper.service')
+        (self.root / 'services.json').write_text(json.dumps({
+            **self.initial_services,
+            **{name: {'active': True, 'enabled': True} for name in retired},
+        }))
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        services = json.loads((self.root / 'services.json').read_text())
+        for name in retired:
+            self.assertEqual(services[name], {'active': False, 'enabled': False})
+
+    def test_retired_services_stay_disabled_after_release_rollback(self):
+        retired = ('embymedia-dsh.service', 'embymedia-control-helper.service')
+        (self.root / 'services.json').write_text(json.dumps({
+            **self.initial_services,
+            **{name: {'active': True, 'enabled': True} for name in retired},
+        }))
+        self.assert_recovered(self.install(FAIL_COMMAND='systemctl reload caddy.service'))
+        services = json.loads((self.root / 'services.json').read_text())
+        for name in retired:
+            self.assertEqual(services[name], {'active': False, 'enabled': False})
+
+    def test_retired_service_disable_failure_leaves_current_release_running(self):
+        retired = 'embymedia-dsh.service'
+        state = {**self.initial_services, retired: {'active': True, 'enabled': True}}
+        (self.root / 'services.json').write_text(json.dumps(state))
+        result = self.install(FAIL_COMMAND=f'systemctl disable --now {retired}')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.current.resolve(), self.old)
+        self.assertEqual(json.loads((self.root / 'services.json').read_text()), state)
+        for path, content in self.initial_configs.items():
+            self.assertEqual(path.read_bytes(), content)
 
     def test_database_failure_restarts_previous_service(self):
         self.assert_recovered(self.install(FAIL_COMMAND='embymedia -check-db'))

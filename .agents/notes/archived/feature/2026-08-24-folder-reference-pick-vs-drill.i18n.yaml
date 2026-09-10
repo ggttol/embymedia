@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-24-folder-reference-pick-vs-drill.md
+2026-08-24-folder-reference-pick-vs-drill.md: 560741015fed7c12d2e89d18981e76816e1e7ae2
+2026-08-24-folder-reference-pick-vs-drill.zh.md: e5dec3c52760659fa9abc7c1bf5f031df14a6873

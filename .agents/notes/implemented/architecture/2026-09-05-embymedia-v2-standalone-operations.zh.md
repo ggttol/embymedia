@@ -12,7 +12,7 @@ Status: implemented
 
 Go 二进制是唯一部署的 EmbyMedia 应用 runtime。它提供 Vue、REST、OpenAPI 3.1、Streamable HTTP MCP、旧式 loopback SSE 与 stdio MCP。Debian Hermes 直接连接其 loopback `/mcp` endpoint，并为已注册的三十四个工具加载一个 V2 技能。
 
-EmbyMedia release identity 为 `2.1.0`。`internal/product.Version` 负责 OpenAPI 与 MCP 的 Go 协议版本；`web/src/version.ts` 负责浏览器诊断和紧凑的 `V2.1` 品牌标记，`web/package.json` 保存完整 release version。DSH monorepo 根版本保持独立。
+EmbyMedia release identity 为 `2.1.0`。`internal/product.Version` 负责 OpenAPI 与 MCP 的 Go 协议版本；`web/src/version.ts` 负责浏览器诊断和紧凑的 `V2.1` 品牌标记，`web/package.json` 保存完整 release version。
 
 Provider 工具执行真实 provider 操作。115 客户端使用所选账号凭据列出、创建、重命名、移动、删除与转存文件，创建分享链接，并提交离线下载。CloudDrive2 客户端通过版本匹配的 gRPC 方法读取系统状态与挂载清单、卸载和挂载；文件系统容量来自 `statfs`。CloudDrive2 返回容器内路径，已配置挂载路径标识健康检查所用的对应宿主机文件系统路径。Emby 条目检查按一个确切条目 ID 寻址，元数据应用会检查上游响应，并且每个 Emby 请求都通过 `X-Emby-Token` 发送 API key，而不是使用可能出现在持久错误中的 URL。
 

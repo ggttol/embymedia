@@ -36,7 +36,7 @@ state=$(mktemp -d /opt/embymedia-v2/.install-XXXXXXXX)
 changed=0
 activated=0
 committed=0
-units='embymedia-stack.service embymedia-http-login.service embymedia-v2.service caddy.service embymedia-backup.timer embymedia-clouddrive-recovery.service embymedia-clouddrive-recovery.timer embymedia-dsh.service embymedia-control-helper.service'
+units='embymedia-stack.service embymedia-http-login.service embymedia-v2.service caddy.service embymedia-backup.timer embymedia-clouddrive-recovery.service embymedia-clouddrive-recovery.timer'
 
 wait_http() {
   attempts=0
@@ -176,9 +176,12 @@ for unit in $units; do
 done
 
 if [ -f "$state/embymedia-v2.service.active" ] && [ "$force" -ne 1 ]; then wait_task_queue_idle; fi
+# Retired services must stay disabled even if the V2 release rolls back; host files and data remain untouched.
+for unit in embymedia-dsh.service embymedia-control-helper.service; do
+  if systemctl cat "$unit" >/dev/null 2>&1; then systemctl disable --now "$unit"; fi
+done
 changed=1
 if [ -f "$state/embymedia-v2.service.active" ]; then systemctl stop embymedia-v2.service; fi
-systemctl disable --now embymedia-dsh.service embymedia-control-helper.service 2>/dev/null || true
 install -o embymedia -g embymedia -m 0750 -d /srv/embymedia /srv/embymedia/data /srv/embymedia/data/strm-v2
 "$release/deploy/scripts/configure-strm-access.sh" /srv/embymedia/data/strm-v2 /etc/embymedia/stack.env
 for file in "$database" "$database-wal" "$database-shm" "$database-journal" "$database.owner.lock"; do

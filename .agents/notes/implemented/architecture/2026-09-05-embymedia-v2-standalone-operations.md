@@ -12,7 +12,7 @@ The standalone service registered eighteen MCP tools, but registration hid incom
 
 The Go binary is the only deployed EmbyMedia application runtime. It serves Vue, REST, OpenAPI 3.1, Streamable HTTP MCP, legacy loopback SSE, and stdio MCP. Debian Hermes connects directly to its loopback `/mcp` endpoint and loads one V2 skill for the thirty-four registered tools.
 
-EmbyMedia release identity is `2.1.0`. `internal/product.Version` owns Go protocol versions for OpenAPI and MCP; `web/src/version.ts` owns browser diagnostics and the compact `V2.1` brand label, while `web/package.json` carries the full release version. The DSH monorepo root version remains independent.
+EmbyMedia release identity is `2.1.0`. `internal/product.Version` owns Go protocol versions for OpenAPI and MCP; `web/src/version.ts` owns browser diagnostics and the compact `V2.1` brand label, while `web/package.json` carries the full release version.
 
 Provider tools execute provider operations. The 115 client lists, creates, renames, moves, deletes, saves shares, creates share links, and submits offline downloads with the selected account credential. The CloudDrive2 client uses the version-matched gRPC methods for system state, mount inventory, unmount, and mount; filesystem capacity comes from `statfs`. CloudDrive2 reports container paths, while the configured mount path identifies the corresponding host filesystem path used for health checks. Emby item inspection addresses one exact item ID, metadata application checks the upstream response, and every Emby request sends its API key in `X-Emby-Token` rather than a URL that can appear in durable errors.
 

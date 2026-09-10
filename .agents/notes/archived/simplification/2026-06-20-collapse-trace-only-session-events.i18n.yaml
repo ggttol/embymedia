@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/simplification/2026-06-20-collapse-trace-only-session-events.md
+2026-06-20-collapse-trace-only-session-events.md: c6d46853554f6957f077cea6306b105bc89f6d38
+2026-06-20-collapse-trace-only-session-events.zh.md: d04041acaece47cd3dd6a500519472a18fee6c21

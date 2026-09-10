@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-06-continuable-child-report-obligation.md
+2026-08-06-continuable-child-report-obligation.md: 3e30a36b0fca47555d8791c0ad4372ba321b921a
+2026-08-06-continuable-child-report-obligation.zh.md: 7715ee4b56e40251336c6e605b7e90f21b9e9da9

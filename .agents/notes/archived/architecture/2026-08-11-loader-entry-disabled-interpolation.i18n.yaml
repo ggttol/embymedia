@@ -1,0 +1,4 @@
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-08-11-loader-entry-disabled-interpolation.md: f5534067f04322a853312a934c32db687904a66a
+2026-08-11-loader-entry-disabled-interpolation.zh.md: 9e49bc80359f3e998decc7d5e3cefdd27ef3d293

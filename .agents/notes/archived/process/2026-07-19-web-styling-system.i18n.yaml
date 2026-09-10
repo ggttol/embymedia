@@ -1,0 +1,4 @@
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-07-19-web-styling-system.md: 71b8e2c8a19e1ff7d5adf4ad4d43fe819a2acf0e
+2026-07-19-web-styling-system.zh.md: 616c61f0c5e5e013b963fbb25423539a7579ce2e

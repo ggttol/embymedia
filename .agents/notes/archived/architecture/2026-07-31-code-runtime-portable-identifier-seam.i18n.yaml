@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-07-31-code-runtime-portable-identifier-seam.md
+2026-07-31-code-runtime-portable-identifier-seam.md: 4ca30e2639f2d241a6a0b20d6f7433df738beccf
+2026-07-31-code-runtime-portable-identifier-seam.zh.md: 8009d5741f13b6252eb9eb56430c0cdac6414e57

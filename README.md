@@ -2,138 +2,51 @@
 
 English | [中文](README.zh.md)
 
-EmbyMedia 2.1.0 is a self-hosted Go and Vue operations system for 115, CloudDrive2, Emby, STRM files, persistent tasks, REST, OpenAPI, and MCP. The supported runtime is one Go binary with an embedded browser application; Node, Cordis, DSH, and PostgreSQL are not production dependencies.
+## Summary
 
-## Runtime
+EmbyMedia manages 115 accounts and files, CloudDrive2 mounts, Emby libraries, STRM output, and persistent media tasks through a Vue browser application, REST, OpenAPI, and MCP. One Go binary embeds the browser application. Production requires neither Node.js nor DeepSeek API credentials.
 
-The Debian deployment runs the standalone binary as `embymedia-v2.service` on loopback port 3080. The same listener serves the Web UI, `/api/v1/*`, `/api/v1/openapi.json`, and Streamable HTTP MCP at `/mcp`. Optional legacy SSE listens on loopback port 3081, and `-mcp` serves the same registry over stdio.
+## Table of Contents
 
-Caddy authenticates browser traffic. Requests to `/api/v1/*` or `/mcp` carrying `X-Agent-Token` or `Authorization` bypass browser login, discard supplied browser identity headers, and are validated by the Go service. Stored token secrets are SHA-256 digests; plaintext is returned only once when the administrator creates a token.
+- [Build and run](#build-and-run)
+- [Operate safely](#operate-safely)
+- [Learn more](#learn-more)
+- [License](#license)
 
-SQLite at `/srv/embymedia/data/embymedia.db` owns settings, managed accounts, schedules, task attempts, Agent tokens, and audits. CloudDrive2, Emby, and the login service remain external dependencies managed by the Compose stack.
+## Build and run
 
-## Capabilities
-
-- Manage multiple 115 accounts without returning cookies; refresh credential, VIP-expiry, and storage-quota state; select a default account and fall back to another active account.
-- List, create, rename, move, and recycle 115 files and directories; inspect and save 115 shares; create share links; submit offline downloads; search the configured resource index.
-- Read CloudDrive2 system and mount state through its version-matched gRPC API, measure filesystem capacity with `statfs`, and unmount/mount configured mount points with an authorized API token.
-- Authenticate CloudDrive2 webhook events and debounce file changes into one persistent ingestion task that completes STRM synchronization before starting an Emby scan.
-- List Emby libraries, inspect one exact item ID, submit a specific-library refresh, synchronize all media before a full-library refresh, track that Emby scan until its recorded completion, and inspect or repair metadata and missing primary posters. Metadata repair derives a clean title and year from each unmatched path, queries Emby's configured providers, applies only one high-confidence type-consistent TMDB candidate that cannot duplicate another item, and returns ambiguous candidates for review. Poster repair first requests a full image refresh, then downloads a unique remote poster candidate without changing identity when refresh alone leaves the item missing; it reports requested, candidate-downloaded, confirmed repaired, failed, and still-missing counts.
-- Synchronize STRM files from a configured media tree without following output symlinks, make generated directories readable and traversable by Emby despite the service umask, remove generated STRM files whose targets disappeared only when the media-mount canary is present, prune directories emptied by those removals so Emby drops deleted titles on its next scan, and verify that every remaining target stays inside the media root and exists. File reconciliation and target checks use two bounded workers while colliding outputs retain deterministic source order.
-- Normalize immediate `SEnn` season directories and explicit matching episode tokens into `Season NN` and `SnnEnn` STRM names without renaming source videos or combining series folders. Ambiguous numbering and canonical-output collisions fail. A source-relative library scope also selects its normalized output; old mirrored files are removed only with a mount canary, byte-identical original targets, and confirmed replacement files. Manually edited mirrors remain untouched.
-- Normalize a managed 115 media root from frozen 115, STRM, and Emby inventories through an ID-bound SQLite plan. The executor rechecks parent, name, size, and SHA1, resumes completed operations, preserves matching external subtitles, stages identity-equivalent duplicate videos under `_待回收`, and isolates unmatched source structures under `_待整理` without permanent deletion. Full STRM synchronization accepts configured immediate exclusion roots and recognizes AVI, FLV, ISO, RealMedia, VOB, and WMV alongside the existing containers.
-- Execute validated background operations with schedule-linked execution IDs and durable attempts, start/end times, progress, results, errors, logs, cancellation, and explicit reviewed retry. `series_auto_fill` is restricted to `电视剧追更` and `综艺追更`: it verifies one canonical TMDB-bound Series and 115 folder, receives exact aired missing-episode video leaves, and reports every remaining gap or identity failure. With its explicit completed-pack option and dangerous actions enabled, it may instead stage a distinct root that covers every expected aired episode, verify the new same-TMDB Series after scanning, delete the old Emby item, recycle the old 115 root, remove its STRM root, and scan again. Interrupted effectful work fails instead of replaying automatically.
-- Serialize 115 share snapshot requests, including pagination and recursive inspection. `share_snapshot_interval_ms` defaults to `1000` milliseconds between the previous response closing and the next request; `0` disables the delay but keeps serialization. Cancellation stops waiting, and actual HTTP 405/429 stops further autofill probes while retaining partial results. Request pacing does not guarantee that 115 accepts a share or credential.
-- Expose the complete REST API and thirty-four explicit operational tools through stdio, Streamable HTTP, and legacy SSE MCP. Discovery tools resolve account, stored-file, share, item, session, task, and schedule IDs before writes.
-
-## Browser workflows
-
-Resource search preserves filters, loaded pages, and scroll position when returning from a detail page. Search, details, and favorites share the transfer destination; an unavailable saved directory blocks transfer until another destination is selected. Favorites support removal undo. The 115 file browser saves a pasted share link into the displayed account and directory, retains the link and extraction code after an error, and refreshes the directory after success. File dialogs identify the account and destination, retain failed input, and support keyboard focus containment. The Task Center presents automatic episode completion as a locked four-stage flow with exact eligible-library selection, preview or transfer mode, bounded candidate controls, and post-scan remaining-gap counts. An immediate schedule run creates and displays its durable execution before the worker starts; active details refresh each second and show start, end, duration, provider progress, logs, errors, and the complete stored result. Completed checks with findings count as attention and use warning styling; healthy operations remain green. Long task histories use page scrolling and keep the last schedule clear of mobile navigation. Clipboard-copy failure opens a manual-copy dialog instead of reporting success.
-
-Native Emby deletion is available to an enabled Emby administrator whose authenticated device session can delete every selected item. Its confirmation includes STRM and original-video paths; successful native deletion also recycles the verified 115 originals. Application API keys and Agent tokens cannot authorize this operation. A source-recycling failure is reported as partial completion: inspect the deletion audit and 115 state before further action; do not repeat the deletion blindly.
-
-## Agent access
-
-The browser control center is `/agent`. It performs MCP initialization, tool discovery, safe read calls, and an OpenAPI request. While visible, the page refreshes connection discovery every 30 seconds and reads the latest 100 audit records every 10 seconds. Each tool shows its latest audited success or failure with the caller and timestamp. Autonomous tokens default to read/write access and 120 requests per minute. Browser and Agent-initiated 115 deletion requires a 15-minute, target-bound request that an authenticated browser user approves once; Agent tokens cannot approve it, enable the browser deletion switch, or call the REST deletion route. The explicitly configured completed-pack task is the only automatic deletion path and remains gated by that switch and post-transfer verification. Emby library deletion is not exposed.
-
-The MCP log query on `/agent` filters persisted calls by Agent token name, exact tool name, result, time range, and literal text in redacted parameters or output. Pages contain 25 records; totals, failure/denial rates, and per-tool average durations cover the entire matching set. Details contain stored, potentially truncated summaries, not original user instructions, Agent reasoning, or complete conversations. Use a separately named token for each Agent installation; shared tokens are indistinguishable, and tokenless stdio identity remains unknown.
-
-Hermes uses the loopback Streamable HTTP endpoint and a full-access Agent token:
+Install Go 1.26, Node.js 22.19.0, pnpm 11.7.0, Python 3, and Make. Run these commands from the repository root; the independent web project owns its lockfile.
 
 ```sh
-hermes mcp add embymedia --url http://127.0.0.1:3080/mcp --auth header
-hermes mcp test embymedia
+make install-web
+make build
+make test
+make check
+./bin/embymedia -db /tmp/embymedia-dev.db
 ```
 
-When prompted, enter the one-time secret created at `/agent` as the API key / Bearer token. Hermes stores the secret outside `config.yaml` and sends `Authorization: Bearer`; the server accepts that header and `X-Agent-Token`. The release installs `deploy/hermes/skills/embymedia-v2-operator/SKILL.md`; this skill names only the standalone registry and rejects the removed DSH tool vocabulary.
+`make install-web` installs frozen web dependencies. `make build` builds Vue assets and the Go binary. `make test` runs Go race tests and deployment Python tests; `make check` runs Vue typechecking, Go vet, and documentation checks. These targets build the embedded web assets as needed. Use a new disposable database for development; never reuse a production database.
 
-Stdio clients can launch a separately configured instance as the sole owner of its database. Do not point stdio at the running production database: startup refuses a second owner before migrations, task recovery, or scheduling. Use the production `/mcp` HTTP endpoint to share its accounts, tasks, and logs. An isolated stdio configuration is:
+Open `http://127.0.0.1:8080`. HTTP serves the browser application, `/api/v1/*`, `/api/v1/openapi.json`, and `/mcp`; legacy MCP SSE uses loopback port 8081. Configure provider accounts and service endpoints before running media operations. A browser shell or discovered tool does not prove that an external provider is connected.
 
-```json
-{
-  "mcpServers": {
-    "embymedia": {
-      "command": "/opt/embymedia-v2/current/bin/embymedia",
-      "args": ["-mcp", "-db", "/srv/embymedia/stdio/embymedia.db"]
-    }
-  }
-}
-```
+The service also supports `-mcp` for stdio and `-check-db` for opening and migrating an isolated database without starting workers. Each database permits one owning process. Connect clients to the running server's HTTP MCP endpoint rather than starting stdio against its database.
 
-OpenClaw uses the same Streamable HTTP MCP registry. Replace `<one-time-token>` with a secret created at `/agent`, keep the resulting user configuration private, and probe the live tool list:
+## Operate safely
 
-```sh
-openclaw mcp add embymedia --url http://gaotao.cc:3080/mcp --transport streamable-http --header 'X-Agent-Token: <one-time-token>'
-openclaw mcp probe embymedia
-```
+The Debian deployment runs `embymedia-v2.service` from `/opt/embymedia-v2/current`, with its database at `/srv/embymedia/data/embymedia.db`. Caddy and the HTTP login service protect browser access; Agent clients use separately named tokens. Emby and CloudDrive2 remain external services. See [operations](docs/operations.md) before installing a release or changing access.
 
-Oh My Pi reads the server from `.omp/mcp.json`; the header value resolves from the `EMBYMEDIA_AGENT_TOKEN` environment variable:
+Back up before production changes. Use the online snapshot backup path, not a raw copy of a live SQLite database and its WAL/SHM files. Backups include the browser-user database and generated STRM catalog; they do not replace an independent copy of original media or safe retention of recovery secrets. Restore into a fresh isolated directory and validate it before any separately authorized production recovery.
 
-```json
-{
-  "mcpServers": {
-    "embymedia": {
-      "type": "http",
-      "url": "http://gaotao.cc:3080/mcp",
-      "headers": { "X-Agent-Token": "EMBYMEDIA_AGENT_TOKEN" }
-    }
-  }
-}
-```
+Keep provider cookies, API keys, Agent tokens, login secrets, databases, and original media out of source-control cleanup. Preserve Emby's shared STRM filesystem ACLs. Destructive operations require their own authorization; interrupted or partially completed work requires provider-state inspection before retry. [Safety](SAFETY.md) explains these limits.
 
-The OpenAPI document remains available at `http://gaotao.cc:3080/api/v1/openapi.json` for clients with an OpenAPI importer. Public token-bearing Agent paths are forwarded directly to the fail-closed Go authorization middleware; headerless browser requests still use the login service.
+## Learn more
 
-## Repository layout
-
-```text
-cmd/server/                 binary assembly and embedded Vue assets
-internal/api/               REST, OpenAPI, browser/Agent authorization
-internal/mcp/               34-tool autonomous MCP registry
-internal/service/           115, CloudDrive2, Emby, STRM, task, schedule, webhook logic
-internal/storage/           monotonic SQLite schema and queries
-web/                        Vue 3 browser application
-deploy/                     Compose dependencies, Caddy, systemd, backups, Hermes skill
-```
-
-Legacy Harness source remains in the repository for historical development work but is absent from the supported V2 service graph, release installer, Caddy route, Hermes configuration, and backup/restore path.
-
-<a id="run"></a><a id="run-from-source"></a>
-
-## Development
-
-Prerequisites: Go 1.26, Node.js 22.19 or newer, and pnpm 11.7.0. Node is needed only to build the embedded Vue assets.
-
-```sh
-pnpm install --frozen-lockfile --filter embymedia-web...
-pnpm --dir web build
-rm -rf cmd/server/dist && cp -R web/dist cmd/server/dist
-go test ./internal/... ./cmd/server
-go build -trimpath -o bin/embymedia ./cmd/server
-```
-
-The application defaults to loopback ports 8080 and 8081 for development. Use `-host`, `-port`, `-mcp-host`, `-mcp-port`, and `-db` for explicit runtime addresses and state. `-check-db` performs only SQLite opening and migrations; it starts no workers or schedules.
-
-## Deployment
-
-The host release root is `/opt/embymedia-v2/current`. Build `bin/embymedia-linux-amd64`, write its standard `sha256sum` file beside it as `bin/embymedia-linux-amd64.sha256`, then run:
-
-```sh
-sudo deploy/scripts/install-release.sh "$PWD" "$(date -u +%Y%m%dT%H%M%SZ)"
-```
-
-The installer verifies the artifact, installs an immutable release, checks the database as the service user, persists the webhook secret, and atomically switches `current`. When the application is active, it waits up to one hour for the running background execution to finish before stopping the service; a timeout leaves the active release unchanged. Set `EMBYMEDIA_DEPLOY_FORCE=1` only when immediately activating the release is worth cancelling the current execution. It starts the new application process exactly once, preserves the existing webhook enablement flag, and leaves byte-identical CloudDrive webhook configuration in place so deployment does not emit a false media-change event. It installs a Caddy systemd override that disables environment logging and reloads an active Caddy process without interrupting shared routes. Failed activation restores the previous release, installed configurations, and service states; database migrations and identity data are not reversed. A failed recovery retains its saved configurations and never deletes the active release.
-
-The Compose deployment mounts the canonical generated STRM root at `/strm-v2`. Provisioning, release installation, backup, and isolated restore create or retain that root; backups created before the normalized catalog restore it as an empty generated directory.
-
-## Safety
-
-- Keep 115 cookies, Emby keys, CloudDrive tokens, webhook secrets, and Agent token plaintext out of the repository and logs.
-- Browser file deletion requires `dangerous_actions_enabled` and an explicit UI confirmation. Agent tokens cannot use that route or enable its switch; MCP deletion requires a fresh target-bound request, one browser approval within 15 minutes, and one non-replayable execution.
-- Tool discovery proves registration, not provider success. Report an operation as successful only from its non-error result, and report an asynchronous operation only after `status=completed`.
-- A service restart marks interrupted effectful tasks failed. Inspect provider state before creating an explicit retry.
-- `embymedia-clouddrive-recovery.timer` checks the container and mount every minute. An unhealthy container or three consecutive unreadable canaries trigger a bounded CloudDrive and Emby restart, lazy removal of the stale FUSE mount, host and `/media` canary checks, and V2 restoration; a 15-minute cooldown prevents restart loops. Stack shutdown also removes any remaining FUSE mount.
-- Backups keep V2 and the Compose stack running. They use SQLite's online backup API for every detected database, retry regular files that change during copying, omit WAL/SHM companions after checkpoint-consistent copies, validate each database with `PRAGMA quick_check`, and give Restic a private staged tree. Isolated restoration recognizes that tree, restores canonical paths and ownership, validates browser identity, and checks SQLite with `-check-db` before any production recovery.
+- [Architecture](docs/architecture.md): runtime ownership and data flow.
+- [Development](docs/development.md) and [testing](docs/testing.md): local workflow and verification scope.
+- [Operations](docs/operations.md): deployment, Agent access, backup, and recovery.
+- [Product](PRODUCT.md) and [design](DESIGN.md): media workflows and product design.
+- [Agent Notes](.agents/notes/README.md): current decisions and frozen historical records.
 
 ## License
 
-[MIT](LICENSE) — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT](LICENSE). Preserve the existing copyright notice and the [third-party notices](THIRD_PARTY_NOTICES.md).

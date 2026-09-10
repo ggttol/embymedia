@@ -1,6 +1,4 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-05-embymedia-v2-standalone-operations.md
-2026-09-05-embymedia-v2-standalone-operations.md: 198dc55d0d179ff839619dbab9230f83948b0d75
-2026-09-05-embymedia-v2-standalone-operations.zh.md: 766848756e0ee50190d48e1d5a89e1ccb89bdbaf
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-09-05-embymedia-v2-standalone-operations.md: 8f571a67a1ea27462488c3ae7b6d459a2c1cefa0
+2026-09-05-embymedia-v2-standalone-operations.zh.md: e0093b995d4625ba92c74894a53d8019756c18bf

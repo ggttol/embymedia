@@ -1,0 +1,4 @@
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-08-17-settings-describe-mirror.md: eea6a17a79b035cb7386ca678c55341399a91356
+2026-08-17-settings-describe-mirror.zh.md: ed2534fa6838ff51e43d7e1e20f0f484f5134e0b

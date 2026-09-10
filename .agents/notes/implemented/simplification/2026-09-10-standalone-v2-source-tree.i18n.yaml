@@ -1,0 +1,4 @@
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-09-10-standalone-v2-source-tree.md: a556b53f78b86e7dd4c4b0f311bf6cfe21228920
+2026-09-10-standalone-v2-source-tree.zh.md: a8abe8d873ff964fc21c2b551c497bed6c62e0db

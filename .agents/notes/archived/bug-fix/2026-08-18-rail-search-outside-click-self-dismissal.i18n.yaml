@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-18-rail-search-outside-click-self-dismissal.md
+2026-08-18-rail-search-outside-click-self-dismissal.md: a387ff8ca40a7c8a5cba64e42ddcd48e9f7f5aef
+2026-08-18-rail-search-outside-click-self-dismissal.zh.md: ead614ad45d640456f544b1089a224cefb17bd31

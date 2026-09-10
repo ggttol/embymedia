@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-06-mcp-client-auto-reconnect.md
+2026-08-06-mcp-client-auto-reconnect.md: 0a30cb57a95be3b98b36186c13af68b1b2211b6f
+2026-08-06-mcp-client-auto-reconnect.zh.md: e19fed13f672eac8d965ab27982126d393373136

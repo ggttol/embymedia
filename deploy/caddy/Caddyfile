@@ -13,7 +13,7 @@
 	}
 }
 
-# Self-use HTTP mode (no TLS, no ACME, no Authelia forward_auth gate).
+# Self-use HTTP mode (no TLS or ACME); browser authentication uses HTTP login.
 # The http:// scheme forces Caddy to serve plain HTTP (no automatic HTTPS).
 # The webhook bridge converts the configured query key to X-Webhook-Secret so
 # CloudDrive2 can authenticate its event delivery to the standalone service.

@@ -1,6 +1,4 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-31-canonical-series-missing-episode-binding.md
-2026-08-31-canonical-series-missing-episode-binding.md: b3839260d48ed0b50da2c2c1ac78b9aa060eefc4
-2026-08-31-canonical-series-missing-episode-binding.zh.md: 2859c38ea3638f2c407d836908309df53e64669c
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-08-31-canonical-series-missing-episode-binding.md: 6811fa170912ff9b15036cf73c9f0aea56e21d7b
+2026-08-31-canonical-series-missing-episode-binding.zh.md: f3bb50f1810a92358c500e2b2b25b9f830553d3d

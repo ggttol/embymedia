@@ -2,7 +2,7 @@ name: embymedia
 
 services:
   clouddrive2:
-    image: ${CLOUDDRIVE_IMAGE:?set NAS inventory digest-pinned CLOUDDRIVE_IMAGE}
+    image: ${CLOUDDRIVE_IMAGE:?set digest-pinned CLOUDDRIVE_IMAGE}
     restart: unless-stopped
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -26,15 +26,15 @@ services:
       start_period: 60s
 
   emby:
-    image: ${EMBY_IMAGE:?set NAS inventory digest-pinned EMBY_IMAGE}
+    image: ${EMBY_IMAGE:?set digest-pinned EMBY_IMAGE}
     restart: unless-stopped
     depends_on:
       clouddrive2:
         condition: service_healthy
     environment:
-      UID: ${MEDIA_UID:?set inventory MEDIA_UID}
-      GID: ${MEDIA_GID:?set inventory MEDIA_GID}
-      GIDLIST: ${MEDIA_GID:?set inventory MEDIA_GID},${STRM_GID:?configure shared STRM access}
+      UID: ${MEDIA_UID:?set Emby MEDIA_UID}
+      GID: ${MEDIA_GID:?set Emby MEDIA_GID}
+      GIDLIST: ${MEDIA_GID:?set Emby MEDIA_GID},${STRM_GID:?configure shared STRM access}
       ALL_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
       HTTP_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
       HTTPS_PROXY: ${EMBY_OUTBOUND_PROXY_URL:-socks5://192.168.167.12:1080}
@@ -52,32 +52,3 @@ services:
       retries: 30
       start_period: 60s
     security_opt: [no-new-privileges:true]
-
-  authelia:
-    image: ${AUTHELIA_IMAGE:?set digest-pinned AUTHELIA_IMAGE}
-    restart: unless-stopped
-    environment:
-      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /run/secrets/authelia_jwt_secret
-      AUTHELIA_SESSION_SECRET_FILE: /run/secrets/authelia_session_secret
-      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /run/secrets/authelia_storage_key
-    secrets: [authelia_jwt_secret, authelia_session_secret, authelia_storage_key]
-    volumes:
-      - /etc/embymedia/authelia:/config:ro
-      - /srv/embymedia/data/authelia:/var/lib/authelia
-    ports:
-      - 127.0.0.1:9091:9091
-    healthcheck:
-      test: [CMD-SHELL, wget -qO- http://127.0.0.1:9091/api/health >/dev/null]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-    security_opt: [no-new-privileges:true]
-
-
-secrets:
-  authelia_jwt_secret:
-    file: /etc/embymedia/secrets/authelia-jwt-secret
-  authelia_session_secret:
-    file: /etc/embymedia/secrets/authelia-session-secret
-  authelia_storage_key:
-    file: /etc/embymedia/secrets/authelia-storage-key

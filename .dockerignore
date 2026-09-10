@@ -1,0 +1,16 @@
+**
+!Dockerfile
+!go.mod
+!go.sum
+!cmd/
+!cmd/server/
+!cmd/server/*.go
+!internal/
+!internal/**
+!web/
+!web/**
+web/node_modules/
+web/dist/
+web/.env
+web/.env.*
+web/*.tsbuildinfo

@@ -1,0 +1,4 @@
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-08-19-projection-cache-per-session-files.md: bc138a5dd59627b9efa19e0af716ff0adc80dcf6
+2026-08-19-projection-cache-per-session-files.zh.md: f8b53c493b0b3da08015a7947f454fb80c165fc6

@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/simplification/2026-06-26-fsspec-style-fs-seam.md
+2026-06-26-fsspec-style-fs-seam.md: 456e0a05cbb117fc4ca1cd962ac5882f0b2e08fd
+2026-06-26-fsspec-style-fs-seam.zh.md: 2a3bc4e9f2a99cd529b70c75ec67ac3bcc9be775

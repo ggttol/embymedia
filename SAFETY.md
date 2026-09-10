@@ -1,27 +1,33 @@
-# Safety
+# EmbyMedia safety
 
 English | [中文](SAFETY.zh.md)
 
-## Experimental status
+## Summary
 
-DeepSeek Harness is experimental developer-preview software. It has not undergone a security audit and must not be treated as secure or production-ready.
+EmbyMedia can mutate external media services. Authentication, target validation, durable outcomes, backups, and operator review address different risks; none substitutes for the others.
 
-The project can execute model-generated code and commands, load third-party plugins, and access the network, processes, credentials, and files made available to it. Incorrect model output, defects, misconfiguration, malicious input, or untrusted plugins may damage the host computer, modify or delete files, disclose data or credentials, or cause other unintended effects.
+## Table of Contents
 
-## Sandbox limitations
+- [Credentials and access](#credentials-and-access)
+- [Destructive work](#destructive-work)
+- [State and recovery](#state-and-recovery)
 
-Sandboxing, approval prompts, and permission controls can reduce risk, but they do not guarantee isolation or prevent damage. Even correctly enforced restrictions cannot protect resources that the project is allowed to access.
+## Credentials and access
 
-Do not rely on DeepSeek Harness as the sole security control for untrusted workloads.
+Keep 115 cookies, Emby keys, CloudDrive tokens, webhook secrets, Agent token plaintext, browser-user databases, and recovery passwords out of commits and logs. Use a separately named Agent token for each installation; shared tokens cannot distinguish callers. Treat browser and provider sessions as secrets.
 
-## Responsible use
+Keep backend listeners on loopback behind the login proxy. Plain HTTP does not encrypt credentials; use a protected network or separately configured TLS when the network is not trusted. Public Agent requests cannot supply their own browser identity, and invalid explicit credentials must fail closed.
 
-- Run the project with the least privileges and access required.
-- Prefer a disposable virtual machine, container, or dedicated environment.
-- Keep backups of files that the project can access.
-- Do not expose sensitive credentials or data unless you accept the risk.
-- Review plugins, configuration, and proposed commands before allowing them to run.
+## Destructive work
 
-## No warranty or liability
+Browser deletion requires the dangerous-action setting and confirmation. MCP deletion binds exact targets to a request, requires one authenticated browser approval within fifteen minutes, and consumes approval once. Agent tokens cannot grant that approval, enable the setting, or call the browser REST delete route. Native Emby deletion requires an authorized Emby administrator device session, not an application API key.
 
-Use DeepSeek Harness at your own risk. The software is provided without warranty under the [MIT License](LICENSE). To the maximum extent permitted by applicable law, the authors and copyright holders are not responsible for damage to computers, loss or disclosure of data, loss of files, or other harm arising from use of the project.
+The explicitly enabled completed-pack replacement task may delete an old root only after verifying a complete replacement and while dangerous actions are enabled. Do not interpret ordinary read/write scope as permission to bypass these checks. Original media identity and generated STRM identity must be revalidated separately.
+
+A task accepted into the queue is not a completed operation. Read terminal results and errors. A restart or partial outcome may leave accepted external effects; inspect provider state before retry rather than replaying blindly. Tool discovery proves only registration.
+
+## State and recovery
+
+Never delete databases, WAL/SHM files, credentials, ignored local state, or original media as part of repository cleanup. Preserve the production SQLite format and the exclusive database-owner lock. STRM output needs its shared Emby ACLs; do not weaken original-media permissions to repair output access.
+
+Use the online backup and isolated restore procedures in [operations](docs/operations.md). A raw live database copy is not a consistent backup, and a restored directory is not authorization to replace production. Keep recovery secrets and independent media backups outside the source repository.

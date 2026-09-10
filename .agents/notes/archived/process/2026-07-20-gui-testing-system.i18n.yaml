@@ -1,0 +1,4 @@
+# Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
+# Update both languages together; see docs/AGENTS.md for the pairing policy.
+2026-07-20-gui-testing-system.md: 6e232911a97cba89561b7266b3f440f52f4b7d61
+2026-07-20-gui-testing-system.zh.md: f6af4d4b8e584d725247ffb339aaf10448efb524
