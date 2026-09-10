@@ -129,7 +129,3 @@ http://host.docker.internal {
 http://emby.gaotao.cc {
 	import emby-media-proxy
 }
-
-http://auth.gaotao.cc {
-	reverse_proxy 127.0.0.1:9091
-}
