@@ -919,7 +919,8 @@ func (d *DB) DeleteToken(id string) (bool, error) {
 	return changed > 0, err
 }
 
-// Audit Logs
+// AddAuditLog stores a redacted record in UTC and assigns its ID.
+// UTC avoids unnamed numeric zones that the SQLite driver cannot decode.
 func (d *DB) AddAuditLog(logEntry *domain.AuditLog) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -929,7 +930,7 @@ func (d *DB) AddAuditLog(logEntry *domain.AuditLog) error {
 	result, err := d.db.Exec(`
 		INSERT INTO agent_audit_logs (caller, token_id, agent_name, action, target, input, output, status, latency_ms, ip, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, logEntry.Caller, logEntry.TokenID, logEntry.AgentName, logEntry.Action, logEntry.Target, logEntry.Input, logEntry.Output, logEntry.Status, logEntry.LatencyMS, logEntry.IP, logEntry.CreatedAt)
+	`, logEntry.Caller, logEntry.TokenID, logEntry.AgentName, logEntry.Action, logEntry.Target, logEntry.Input, logEntry.Output, logEntry.Status, logEntry.LatencyMS, logEntry.IP, logEntry.CreatedAt.UTC())
 	if err != nil {
 		return err
 	}

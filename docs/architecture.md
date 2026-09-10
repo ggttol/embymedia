@@ -18,6 +18,8 @@ EmbyMedia runs media workflows in one Go process and exposes the same service op
 
 [`internal/storage`](../internal/storage) owns monotonic SQLite migrations, settings, accounts, token digests, task attempts, schedules, and audits. The process locks its database before migration and queue recovery. A second HTTP, stdio, or maintenance process cannot share ownership. Use HTTP MCP to share the running instance.
 
+Audit writes normalize timestamps to UTC while preserving nanoseconds. Time filters compare instants and include both endpoints, independent of the server's local timezone.
+
 The deployment runs the application on loopback behind Caddy. The Python HTTP login service owns browser users and signed sessions; Compose owns Emby and CloudDrive2. No Node application server, Cordis plugin loader, SDK runtime, or PostgreSQL instance participates in V2. [Operations](operations.md) owns installed paths and recovery procedures.
 
 ## Persistent work

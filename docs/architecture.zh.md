@@ -18,6 +18,8 @@ EmbyMedia 在一个 Go 进程中执行媒体工作流，并向浏览器与 Agent
 
 [`internal/storage`](../internal/storage) 负责单调递增的 SQLite 迁移、设置、账号、令牌摘要、任务尝试、自动计划及审计。进程在迁移与队列恢复前锁定数据库。第二个 HTTP、stdio 或维护进程不能共享所有权。通过 HTTP MCP 共享运行中的实例。
 
+审计写入将时间统一为 UTC 并保留纳秒精度。时间筛选比较实际时刻且包含起止边界，不依赖服务器的本地时区。
+
 部署将应用置于 Caddy 后方的回环地址。Python HTTP 登录服务负责浏览器用户及签名会话；Compose 负责 Emby 与 CloudDrive2。V2 不运行 Node 应用服务器、Cordis 插件加载器、SDK runtime 或 PostgreSQL 实例。[运维指南](operations.zh.md)负责安装路径与恢复流程。
 
 ## 持久任务
