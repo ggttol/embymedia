@@ -1,4 +1,4 @@
 # Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
 # Update both languages together; see docs/AGENTS.md for the pairing policy.
-2026-08-31-canonical-series-missing-episode-binding.md: 9858e4b409faa1c1d0cb24074a7d812771576a87
-2026-08-31-canonical-series-missing-episode-binding.zh.md: 1b96e885a5bea32ca5d69eb0e8e6471c2b3d4d1a
+2026-08-31-canonical-series-missing-episode-binding.md: 2d97ff8d728f15aa8bfb09ad21269d212a2305d0
+2026-08-31-canonical-series-missing-episode-binding.zh.md: ba565d037825f205316cc8690243220a5e019073

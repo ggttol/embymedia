@@ -74,6 +74,38 @@ func TestAutoFillLeafRequiresItsOwnSeriesAncestry(t *testing.T) {
 	}
 }
 
+func TestSeriesAutoFillAcceptsDirectEpisodesCorroboratedByReleaseYear(t *testing.T) {
+	drive, db := newSnapshotTestDrive(t, "0")
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := ""
+		switch request.URL.Path {
+		case "/files":
+			body = `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"交锋 (2026) [tmdbid=294486]","s":"0"}]}`
+		case "/search":
+			body = `{"links":[{"id":1,"title":"权利交锋 (2026) S01E09","url":"https://115cdn.com/s/e09","password":"t58d"},{"id":2,"title":"交锋 (2026) S01E10","url":"https://115cdn.com/s/e10","password":"t58d"}]}`
+		case "/share/snap":
+			episode := "09"
+			if request.URL.Query().Get("share_code") == "e10" {
+				episode = "10"
+			}
+			name := "交锋.S01E" + episode + ".第" + strings.TrimPrefix(episode, "0") + "集.2160p.WEB-DL.H265.mkv"
+			body = `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"` + name + `"},"list":[{"fid":"episode-` + episode + `","n":"` + name + `","s":1024}]}}`
+		default:
+			t.Errorf("unexpected provider operation: %s", request.URL.Path)
+			return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+	canonical := &domain.EmbyMediaItem{ID: "series", Name: "交锋", OriginalTitle: "交锋", Type: "Series", Path: "/strm-v2/电视剧追更/交锋 (2026) [tmdbid=294486]", ProviderIDs: map[string]string{"Tmdb": "294486"}}
+	result, paths := queue.processAutoFillSeries(context.Background(), domain.EmbyLibrary{Name: "电视剧追更"}, "library-cid",
+		map[episodeKey]struct{}{{Season: 1, Episode: 9}: {}, {Season: 1, Episode: 10}: {}},
+		canonical.ID, canonical.Name, canonical, 1, seriesAutoFillSpec{CandidateLimit: 10})
+	if len(paths) != 0 || result.CandidatesChecked != 2 || strings.Join(result.MatchedEpisodes, ",") != "S01E09,S01E10" || len(result.RemainingEpisodes) != 0 {
+		t.Fatalf("live direct episodes were rejected: result=%+v paths=%v", result, paths)
+	}
+}
+
 func TestAutoFillUsesEmbyOriginalTitleWithoutAcceptingAnotherShow(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")

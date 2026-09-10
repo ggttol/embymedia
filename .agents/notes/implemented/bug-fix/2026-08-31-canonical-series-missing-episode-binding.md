@@ -4,6 +4,8 @@ Status: implemented
 
 English | [中文](2026-08-31-canonical-series-missing-episode-binding.zh.md)
 
+The ordinary single-episode identity rule is partially superseded by [Live share paths own episode title identity](2026-09-10-live-share-path-identity.md).
+
 ## Problem
 
 Visible 115 files or STRM paths prove storage discovery, not that Emby assigned the requested missing episodes to the intended Series. Similar titles, duplicate TMDB identities, and replacement roots can leave the original Series incomplete. A protected share's transient access code cannot be the authority for durable completion.

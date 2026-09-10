@@ -28,7 +28,7 @@ The queue persists pending work and attempt outcomes; schedules create linked ex
 
 A full Emby refresh synchronizes and verifies STRM output before requesting a scan and waits for provider completion. STRM reconciliation preserves original media paths, rejects ambiguous canonical destinations, and requires a readable mount canary before stale generated output is removed. Generated directories retain shared Emby access through filesystem ACLs.
 
-Automatic completion determines candidate usability from live 115 share contents, without filtering by resource-index health labels. Failed inspections identify each resource when gaps remain; a readable share without suitable episodes is an ordinary resource gap. Preview mode transfers no files and reports actual Emby gaps separately from matched resources.
+Automatic completion determines candidate usability from live 115 share contents, without filtering by resource-index health labels. Failed inspections identify each resource when gaps remain; a readable share without suitable episodes is an ordinary resource gap. Preview mode transfers no files and reports actual Emby gaps separately from matched resources. For ordinary episodes, an inspected path must name the canonical or original Series title; candidate and share metadata can corroborate only the canonical year or TMDB ID, so noisy metadata titles cannot override the live path. The [live-path identity decision](../.agents/notes/implemented/bug-fix/2026-09-10-live-share-path-identity.md) defines these evidence roles.
 
 ## Security and media identity
 

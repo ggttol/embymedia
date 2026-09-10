@@ -57,18 +57,24 @@ func autoFillGenericLabel(title string) bool {
 	}
 }
 
-// autoFillIdentityMatches checks each label independently. Callers must also check
-// actual directory/file labels without candidate or share advertisements.
-func autoFillIdentityMatches(series *domain.EmbyMediaItem, labels ...string) bool {
+type autoFillIdentityEvidence struct {
+	matchedTitle  bool
+	matchedID     bool
+	matchedYear   bool
+	canonicalYear int
+}
+
+func collectAutoFillIdentityEvidence(series *domain.EmbyMediaItem, rejectOtherTitles bool, labels ...string) (autoFillIdentityEvidence, bool) {
+	evidence := autoFillIdentityEvidence{}
 	if series == nil {
-		return false
+		return evidence, false
 	}
 	tmdbID := strings.TrimSpace(series.ProviderIDs["Tmdb"])
 	canonical := parseAutoFillLabel(series.Name)
 	originalTitle := parseAutoFillLabel(series.OriginalTitle).title
 	folder := parseAutoFillLabel(filepath.Base(filepath.Clean(series.Path)))
 	if canonical.title == "" {
-		return false
+		return evidence, false
 	}
 	if canonical.year == 0 {
 		canonical.year = folder.year
@@ -79,49 +85,53 @@ func autoFillIdentityMatches(series *domain.EmbyMediaItem, labels ...string) boo
 	if canonical.season == 0 {
 		canonical.season = folder.season
 	}
-	matched, matchedID, matchedYear := false, false, false
+	evidence.canonicalYear = canonical.year
 	season := canonical.season
 	year := canonical.year
 	for _, label := range labels {
 		labelID := false
 		for _, match := range autoFillTMDBPattern.FindAllStringSubmatch(label, -1) {
 			if tmdbID == "" || match[1] != tmdbID {
-				return false
+				return evidence, false
 			}
 			labelID = true
+			evidence.matchedID = true
 		}
 		identity := parseAutoFillLabel(label)
 		if identity.year != 0 {
 			if year != 0 && identity.year != year {
-				return false
+				return evidence, false
 			}
-			matchedYear = true
+			evidence.matchedYear = true
 			year = identity.year
 		}
 		if identity.season != 0 {
 			if season != 0 && identity.season != season {
-				return false
+				return evidence, false
 			}
 			season = identity.season
 		}
-		if !autoFillGenericLabel(identity.title) {
-			if identity.title != canonical.title && identity.title != originalTitle && !labelID {
-				return false
-			}
-			matched = true
+		if autoFillGenericLabel(identity.title) {
+			continue
 		}
-		matchedID = matchedID || labelID
+		if identity.title == canonical.title || identity.title == originalTitle {
+			evidence.matchedTitle = true
+			continue
+		}
+		if !labelID && rejectOtherTitles {
+			return evidence, false
+		}
 	}
-	return matchedID || (matched && canonical.year != 0 && matchedYear)
+	return evidence, true
 }
 
-func autoFillLeafIdentityMatches(series *domain.EmbyMediaItem, leaf autoFillLeaf) bool {
-	labels := make([]string, 0, len(leaf.Ancestors)+1)
-	labels = append(labels, leaf.Ancestors...)
-	labels = append(labels, leaf.Name)
-	if !autoFillIdentityMatches(series, labels...) {
-		return false
-	}
+// autoFillIdentityMatches requires every non-generic label to identify the Series.
+func autoFillIdentityMatches(series *domain.EmbyMediaItem, labels ...string) bool {
+	evidence, agrees := collectAutoFillIdentityEvidence(series, true, labels...)
+	return agrees && (evidence.matchedID || (evidence.matchedTitle && evidence.canonicalYear != 0 && evidence.matchedYear))
+}
+
+func autoFillLeafSeasonMatches(leaf autoFillLeaf) bool {
 	for _, label := range leaf.Ancestors {
 		season := parseAutoFillLabel(label).season
 		if season == 0 {
@@ -134,4 +144,32 @@ func autoFillLeafIdentityMatches(series *domain.EmbyMediaItem, leaf autoFillLeaf
 		}
 	}
 	return true
+}
+
+func autoFillLeafIdentityMatches(series *domain.EmbyMediaItem, leaf autoFillLeaf) bool {
+	labels := make([]string, 0, len(leaf.Ancestors)+1)
+	labels = append(labels, leaf.Ancestors...)
+	labels = append(labels, leaf.Name)
+	return autoFillIdentityMatches(series, labels...) && autoFillLeafSeasonMatches(leaf)
+}
+
+// autoFillEpisodeIdentityMatches requires the inspected path to name the Series;
+// candidate and share titles can only corroborate its release year or TMDB ID.
+func autoFillEpisodeIdentityMatches(series *domain.EmbyMediaItem, candidateTitle, shareTitle string, leaf autoFillLeaf) bool {
+	liveLabels := make([]string, 0, len(leaf.Ancestors)+1)
+	liveLabels = append(liveLabels, leaf.Ancestors...)
+	liveLabels = append(liveLabels, leaf.Name)
+	liveEvidence, liveLabelsAgree := collectAutoFillIdentityEvidence(series, true, liveLabels...)
+	if !liveLabelsAgree || (!liveEvidence.matchedTitle && !liveEvidence.matchedID) {
+		return false
+	}
+
+	allLabels := make([]string, 0, len(liveLabels)+2)
+	allLabels = append(allLabels, candidateTitle, shareTitle)
+	allLabels = append(allLabels, liveLabels...)
+	allEvidence, allLabelsAgree := collectAutoFillIdentityEvidence(series, false, allLabels...)
+	if !allLabelsAgree || (!allEvidence.matchedID && (allEvidence.canonicalYear == 0 || !allEvidence.matchedYear)) {
+		return false
+	}
+	return autoFillLeafSeasonMatches(leaf)
 }

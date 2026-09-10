@@ -468,11 +468,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		selectedNames := make([]string, 0)
 		claimed := make(map[episodeKey]struct{})
 		for _, leaf := range leaves {
-			labels := make([]string, 0, len(leaf.Ancestors)+3)
-			labels = append(labels, candidate.Title, shareTitle)
-			labels = append(labels, leaf.Ancestors...)
-			labels = append(labels, leaf.Name)
-			if !autoFillIdentityMatches(series, labels...) || !autoFillLeafIdentityMatches(series, leaf) {
+			if !autoFillEpisodeIdentityMatches(series, candidate.Title, shareTitle, leaf) {
 				continue
 			}
 			for _, key := range episodeKeysFromName(leaf.Name) {

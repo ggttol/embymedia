@@ -4,6 +4,8 @@ Status: implemented
 
 [English](2026-08-31-canonical-series-missing-episode-binding.md) | 中文
 
+普通单集身份规则已由[实时分享路径拥有剧集标题身份](2026-09-10-live-share-path-identity.zh.md)部分取代。
+
 ## Problem
 
 115 文件或 STRM 路径可见只能证明存储发现，不能证明 Emby 将请求的缺集归入预期 Series。相似标题、重复 TMDB 身份与替代根目录可能让原 Series 仍不完整。受保护分享的临时访问码不能成为持久完成状态的权威。
