@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       lucide-vue-next:
-        specifier: ^0.475.0
-        version: 0.475.0(vue@3.5.42(typescript@5.7.3))
+        specifier: ^1.0.0
+        version: 1.0.0(vue@3.5.42(typescript@5.7.3))
       vue:
         specifier: ^3.5.13
         version: 3.5.42(typescript@5.7.3)
@@ -626,8 +626,8 @@ packages:
   lines-and-columns@1.2.4:
     resolution: {integrity: sha512-7ylylesZQ/PV29jhEDl3Ufjo6ZX7gCqJr5F7PKrqc93v7fzSymt1BpwEU8nAUXs8qzzvqhbjhK5QZg6Mt/HkBg==}
 
-  lucide-vue-next@0.475.0:
-    resolution: {integrity: sha512-xzotVZV7en58Gm3b60YHlxX2YGlFWSN4D5VMMhU/rC9D/pkeRqve21TPMJdHQsdqFdoRthnaB2HrzL0PQXdNeA==}
+  lucide-vue-next@1.0.0:
+    resolution: {integrity: sha512-V6SPvx1IHTj/UY+FrIYWV5faISsPSb8BnWSFDxAtezWKvWc9ZZ40PDrdu1/Qb5vg4lHWr1hs1BAMGVGm6V1Xdg==}
     deprecated: Package deprecated. Please use @lucide/vue instead.
     peerDependencies:
       vue: '>=3.0.1'
@@ -1345,7 +1345,7 @@ snapshots:
 
   lines-and-columns@1.2.4: {}
 
-  lucide-vue-next@0.475.0(vue@3.5.42(typescript@5.7.3)):
+  lucide-vue-next@1.0.0(vue@3.5.42(typescript@5.7.3)):
     dependencies:
       vue: 3.5.42(typescript@5.7.3)
 
