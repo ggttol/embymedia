@@ -49,7 +49,7 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 		case request.URL.Host == "drive.quark.cn" && request.URL.Path == "/1/clouddrive/share/sharepage/token":
 			body = `{"status":200,"data":{"stoken":"stoken"}}`
 		case request.URL.Host == "drive.quark.cn" && request.URL.Path == "/1/clouddrive/share/sharepage/detail":
-			body = `{"status":200,"data":{"list":[{"fid":"shared-folder","pdir_fid":"0","file_name":"Pack","dir":true}]},"metadata":{"_total":1}}`
+			body = `{"status":200,"data":{"list":[{"fid":"shared-folder","pdir_fid":"0","file_name":"Pack","dir":true,"share_fid_token":"save-token"}]},"metadata":{"_total":1}}`
 		case request.URL.Host == "drive.quark.cn" && request.URL.Path == "/1/clouddrive/share/sharepage/save":
 			body = `{"status":200,"data":{"task_id":"save-task"}}`
 		case request.URL.Host == "drive.quark.cn" && request.URL.Path == "/1/clouddrive/task":

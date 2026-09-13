@@ -632,12 +632,13 @@ func (e *PartialBatchError) Unwrap() error { return e.Err }
 
 // ShareEntry is one entry inside a share snapshot.
 type ShareEntry struct {
-	ID       string `json:"id"`
-	ParentID string `json:"parent_id,omitempty"`
-	Revision string `json:"revision,omitempty"`
-	Name     string `json:"name"`
-	Size     int64  `json:"size,omitempty"`
-	IsDir    bool   `json:"is_dir"`
+	ID         string `json:"id"`
+	ParentID   string `json:"parent_id,omitempty"`
+	Revision   string `json:"revision,omitempty"`
+	ShareToken string `json:"-"`
+	Name       string `json:"name"`
+	Size       int64  `json:"size,omitempty"`
+	IsDir      bool   `json:"is_dir"`
 }
 
 var shareURLPattern = regexp.MustCompile(`115(?:cdn)?\.com/s/([A-Za-z0-9]+)`)

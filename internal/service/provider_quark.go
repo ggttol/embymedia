@@ -170,15 +170,16 @@ func (p *ProviderQuark) CheckAccount(ctx context.Context, account *domain.DriveA
 }
 
 type quarkFile struct {
-	FID       any    `json:"fid"`
-	ParentFID any    `json:"pdir_fid"`
-	Name      string `json:"file_name"`
-	Size      any    `json:"size"`
-	FileSize  any    `json:"file_size"`
-	Dir       any    `json:"dir"`
-	UpdatedAt any    `json:"updated_at"`
-	Revision  any    `json:"revision"`
-	SHA1      string `json:"sha1"`
+	FID        any    `json:"fid"`
+	ParentFID  any    `json:"pdir_fid"`
+	Name       string `json:"file_name"`
+	Size       any    `json:"size"`
+	FileSize   any    `json:"file_size"`
+	Dir        any    `json:"dir"`
+	UpdatedAt  any    `json:"updated_at"`
+	Revision   any    `json:"revision"`
+	SHA1       string `json:"sha1"`
+	ShareToken string `json:"share_fid_token"`
 }
 type quarkListData struct {
 	List  []quarkFile `json:"list"`
@@ -426,7 +427,7 @@ func (p *ProviderQuark) shareEntries(ctx context.Context, account *domain.DriveA
 				continue
 			}
 			seen[file.FileID] = struct{}{}
-			entries = append(entries, ShareEntry{ID: file.FileID, Name: file.Name, Size: file.Size, IsDir: file.IsFolder, ParentID: file.ParentID, Revision: file.Revision})
+			entries = append(entries, ShareEntry{ID: file.FileID, Name: file.Name, Size: file.Size, IsDir: file.IsFolder, ParentID: file.ParentID, Revision: file.Revision, ShareToken: item.ShareToken})
 			if len(entries) > quarkMaxEntries {
 				return entries, fmt.Errorf("Quark share contains more than %d entries", quarkMaxEntries)
 			}
@@ -470,13 +471,16 @@ func (p *ProviderQuark) SaveShare(ctx context.Context, account *domain.DriveAcco
 	tokens := make([]string, len(entries))
 	for i := range entries {
 		ids[i] = entries[i].ID
-		tokens[i] = stoken
+		tokens[i] = strings.TrimSpace(entries[i].ShareToken)
+		if tokens[i] == "" {
+			return SavedShare{}, fmt.Errorf("Quark share entry %s did not include a save token", entries[i].ID)
+		}
 	}
 	var saved struct {
 		TaskID any      `json:"task_id"`
 		FIDs   []string `json:"fids"`
 	}
-	if err := p.request(ctx, account, http.MethodPost, "/share/sharepage/save", url.Values{"pr": {"ucpro"}, "fr": {"pc"}}, map[string]any{"fid_list": ids, "fid_token_list": tokens, "to_pdir_fid": parent, "pwd_id": shareID, "stoken": stoken, "pdir_fid": "0", "scene": "link"}, &saved); err != nil {
+	if err := p.request(ctx, account, http.MethodPost, "/share/sharepage/save", url.Values{"pr": {"ucpro"}, "fr": {"pc"}}, map[string]any{"fid_list": ids, "fid_token_list": tokens, "share_fid_token_list": tokens, "to_pdir_fid": parent, "pwd_id": shareID, "stoken": stoken, "pdir_fid": "0", "scene": "link"}, &saved); err != nil {
 		return SavedShare{}, err
 	}
 	rootIDs := append([]string(nil), saved.FIDs...)

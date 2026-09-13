@@ -35,8 +35,12 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 		case "/share/sharepage/token":
 			_, _ = io.WriteString(response, `{"status":200,"data":{"stoken":"secret-stoken"}}`)
 		case "/share/sharepage/detail":
-			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"shared","pdir_fid":"0","file_name":"shared.mkv","file_size":"4","dir":false,"revision":"share-rev"}]},"metadata":{"_total":1}}`)
+			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"shared","pdir_fid":"0","file_name":"shared.mkv","file_size":"4","dir":false,"revision":"share-rev","share_fid_token":"save-token"}]},"metadata":{"_total":1}}`)
 		case "/share/sharepage/save":
+			payload, _ := io.ReadAll(request.Body)
+			if !strings.Contains(string(payload), `"fid_token_list":["save-token"]`) || !strings.Contains(string(payload), `"share_fid_token_list":["save-token"]`) {
+				t.Fatalf("save request omitted share token: %s", payload)
+			}
 			_, _ = io.WriteString(response, `{"status":200,"data":{"task_id":"task"}}`)
 		case "/task":
 			_, _ = io.WriteString(response, `{"status":200,"data":{"status":2,"save_as":{"save_as_top_fids":["saved-root"]}}}`)
