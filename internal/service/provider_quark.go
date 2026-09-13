@@ -95,6 +95,10 @@ func (p *ProviderQuark) request(ctx context.Context, account *domain.DriveAccoun
 }
 
 func (p *ProviderQuark) requestAt(ctx context.Context, baseURL string, account *domain.DriveAccount, method, path string, query url.Values, body any, target any) error {
+	return p.requestWith(ctx, p.client, baseURL, account, method, path, query, body, target)
+}
+
+func (p *ProviderQuark) requestWith(ctx context.Context, client *http.Client, baseURL string, account *domain.DriveAccount, method, path string, query url.Values, body any, target any) error {
 	if strings.TrimSpace(account.Cookie) == "" {
 		return fmt.Errorf("quark account cookie is empty")
 	}
@@ -122,7 +126,7 @@ func (p *ProviderQuark) requestAt(ctx context.Context, baseURL string, account *
 		if body != nil {
 			request.Header.Set("Content-Type", "application/json")
 		}
-		response, err := p.client.Do(request)
+		response, err := client.Do(request)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -632,7 +636,17 @@ func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAc
 		DownloadURL string `json:"download_url"`
 		URL         string `json:"url"`
 	}
-	if err := p.requestAt(ctx, p.downloadBaseURL, account, http.MethodPost, "/file/download", url.Values{"pr": {"ucpro"}, "fr": {"pc"}, "sys": {"win32"}, "ve": {"2.5.56"}, "ut": {""}, "guid": {""}}, map[string]any{"fids": []string{id}}, &data); err != nil {
+	// When a proxy is configured, the download-URL request must use the same
+	// egress as the CDN fetch: signed URLs are bound to the requesting IP.
+	requestClient := p.client
+	if p.proxyURL != nil && strings.TrimSpace(p.proxyURL()) != "" {
+		proxyClient, err := p.downloadHTTPClient()
+		if err != nil {
+			return "", err
+		}
+		requestClient = proxyClient
+	}
+	if err := p.requestWith(ctx, requestClient, p.downloadBaseURL, account, http.MethodPost, "/file/download", url.Values{"pr": {"ucpro"}, "fr": {"pc"}, "sys": {"win32"}, "ve": {"2.5.56"}, "ut": {""}, "guid": {""}}, map[string]any{"fids": []string{id}}, &data); err != nil {
 		return "", err
 	}
 	if len(data) != 1 {
