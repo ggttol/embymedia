@@ -114,7 +114,7 @@ func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
 			} else {
 				body = `{"status":200,"data":{"list":[{"fid":"source","pdir_fid":"saved-folder","file_name":"movie.mkv","file_size":"` + strconv.Itoa(len(content)) + `","dir":false,"revision":"rev","sha1":"` + fullSHA + `"}]},"metadata":{"_total":1}}`
 			}
-		case request.URL.Host == "drive.quark.cn" && request.URL.Path == "/1/clouddrive/file/download":
+		case request.URL.Host == "drive-pc.quark.cn" && request.URL.Path == "/1/clouddrive/file/download":
 			body = `{"status":200,"data":[{"download_url":"https://signed.test/file"}]}`
 		case request.URL.Host == "signed.test":
 			if request.Header.Get("Range") != "bytes=16777216-" {

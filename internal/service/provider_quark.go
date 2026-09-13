@@ -22,13 +22,14 @@ const (
 )
 
 type ProviderQuark struct {
-	client  *http.Client
-	baseURL string
-	sleep   func(context.Context, time.Duration) error
+	client          *http.Client
+	baseURL         string
+	downloadBaseURL string
+	sleep           func(context.Context, time.Duration) error
 }
 
 func NewProviderQuark(client *http.Client) *ProviderQuark {
-	return &ProviderQuark{client: client, baseURL: quarkDefaultBaseURL, sleep: sleepContext}
+	return &ProviderQuark{client: client, baseURL: quarkDefaultBaseURL, downloadBaseURL: "https://drive-pc.quark.cn/1/clouddrive", sleep: sleepContext}
 }
 
 func sleepContext(ctx context.Context, duration time.Duration) error {
@@ -86,10 +87,14 @@ func quarkAccepted(envelope quarkEnvelope) bool {
 }
 
 func (p *ProviderQuark) request(ctx context.Context, account *domain.DriveAccount, method, path string, query url.Values, body any, target any) error {
+	return p.requestAt(ctx, p.baseURL, account, method, path, query, body, target)
+}
+
+func (p *ProviderQuark) requestAt(ctx context.Context, baseURL string, account *domain.DriveAccount, method, path string, query url.Values, body any, target any) error {
 	if strings.TrimSpace(account.Cookie) == "" {
 		return fmt.Errorf("quark account cookie is empty")
 	}
-	endpoint := strings.TrimRight(p.baseURL, "/") + path
+	endpoint := strings.TrimRight(baseURL, "/") + path
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}
@@ -541,7 +546,7 @@ func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAc
 		DownloadURL string `json:"download_url"`
 		URL         string `json:"url"`
 	}
-	if err := p.request(ctx, account, http.MethodPost, "/file/download", url.Values{"pr": {"ucpro"}, "fr": {"pc"}}, map[string]any{"fids": []string{id}}, &data); err != nil {
+	if err := p.requestAt(ctx, p.downloadBaseURL, account, http.MethodPost, "/file/download", url.Values{"pr": {"ucpro"}, "fr": {"pc"}, "sys": {"win32"}, "ve": {"2.5.56"}, "ut": {""}, "guid": {""}}, map[string]any{"fids": []string{id}}, &data); err != nil {
 		return "", err
 	}
 	if len(data) != 1 {

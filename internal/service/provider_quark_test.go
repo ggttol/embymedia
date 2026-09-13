@@ -65,6 +65,7 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 
 	provider := NewProviderQuark(server.Client())
 	provider.baseURL = server.URL
+	provider.downloadBaseURL = server.URL
 	provider.sleep = func(context.Context, time.Duration) error { return nil }
 	account := &domain.DriveAccount{ID: "quark", Type: "quark", Cookie: "quark-cookie"}
 	files, total, err := provider.ListFiles(context.Background(), account, "0", 0, 100)

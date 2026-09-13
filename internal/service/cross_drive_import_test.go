@@ -63,7 +63,7 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 			} else {
 				t.Fatalf("unexpected Quark parent %q", parent)
 			}
-		case request.URL.Host == "drive.quark.cn" && request.URL.Path == "/1/clouddrive/file/download":
+		case request.URL.Host == "drive-pc.quark.cn" && request.URL.Path == "/1/clouddrive/file/download":
 			body = `{"status":200,"data":[{"download_url":"https://signed.test/file"}]}`
 		case request.URL.Host == "signed.test":
 			body = content
