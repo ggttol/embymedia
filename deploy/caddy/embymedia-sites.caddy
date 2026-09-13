@@ -1,0 +1,20 @@
+# CloudDrive2 container-local sender. Only the webhook path is reachable on
+# this authority; all other requests fail closed.
+http://host.docker.internal {
+	@webhook path /hooks/clouddrive2
+	handle @webhook {
+		route {
+			request_header X-Webhook-Secret {query.key}
+			request_header Content-Type application/json
+			rewrite * {path}?
+			reverse_proxy 127.0.0.1:3080
+		}
+	}
+	handle {
+		respond 404
+	}
+}
+
+http://emby.gaotao.cc {
+	import embymedia-media-proxy
+}

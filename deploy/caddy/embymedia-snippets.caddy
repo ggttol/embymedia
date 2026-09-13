@@ -1,0 +1,10 @@
+(embymedia-media-proxy) {
+	@embyDeletion expression `(method('GET') && path_regexp('(?i)^/(emby/)?Items/[^/]+/DeleteInfo/?$')) || (method('DELETE') && path_regexp('(?i)^/(emby/)?Items(/[^/]+)?/?$')) || (method('POST') && path_regexp('(?i)^/(emby/)?Items(/[^/]+)?/Delete/?$'))`
+	handle @embyDeletion {
+		rewrite * /internal/emby-delete{uri}
+		reverse_proxy 127.0.0.1:3080
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8096
+	}
+}

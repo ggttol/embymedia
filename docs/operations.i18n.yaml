@@ -1,4 +1,4 @@
 # Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
 # Update both languages together; see docs/AGENTS.md for the pairing policy.
-operations.md: 1f72b37064f5b4c5d3609d595516f3b6094ba981
-operations.zh.md: 966405fc49e54a81a44447a732315f22589e76b2
+operations.md: 934ac8b0a3adc0158aba6d09a4e6fc10407e54f3
+operations.zh.md: 53b333bb8d2205708d01c5c590619dd0f8fc0286

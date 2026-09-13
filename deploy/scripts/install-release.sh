@@ -162,7 +162,7 @@ chmod -R a+rX "$release/deploy"
 for file in "$release"/deploy/systemd/*.service "$release"/deploy/systemd/*.timer; do
   printf '/etc/systemd/system/%s\n' "$(basename "$file")" >> "$state/configs"
 done
-printf '%s\n' /etc/caddy/Caddyfile /etc/systemd/system/caddy.service.d/embymedia-login.conf /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md /srv/embymedia/data/clouddrive/config/webhooks/webhook.toml >> "$state/configs"
+printf '%s\n' /etc/caddy/snippets/embymedia.caddy /etc/caddy/routes/embymedia.caddy /etc/caddy/sites/embymedia.caddy /etc/systemd/system/caddy.service.d/embymedia-login.conf /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md /srv/embymedia/data/clouddrive/config/webhooks/webhook.toml >> "$state/configs"
 printf '%s\n' /etc/embymedia/stack.env >> "$state/configs"
 while IFS= read -r destination; do
   if [ -e "$destination" ] || [ -L "$destination" ]; then
@@ -242,9 +242,12 @@ activated=1
 mv -Tf "$current.next" "$current"
 
 install -o root -g root -m 0644 "$release"/deploy/systemd/*.service "$release"/deploy/systemd/*.timer /etc/systemd/system/
-install -o root -g root -m 0644 "$release/deploy/caddy/Caddyfile" /etc/caddy/Caddyfile
-install -o root -g root -m 0755 -d /etc/systemd/system/caddy.service.d
+install -o root -g root -m 0755 -d /etc/caddy/snippets /etc/caddy/routes /etc/caddy/sites /etc/systemd/system/caddy.service.d
+install -o root -g root -m 0644 "$release/deploy/caddy/embymedia-snippets.caddy" /etc/caddy/snippets/embymedia.caddy
+install -o root -g root -m 0644 "$release/deploy/caddy/embymedia-routes.caddy" /etc/caddy/routes/embymedia.caddy
+install -o root -g root -m 0644 "$release/deploy/caddy/embymedia-sites.caddy" /etc/caddy/sites/embymedia.caddy
 install -o root -g root -m 0644 "$release/deploy/caddy/embymedia-login.conf" /etc/systemd/system/caddy.service.d/embymedia-login.conf
+caddy validate --config /etc/caddy/Caddyfile
 skill_source="$release/deploy/hermes/skills/embymedia-v2-operator/SKILL.md"
 install -o gaotao -g gaotao -m 0755 -d /home/gaotao/.hermes/skills/embymedia-v2-operator
 install -o gaotao -g gaotao -m 0644 "$skill_source" /home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md

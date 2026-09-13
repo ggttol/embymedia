@@ -22,7 +22,11 @@ fi
 
 install -o root -g root -m 0755 -d /opt/embymedia-v2 /opt/embymedia-v2/releases /etc/embymedia
 install -o root -g embymedia -m 0750 -d /etc/embymedia/secrets
+install -o root -g root -m 0755 -d /etc/caddy/snippets /etc/caddy/routes /etc/caddy/sites
 install -o root -g root -m 0644 "$repo/deploy/caddy/Caddyfile" /etc/caddy/Caddyfile
+install -o root -g root -m 0644 "$repo/deploy/caddy/embymedia-snippets.caddy" /etc/caddy/snippets/embymedia.caddy
+install -o root -g root -m 0644 "$repo/deploy/caddy/embymedia-routes.caddy" /etc/caddy/routes/embymedia.caddy
+install -o root -g root -m 0644 "$repo/deploy/caddy/embymedia-sites.caddy" /etc/caddy/sites/embymedia.caddy
 install -o root -g root -m 0644 "$repo/deploy/nftables.conf" /etc/nftables.conf
 nft --check --file /etc/nftables.conf
 install -o root -g root -m 0644 "$repo"/deploy/systemd/*.service "$repo"/deploy/systemd/*.timer /etc/systemd/system/ 2>/dev/null || true

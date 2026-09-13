@@ -39,6 +39,9 @@ elif command == 'flock':
     pass
 elif command == 'setfacl':
     pass
+elif command == 'caddy':
+    assert args[:2] == ['validate', '--config'], args
+    assert p(args[2]).is_file(), args
 elif command == 'sleep':
     pass
 elif command == 'timeout':
@@ -177,7 +180,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         shim = self.fake_bin / 'shim'
         shim.write_text(f'#!{sys.executable}\n' + MOCK)
         shim.chmod(0o755)
-        for name in ('id', 'flock', 'setfacl', 'sleep', 'timeout', 'findmnt', 'umount', 'docker', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'restic'):
+        for name in ('id', 'flock', 'setfacl', 'sleep', 'timeout', 'findmnt', 'umount', 'docker', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'caddy', 'restic'):
             (self.fake_bin / name).symlink_to(shim)
         self.env['PATH'] = str(self.fake_bin) + os.pathsep + os.environ['PATH']
         self.source = self.root / 'source'
@@ -198,10 +201,18 @@ class DeploymentScriptsTest(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('old ' + file.name)
             self.initial_configs[target] = target.read_bytes()
-        for filename in ('etc/caddy/Caddyfile', 'etc/systemd/system/caddy.service.d/embymedia-login.conf', 'home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md'):
+        for filename in (
+            'etc/caddy/Caddyfile',
+            'etc/caddy/routes/tg-resource.caddy',
+            'etc/caddy/snippets/embymedia.caddy',
+            'etc/caddy/routes/embymedia.caddy',
+            'etc/caddy/sites/embymedia.caddy',
+            'etc/systemd/system/caddy.service.d/embymedia-login.conf',
+            'home/gaotao/.hermes/skills/embymedia-v2-operator/SKILL.md',
+        ):
             target = self.root / filename
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text('old configuration')
+            target.write_text('old configuration for ' + filename)
             self.initial_configs[target] = target.read_bytes()
         stack_env = self.root / 'etc/embymedia/stack.env'
         stack_env.parent.mkdir(parents=True, exist_ok=True)
@@ -284,6 +295,17 @@ class DeploymentScriptsTest(unittest.TestCase):
         commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
         self.assertTrue(any(command[:3] == ['systemctl', 'reload', 'caddy.service'] for command in commands))
         self.assertFalse(any(command[:3] == ['systemctl', 'restart', 'caddy.service'] for command in commands))
+
+    def test_shared_caddy_root_and_resource_route_are_not_replaced(self):
+        root = self.root / 'etc/caddy/Caddyfile'
+        resource = self.root / 'etc/caddy/routes/tg-resource.caddy'
+        root_before = root.read_bytes()
+        resource_before = resource.read_bytes()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(root.read_bytes(), root_before)
+        self.assertEqual(resource.read_bytes(), resource_before)
+        self.assertEqual((self.root / 'etc/caddy/routes/embymedia.caddy').read_text(), (self.source / 'deploy/caddy/embymedia-routes.caddy').read_text())
 
     def test_unchanged_webhook_configuration_is_not_replaced(self):
         webhook = self.login.parent.parent / 'clouddrive/config/webhooks/webhook.toml'

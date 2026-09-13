@@ -1,0 +1,57 @@
+# NPS preserves the external port in Host while mapping these authorities to
+# the shared Caddy HTTP listener.
+@app header Host gaotao.cc:3080
+handle @app {
+	@internal path /internal/*
+	respond @internal 404
+
+	@agent {
+		path /mcp /api/v1/*
+		expression `{http.request.header.X-Agent-Token} != "" || {http.request.header.Authorization} != ""`
+	}
+	handle @agent {
+		header {
+			Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+			Referrer-Policy no-referrer
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+		}
+		reverse_proxy 127.0.0.1:3080 {
+			header_up -Remote-User
+			header_up -Remote-Role
+			header_up -Sec-Fetch-Site
+		}
+	}
+
+	@login path /login /logout /auth/*
+	handle @login {
+		reverse_proxy 127.0.0.1:9092 {
+			header_up -X-Forwarded-For
+			header_up X-Real-IP {http.request.remote.host}
+		}
+	}
+
+	handle {
+		forward_auth 127.0.0.1:9092 {
+			uri /auth/check
+			copy_headers Remote-User Remote-Role
+		}
+		header {
+			Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+			Referrer-Policy no-referrer
+			X-Content-Type-Options nosniff
+			X-Frame-Options DENY
+		}
+		reverse_proxy 127.0.0.1:3080
+	}
+}
+
+@emby header Host gaotao.cc:8096
+handle @emby {
+	import embymedia-media-proxy
+}
+
+@clouddrive header Host gaotao.cc:19798
+handle @clouddrive {
+	reverse_proxy 127.0.0.1:19798
+}

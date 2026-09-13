@@ -2,130 +2,16 @@
 	admin 127.0.0.1:2019
 }
 
-(emby-media-proxy) {
-	@embyDeletion expression `(method('GET') && path_regexp('(?i)^/(emby/)?Items/[^/]+/DeleteInfo/?$')) || (method('DELETE') && path_regexp('(?i)^/(emby/)?Items(/[^/]+)?/?$')) || (method('POST') && path_regexp('(?i)^/(emby/)?Items(/[^/]+)?/Delete/?$'))`
-	handle @embyDeletion {
-		rewrite * /internal/emby-delete{uri}
-		reverse_proxy 127.0.0.1:3080
-	}
-	handle {
-		reverse_proxy 127.0.0.1:8096
-	}
-}
+# Shared host configuration. Each application owns only its files below these
+# directories; release installers must not replace this root file.
+import /etc/caddy/snippets/*.caddy
 
-# Self-use HTTP mode (no TLS or ACME); browser authentication uses HTTP login.
-# The http:// scheme forces Caddy to serve plain HTTP (no automatic HTTPS).
-# The webhook bridge converts the configured query key to X-Webhook-Secret so
-# CloudDrive2 can authenticate its event delivery to the standalone service.
-# For the operator's own use over the loopback/tunnel; not public-facing.
-
-
-# NPS maps gaotao.cc:3080/8096/8100/19798 to Debian port 80. Preserve the
-# original Host header so one Caddy listener can route each external port while
-# application services stay loopback-only.
 http://gaotao.cc {
-	@app header Host gaotao.cc:3080
-	handle @app {
-		@internal path /internal/*
-		respond @internal 404
-	@agent {
-		path /mcp /api/v1/*
-		expression `{http.request.header.X-Agent-Token} != "" || {http.request.header.Authorization} != ""`
-	}
-	handle @agent {
-		header {
-			Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
-			Referrer-Policy no-referrer
-			X-Content-Type-Options nosniff
-			X-Frame-Options DENY
-		}
-		reverse_proxy 127.0.0.1:3080 {
-			header_up -Remote-User
-			header_up -Remote-Role
-			header_up -Sec-Fetch-Site
-		}
-	}
-
-
-		@login path /login /logout /auth/*
-		handle @login {
-			reverse_proxy 127.0.0.1:9092 {
-				header_up -X-Forwarded-For
-				header_up X-Real-IP {http.request.remote.host}
-			}
-		}
-
-		handle {
-			forward_auth 127.0.0.1:9092 {
-				uri /auth/check
-				copy_headers Remote-User Remote-Role
-			}
-			header {
-				Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
-				Referrer-Policy no-referrer
-				X-Content-Type-Options nosniff
-				X-Frame-Options DENY
-			}
-			reverse_proxy 127.0.0.1:3080
-		}
-	}
-
-	@emby header Host gaotao.cc:8096
-	handle @emby {
-		import emby-media-proxy
-	}
-
-	@clouddrive header Host gaotao.cc:19798
-	handle @clouddrive {
-		reverse_proxy 127.0.0.1:19798
-	}
-
-	@resource header Host gaotao.cc:8100
-	handle @resource {
-		@resource_private path /api/v1/auth /api/v1/auth/* /api/v1/me /api/v1/me/* /api/admin/*
-		handle @resource_private {
-			respond 403
-		}
-
-		@resource_api path /api/* /search /stats /channels /sources /admin/refresh/status /admin/refresh /admin/refresh/stop /admin/api/stats /admin/sources /admin/sources/refresh /admin/runs/latest/channels
-		handle @resource_api {
-			reverse_proxy 127.0.0.1:18080
-		}
-
-		@resource_admin_channel path_regexp resourceAdminChannel ^/admin/channels/[^/]+/(enable|disable|refresh)$
-		handle @resource_admin_channel {
-			reverse_proxy 127.0.0.1:18080
-		}
-
-		handle {
-			root * /var/www/tg-resource/dist
-			try_files {path} {path}/ /index.html
-			file_server
-		}
-	}
+	import /etc/caddy/routes/*.caddy
 
 	handle {
 		respond 404
 	}
 }
 
-# CloudDrive2 container-local sender. Only the webhook path is reachable on
-# this authority; all other requests fail closed.
-http://host.docker.internal {
-	@webhook path /hooks/clouddrive2
-	handle @webhook {
-		route {
-			request_header X-Webhook-Secret {query.key}
-			request_header Content-Type application/json
-			rewrite * {path}?
-			reverse_proxy 127.0.0.1:3080
-		}
-	}
-	handle {
-		respond 404
-	}
-}
-
-http://emby.gaotao.cc {
-	import emby-media-proxy
-}
+import /etc/caddy/sites/*.caddy

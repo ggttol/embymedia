@@ -27,7 +27,7 @@ sudo deploy/scripts/install-release.sh "$PWD" RELEASE_ID
 
 将 `RELEASE_ID` 替换为尚不存在的新 release 名称。安装器校验 artifact、检查数据库并原子切换 `current`。它在停止 V2 前最多等待一小时让运行中的后台工作结束；等待超时会保持当前 release 可用。`EMBYMEDIA_DEPLOY_FORCE=1` 改为取消该工作，仅适用于明确接受中断的情况。等待中的任务持久保留；中断的有副作用尝试必须先检查再重试。
 
-release 安装保留 webhook 启用选择、浏览器登录、生成的 STRM 根目录与回滚跟踪配置。Caddy 配置变更使用验证后的 reload，而非例行重启；systemd override 阻止日志枚举环境变量。artifact 构建、源码清理与 CI 均不执行部署。
+release 安装保留 webhook 启用选择、浏览器登录、生成的 STRM 根目录与回滚跟踪配置。共享的 `/etc/caddy/Caddyfile` 及其他应用的路由片段由主机管理；EmbyMedia release 只更新 `/etc/caddy/snippets/embymedia.caddy`、`/etc/caddy/routes/embymedia.caddy` 与 `/etc/caddy/sites/embymedia.caddy`，验证完整配置后再 reload Caddy。systemd override 阻止日志枚举环境变量。artifact 构建、源码清理与 CI 均不执行部署。
 
 夸克到 115 导入先保存到所选夸克目录，再逐文件写入中转区，并在默认 115 账号的固定 `/emby/_待整理` 目录完成验证上传。`transfer_temp_dir` 默认为 `/srv/embymedia/data/transfers`；`transfer_min_free_bytes` 默认为 10 GiB，且可用空间还必须容纳当前文件。配置 115 开放平台 token 时使用原生秒传或分片上传；没有 token 时，将 `clouddrive_c115_account_id` 设为对应托管账号，且可写 CloudDrive2 挂载必须映射 `/115open/emby`。导入器先写任务拥有的暂存文件，`fsync` 后发布，再通过 115 核对最终父目录、名称、大小与 SHA-1，确认后才删除中转文件。中转区应位于持久且私有的存储上，使中断工作可在重启后协调恢复。
 
