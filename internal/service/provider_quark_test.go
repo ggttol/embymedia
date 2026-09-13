@@ -14,6 +14,7 @@ import (
 
 func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 	var signedRequests int
+	savedVisible := false
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/signed" {
@@ -24,7 +25,19 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 		}
 		switch request.URL.Path {
 		case "/file/sort":
-			if request.URL.Query().Get("_fetch_total") != "1" || request.URL.Query().Get("pdir_fid") != "0" {
+			parent := request.URL.Query().Get("pdir_fid")
+			if request.URL.Query().Get("_fetch_total") != "1" {
+				t.Fatalf("unexpected list query: %s", request.URL.RawQuery)
+			}
+			if parent == "folder" {
+				if savedVisible {
+					_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"saved-root","pdir_fid":"folder","file_name":"shared.mkv","file_size":"4","dir":false}]},"metadata":{"_total":1}}`)
+				} else {
+					_, _ = io.WriteString(response, `{"status":200,"data":{"list":[]},"metadata":{"_total":0}}`)
+				}
+				break
+			}
+			if parent != "0" {
 				t.Fatalf("unexpected list query: %s", request.URL.RawQuery)
 			}
 			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"folder","pdir_fid":"0","file_name":"Series","dir":true},{"fid":"file","pdir_fid":"0","file_name":"episode.mkv","file_size":"4","dir":false,"revision":"rev-1","sha1":"abcd"}]},"metadata":{"_total":2}}`)
@@ -43,6 +56,7 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 			}
 			_, _ = io.WriteString(response, `{"status":200,"data":{"task_id":"task"}}`)
 		case "/task":
+			savedVisible = true
 			_, _ = io.WriteString(response, `{"status":200,"data":{"status":2,"save_as":{"save_as_top_fids":["saved-root"]}}}`)
 		case "/file/download":
 			_, _ = io.WriteString(response, `{"status":200,"data":[{"download_url":"`+server.URL+`/signed"}]}`)
@@ -117,5 +131,15 @@ func TestQuarkProviderRejectsForeignParentAndLeakedShareErrors(t *testing.T) {
 	}
 	if _, err := provider.SnapshotShare(context.Background(), account, "https://pan.quark.cn/s/id", "secret-password"); err == nil || strings.Contains(err.Error(), "secret-password") {
 		t.Fatalf("unsafe share error: %v", err)
+	}
+}
+
+func TestResolveQuarkSavedRootsUsesNewDestinationIdentity(t *testing.T) {
+	entries := []ShareEntry{{ID: "source", Name: "old.txt", Size: 42}}
+	before := []domain.DriveFile{{FileID: "existing", Name: "other.txt", Size: 42}}
+	after := append(before, domain.DriveFile{FileID: "destination", Name: "old.txt", Size: 42})
+	ids, err := resolveQuarkSavedRoots(entries, before, after, []string{"source"})
+	if err != nil || len(ids) != 1 || ids[0] != "destination" {
+		t.Fatalf("resolved roots = %v, err=%v", ids, err)
 	}
 }

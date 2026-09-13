@@ -457,6 +457,64 @@ func (p *ProviderQuark) SnapshotShare(ctx context.Context, account *domain.Drive
 	}
 	return ShareSnapshot{Entries: entries}, nil
 }
+
+func (p *ProviderQuark) listDirectoryAll(ctx context.Context, account *domain.DriveAccount, parent string) ([]domain.DriveFile, error) {
+	files := make([]domain.DriveFile, 0)
+	for offset := 0; offset < quarkMaxEntries; offset += 200 {
+		page, total, err := p.ListFiles(ctx, account, parent, offset, 200)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, page...)
+		if len(page) == 0 || int64(offset+len(page)) >= total {
+			return files, nil
+		}
+	}
+	return nil, fmt.Errorf("Quark directory contains more than %d entries", quarkMaxEntries)
+}
+
+func resolveQuarkSavedRoots(entries []ShareEntry, before, after []domain.DriveFile, providerIDs []string) ([]string, error) {
+	afterByID := make(map[string]domain.DriveFile, len(after))
+	for _, file := range after {
+		afterByID[file.FileID] = file
+	}
+	if len(providerIDs) == len(entries) {
+		valid := true
+		for index, id := range providerIDs {
+			file, present := afterByID[id]
+			entry := entries[index]
+			if !present || file.Name != entry.Name || file.IsFolder != entry.IsDir || (!entry.IsDir && file.Size != entry.Size) {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return providerIDs, nil
+		}
+	}
+	beforeIDs := make(map[string]struct{}, len(before))
+	for _, file := range before {
+		beforeIDs[file.FileID] = struct{}{}
+	}
+	resolved := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		matches := make([]string, 0, 1)
+		for _, file := range after {
+			if _, existed := beforeIDs[file.FileID]; existed {
+				continue
+			}
+			if file.Name == entry.Name && file.IsFolder == entry.IsDir && (entry.IsDir || file.Size == entry.Size) {
+				matches = append(matches, file.FileID)
+			}
+		}
+		if len(matches) != 1 {
+			return nil, fmt.Errorf("Quark saved object %q could not be identified unambiguously in the target directory", entry.Name)
+		}
+		resolved = append(resolved, matches[0])
+	}
+	return resolved, nil
+}
+
 func (p *ProviderQuark) SaveShare(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string) (SavedShare, error) {
 	shareID, stoken, err := p.shareToken(ctx, account, rawURL, password)
 	if err != nil {
@@ -471,6 +529,10 @@ func (p *ProviderQuark) SaveShare(ctx context.Context, account *domain.DriveAcco
 	}
 	if parent == "" {
 		parent = "0"
+	}
+	before, err := p.listDirectoryAll(ctx, account, parent)
+	if err != nil {
+		return SavedShare{}, fmt.Errorf("list Quark target before share save: %w", err)
 	}
 	ids := make([]string, len(entries))
 	tokens := make([]string, len(entries))
@@ -489,17 +551,29 @@ func (p *ProviderQuark) SaveShare(ctx context.Context, account *domain.DriveAcco
 		return SavedShare{}, err
 	}
 	rootIDs := append([]string(nil), saved.FIDs...)
-	taskID := quarkScalar(saved.TaskID)
-	if len(rootIDs) == 0 && taskID != "" {
+	if taskID := quarkScalar(saved.TaskID); len(rootIDs) == 0 && taskID != "" {
 		rootIDs, err = p.waitTask(ctx, account, taskID)
 		if err != nil {
 			return SavedShare{}, err
 		}
 	}
-	if len(rootIDs) == 0 {
-		return SavedShare{}, fmt.Errorf("Quark share save completed without stable root IDs")
+	for attempt := 0; attempt < 30; attempt++ {
+		after, listErr := p.listDirectoryAll(ctx, account, parent)
+		if listErr != nil {
+			return SavedShare{}, fmt.Errorf("list Quark target after share save: %w", listErr)
+		}
+		resolved, resolveErr := resolveQuarkSavedRoots(entries, before, after, rootIDs)
+		if resolveErr == nil {
+			return SavedShare{RootIDs: resolved, Count: len(resolved)}, nil
+		}
+		if attempt == 29 {
+			return SavedShare{}, resolveErr
+		}
+		if err := p.sleep(ctx, time.Second); err != nil {
+			return SavedShare{}, err
+		}
 	}
-	return SavedShare{RootIDs: rootIDs, Count: len(rootIDs)}, nil
+	return SavedShare{}, fmt.Errorf("Quark saved objects did not appear in the target directory")
 }
 func (p *ProviderQuark) waitTask(ctx context.Context, account *domain.DriveAccount, taskID string) ([]string, error) {
 	for attempt := 0; attempt < 120; attempt++ {
