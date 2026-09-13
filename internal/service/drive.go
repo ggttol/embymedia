@@ -43,6 +43,7 @@ func NewDriveService(db *storage.DB, resourceURL, resourceToken string) *DriveSe
 		},
 	}
 	service.quark = NewProviderQuark(service.client)
+	service.quark.proxyURL = func() string { proxyURL, _ := db.GetSetting("quark_download_proxy"); return proxyURL }
 	service.providers = map[string]DriveProvider{
 		"115":   &Provider115{service: service},
 		"quark": service.quark,

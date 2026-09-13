@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -26,6 +28,7 @@ type ProviderQuark struct {
 	client          *http.Client
 	baseURL         string
 	downloadBaseURL string
+	proxyURL        func() string
 	sleep           func(context.Context, time.Duration) error
 }
 
@@ -645,9 +648,59 @@ func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAc
 	}
 	return signed, nil
 }
+
+func (p *ProviderQuark) downloadHTTPClient() (*http.Client, error) {
+	if p.proxyURL == nil {
+		return &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect}, nil
+	}
+	proxySetting := strings.TrimSpace(p.proxyURL())
+	if proxySetting == "" {
+		return &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect}, nil
+	}
+	parsed, err := url.Parse(proxySetting)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "socks5") {
+		return nil, fmt.Errorf("quark_download_proxy must be an HTTP or SOCKS5 URL")
+	}
+	var transport http.RoundTripper
+	if parsed.Scheme == "socks5" {
+		dialer, err := proxyFromURL(parsed)
+		if err != nil {
+			return nil, fmt.Errorf("parse Quark download SOCKS proxy: %w", err)
+		}
+		base := p.client.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		clone := base.(*http.Transport).Clone()
+		clone.DialContext = dialer
+		transport = clone
+	} else {
+		transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
+	}
+	return &http.Client{Transport: transport, CheckRedirect: p.client.CheckRedirect}, nil
+}
+
+func proxyFromURL(parsed *url.URL) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+	var auth *proxy.Auth
+	if parsed.User != nil {
+		password, _ := parsed.User.Password()
+		auth = &proxy.Auth{User: parsed.User.Username(), Password: password}
+	}
+	dialer, err := proxy.SOCKS5("tcp", parsed.Host, auth, proxy.Direct)
+	if err != nil {
+		return nil, err
+	}
+	contextDialer := dialer.(proxy.ContextDialer)
+	return contextDialer.DialContext, nil
+}
+
 func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveAccount, id string, offset int64) (io.ReadCloser, error) {
 	if strings.TrimSpace(id) == "" || offset < 0 {
 		return nil, fmt.Errorf("file ID and nonnegative offset are required")
+	}
+	downloadClient, err := p.downloadHTTPClient()
+	if err != nil {
+		return nil, err
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		signed, err := p.downloadURL(ctx, account, id)
@@ -662,7 +715,6 @@ func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveA
 		if offset > 0 {
 			request.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
-		downloadClient := &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect}
 		response, err := downloadClient.Do(request)
 		if err != nil {
 			if ctx.Err() != nil {

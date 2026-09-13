@@ -31,6 +31,7 @@ var allowedSettingKeys = map[string]struct{}{
 	"resource_api_url": {}, "resource_api_token": {},
 	"share_snapshot_interval_ms": {},
 	"transfer_temp_dir":          {}, "transfer_min_free_bytes": {},
+	"quark_download_proxy":      {},
 	"dangerous_actions_enabled": {},
 }
 
