@@ -1,6 +1,6 @@
 module github.com/embymedia/embymedia
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/OpenListTeam/115-sdk-go v0.2.4
@@ -10,7 +10,7 @@ require (
 	github.com/mark3labs/mcp-go v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/net v0.56.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
 	modernc.org/sqlite v1.58.0
