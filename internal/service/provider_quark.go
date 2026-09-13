@@ -726,6 +726,8 @@ func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveA
 			return nil, err
 		}
 		request.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+		request.Header.Set("Cookie", account.Cookie)
+		request.Header.Set("Referer", "https://pan.quark.cn/")
 		if offset > 0 {
 			request.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
