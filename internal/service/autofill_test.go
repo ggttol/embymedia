@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -409,5 +410,141 @@ func TestSeriesAutoFillRetainsEachCandidateFailureForUnmatchedEpisodes(t *testin
 	}
 	if strings.Contains(result.Issue, "102") {
 		t.Fatalf("readable candidate reported as a failed inspection: %s", result.Issue)
+	}
+}
+
+func TestSeriesAutoFillPreviewReportsDualSourceConflictAndAcceptsExplicitOverride(t *testing.T) {
+	var writes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/files":
+			_, _ = io.WriteString(response, `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"Show (2026)"}]}`)
+		case "/search":
+			if request.URL.Query().Get("disk_type") == "quark" {
+				_, _ = io.WriteString(response, `{"links":[{"id":2,"title":"Show (2026)","disk_type":"quark","url":"https://pan.quark.cn/s/quarkshare"}]}`)
+			} else {
+				_, _ = io.WriteString(response, `{"links":[{"id":1,"title":"Show (2026)","disk_type":"115","url":"https://115.com/s/oneshare"}]}`)
+			}
+		case "/share/snap":
+			_, _ = io.WriteString(response, `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"Show (2026)"},"list":[{"fid":"115-episode","n":"Show.2026.S01E02.mkv","s":1024}]}}`)
+		case "/share/sharepage/token":
+			_, _ = io.WriteString(response, `{"status":200,"data":{"stoken":"secret","title":"Show (2026)"}}`)
+		case "/share/sharepage/detail":
+			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"quark-episode","pdir_fid":"0","file_name":"Show.2026.S01E02.mkv","file_size":"2048","dir":false,"revision":"rev","share_fid_token":"hidden"}]},"metadata":{"_total":1}}`)
+		case "/share/receive", "/share/sharepage/save":
+			writes.Add(1)
+			t.Fatal("preview mutated a provider")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSettings(map[string]string{"resource_api_url": server.URL, "share_snapshot_interval_ms": "0"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []*domain.DriveAccount{
+		{ID: "c115", Type: "115", Name: "115", Cookie: "cookie", IsDefault: true},
+		{ID: "quark", Type: "quark", Name: "Quark", Cookie: "cookie", IsDefault: true},
+	} {
+		if err := db.SaveAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drive := NewDriveService(db, server.URL, "")
+	serverURL, _ := url.Parse(server.URL)
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		if request.URL.Host == "webapi.115.com" {
+			clone.URL.Scheme, clone.URL.Host = serverURL.Scheme, serverURL.Host
+		}
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	quark := NewProviderQuark(server.Client())
+	quark.baseURL = server.URL
+	quark.sleep = func(context.Context, time.Duration) error { return nil }
+	drive.providers["quark"] = quark
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+	canonical := &domain.EmbyMediaItem{ID: "series", Name: "Show", Type: "Series", Path: "/strm/电视剧追更/Show (2026)", ProviderIDs: map[string]string{"Tmdb": "42"}}
+	gaps := map[episodeKey]struct{}{{Season: 1, Episode: 2}: {}}
+
+	conflict, paths := queue.processAutoFillSeries(context.Background(), domain.EmbyLibrary{ID: "library", Name: "电视剧追更"}, "library-cid", gaps, canonical.ID, canonical.Name, canonical, 1, seriesAutoFillSpec{Transfer: false, CandidateLimit: 10})
+	if writes.Load() != 0 || len(paths) != 0 || len(conflict.Conflicts) != 1 || strings.Join(conflict.Conflicts[0].ResourceIDs, ",") != "115:1,quark:2" || len(conflict.MatchedEpisodes) != 0 {
+		t.Fatalf("dual-source conflict was not surfaced safely: writes=%d result=%+v paths=%v", writes.Load(), conflict, paths)
+	}
+	if len(conflict.CandidateEvidence) != 2 || conflict.CandidateEvidence[0].Provider != "115" || conflict.CandidateEvidence[1].Provider != "quark" {
+		t.Fatalf("provider evidence is incomplete: %+v", conflict.CandidateEvidence)
+	}
+
+	overridden, paths := queue.processAutoFillSeries(context.Background(), domain.EmbyLibrary{ID: "library", Name: "电视剧追更"}, "library-cid", gaps, canonical.ID, canonical.Name, canonical, 1, seriesAutoFillSpec{Transfer: false, CandidateLimit: 10, CandidateOverrides: map[string]string{"series": "quark:2"}})
+	if writes.Load() != 0 || len(paths) != 0 || len(overridden.Conflicts) != 0 || strings.Join(overridden.MatchedEpisodes, ",") != "S01E02" || len(overridden.RemainingEpisodes) != 0 {
+		t.Fatalf("explicit provider override did not resolve preview: writes=%d result=%+v paths=%v", writes.Load(), overridden, paths)
+	}
+
+	candidates, _, err := queue.searchAutoFillCandidates(context.Background(), "Show", 2)
+	if err != nil || len(candidates) != 2 || candidates[0].Provider != "115" || candidates[1].Provider != "quark" {
+		t.Fatalf("combined limit starved a provider: candidates=%+v err=%v", candidates, err)
+	}
+	if err := db.SetSetting("quark_autofill_target_id", "quark-target"); err != nil {
+		t.Fatal(err)
+	}
+	parent := &domain.AsyncTask{ID: "parent", Type: "series_auto_fill", Payload: map[string]any{}, Status: "completed", MaxAttempts: 1, CreatedAt: time.Now()}
+	if err := db.CreateAsyncTask(parent); err != nil {
+		t.Fatal(err)
+	}
+	queued, paths := queue.processAutoFillSeries(context.Background(), domain.EmbyLibrary{ID: "library", Name: "电视剧追更"}, "library-cid", gaps, canonical.ID, canonical.Name, canonical, 1, seriesAutoFillSpec{ParentTaskID: parent.ID, Transfer: true, CandidateLimit: 10, CandidateOverrides: map[string]string{"series": "quark:2"}})
+	if writes.Load() != 0 || len(paths) != 0 || len(queued.QueuedImports) != 1 {
+		t.Fatalf("Quark transfer was not durably queued without inline writes: writes=%d result=%+v paths=%v", writes.Load(), queued, paths)
+	}
+	child, err := db.GetAsyncTask(queued.QueuedImports[0].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := shareSelectionsPayload(child.Payload, "selected_source_manifest")
+	if err != nil || len(manifest) != 1 || manifest[0].ID != "quark-episode" || manifest[0].Revision != "rev" || manifest[0].Name != "Show.2026.S01E02.mkv" || manifest[0].Size != 2048 {
+		t.Fatalf("queued import lost previewed source identity: manifest=%+v err=%v payload=%+v", manifest, err, child.Payload)
+	}
+}
+
+func TestFilterAutoFillMissingEpisodesScopesSingleSeriesResult(t *testing.T) {
+	episodes := []EmbyMissingEpisode{{SeriesID: "selected", EpisodeNumber: 1}, {SeriesID: "other", EpisodeNumber: 2}}
+	filtered := filterAutoFillMissingEpisodes(episodes, []string{"selected"})
+	if len(filtered) != 1 || filtered[0].SeriesID != "selected" {
+		t.Fatalf("single-Series result included unrelated gaps: %+v", filtered)
+	}
+}
+
+func TestPublicAutoFillErrorRedactsShareCredentials(t *testing.T) {
+	candidate := autoFillCandidate{URL: "https://115.com/s/private?password=secret", Password: "secret"}
+	message := publicAutoFillError(candidate, fmt.Errorf("cannot parse %s with %s", candidate.URL, candidate.Password))
+	if strings.Contains(message, candidate.URL) || strings.Contains(message, candidate.Password) {
+		t.Fatalf("autofill evidence leaked share credentials: %s", message)
+	}
+}
+
+func TestCancelQueuedAutoFillImportsStopsPendingChildren(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	child := &domain.AsyncTask{ID: "child", Type: "quark_to_115_import", Payload: map[string]any{}, Status: "pending", MaxAttempts: 1, CreatedAt: time.Now()}
+	if err := db.CreateAsyncTask(child); err != nil {
+		t.Fatal(err)
+	}
+	queue := NewTaskQueueService(db, NewDriveService(db, "", ""), NewEmbyService(db))
+	results := []LibraryAutoFillResult{{Series: []SeriesAutoFillResult{{QueuedImports: []AutoFillQueuedImport{{TaskID: child.ID}}}}}}
+	if err := queue.cancelQueuedAutoFillImports(results); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.GetAsyncTask(child.ID)
+	if err != nil || stored.Status != "cancelled" {
+		t.Fatalf("queued child was not cancelled with parent: task=%+v err=%v", stored, err)
 	}
 }

@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -34,7 +36,7 @@ func TestAllMCPToolsRegistered(t *testing.T) {
 	mcpServer := newTestMCPServer(t)
 	registered := mcpServer.Server().ListTools()
 	expected := []string{
-		"c115_list_files", "c115_search", "c115_save_share", "c115_move", "c115_rename", "c115_mkdir", "c115_get_share_link",
+		"c115_list_files", "c115_search", "search_resources", "c115_save_share", "c115_move", "c115_rename", "c115_mkdir", "c115_get_share_link",
 		"cd2_mount_status", "cd2_remount", "emby_refresh_library", "emby_get_libraries", "emby_inspect_item",
 		"task_submit", "task_query", "task_cancel", "task_get_logs", "system_get_config", "system_health",
 		"c115_list_accounts", "c115_search_files", "c115_snapshot_share", "c115_list_offline", "emby_search_items", "emby_list_sessions", "emby_missing_posters",
@@ -232,5 +234,46 @@ func TestAutonomousConfigCannotBypassDeletionPolicy(t *testing.T) {
 	}
 	if !toolRequiresWrite("system_update_config") || !toolRequiresWrite("c115_execute_delete") || toolRequiresWrite("c115_search_files") {
 		t.Fatal("expanded tool write classification is incorrect")
+	}
+}
+
+func TestProviderNeutralResourceSearchFiltersProvider(t *testing.T) {
+	var gotProvider string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotProvider = r.URL.Query().Get("disk_type")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":0,"links":[]}`))
+	}))
+	defer upstream.Close()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := &MCPServer{drive: service.NewDriveService(db, upstream.URL, "")}
+	req := mcp.CallToolRequest{}
+	arguments := map[string]any{"query": "show", "provider": "quark"}
+	req.Params.Arguments = arguments
+	result, err := server.handleResourceSearch(context.Background(), req)
+	if err != nil || result.IsError {
+		t.Fatalf("provider search failed: result=%+v err=%v", result, err)
+	}
+	if gotProvider != "quark" {
+		t.Fatalf("resource search provider filter = %q, want quark", gotProvider)
+	}
+	arguments["provider"] = "dropbox"
+	result, err = server.handleResourceSearch(context.Background(), req)
+	if err != nil || !result.IsError {
+		t.Fatalf("unsupported provider was accepted: result=%+v err=%v", result, err)
+	}
+}
+
+func TestQuarkImportRejectsArbitraryDestination(t *testing.T) {
+	server := newTestMCPServer(t)
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"destination_cid": "attacker-controlled"}
+	result, err := server.handleQuarkImportShare(context.Background(), req)
+	if err != nil || !result.IsError {
+		t.Fatalf("arbitrary destination was accepted: result=%+v err=%v", result, err)
 	}
 }

@@ -79,6 +79,15 @@ func openAPISchema() map[string]any {
 		"provider": provider, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code"),
 		"target_cid": targetID, "account_id": accountID,
 	})
+	seriesAutoFillPayload := schemaObject([]string{"libraries"}, map[string]any{
+		"libraries":              stringArraySchema("Eligible Emby libraries (电视剧追更 or 综艺追更)"),
+		"series_ids":             stringArraySchema("Optional exact Series IDs; limits discovery to selected Series"),
+		"transfer":               map[string]any{"type": "boolean", "default": true},
+		"replace_completed_pack": map[string]any{"type": "boolean", "default": false},
+		"candidate_limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": 30, "default": 10},
+		"max_series":             map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+		"candidate_overrides":    map[string]any{"type": "object", "description": "Map exact Series ID to one resource ID when resources conflict", "additionalProperties": map[string]any{"type": "string"}},
+	})
 	paths := map[string]any{
 		"/hooks/clouddrive2": map[string]any{"post": map[string]any{
 			"operationId": "receiveCloudDriveWebhook", "summary": "Debounce one authenticated filesystem event into ordered STRM synchronization and Emby scanning",
@@ -91,7 +100,8 @@ func openAPISchema() map[string]any {
 		"/api/v1/trends":       map[string]any{"get": apiOperation("listSearchTrends", "List resource search trends", nil, nil)},
 		"/api/v1/search": map[string]any{"get": apiOperation("searchResources", "Search indexed netdisk resources", []any{
 			queryParameter("q", "Search query", true), queryParameter("channel", "Optional source channel", false),
-			queryParameter("health_status", "Optional health status", false), integerQueryParameter("offset", "Result offset"), integerQueryParameter("limit", "Page size"),
+			queryParameter("provider", "Optional provider filter (115 or quark)", false),
+			queryParameter("health_status", "Optional source health status", false), integerQueryParameter("offset", "Result offset"), integerQueryParameter("limit", "Page size"),
 		}, nil)},
 		"/api/v1/links/{id}":           map[string]any{"get": apiOperation("getResourceLink", "Read one indexed resource link", []any{pathParameter("id", "Resource link ID")}, nil)},
 		"/api/v1/links/{id}/save":      map[string]any{"post": apiOperation("saveResourceLink", "Save one indexed link to 115", []any{pathParameter("id", "Resource link ID")}, schemaObject(nil, map[string]any{"target_cid": targetID}))},
@@ -156,15 +166,31 @@ func openAPISchema() map[string]any {
 		"/api/v1/destructive-approvals/{id}/reject":  map[string]any{"post": browserOperation("rejectDestructiveApproval", "Reject one exact deletion request", []any{pathParameter("id", "Approval ID")})},
 	}
 	paths["/api/v1/drive/files/delete"].(map[string]any)["post"].(map[string]any)["security"] = []any{map[string]any{"BrowserSession": []any{}}}
-	return map[string]any{
-		"openapi": "3.1.0",
-		"info":    map[string]any{"title": "EmbyMedia V2 API", "version": product.Version, "description": "Standalone drive, Emby, CloudDrive2, task, settings and Agent operations", "license": map[string]any{"name": "MIT", "identifier": "MIT"}},
-		"servers": []any{map[string]any{"url": "/", "description": "Current EmbyMedia server"}},
-		"components": map[string]any{"securitySchemes": map[string]any{
+	components := map[string]any{
+		"securitySchemes": map[string]any{
 			"AgentToken":     map[string]any{"type": "apiKey", "in": "header", "name": "X-Agent-Token", "description": "Agent token issued by the administrator"},
 			"BrowserSession": map[string]any{"type": "apiKey", "in": "cookie", "name": "embymedia_http_session", "description": "Authenticated browser session; Agent tokens cannot decide destructive approvals"},
 			"WebhookSecret":  map[string]any{"type": "apiKey", "in": "header", "name": "X-Webhook-Secret", "description": "CloudDrive2 webhook secret"},
-		}},
-		"paths": paths,
+		},
+		"schemas": map[string]any{
+			"SeriesAutoFillPayload": seriesAutoFillPayload,
+			"SeriesAutoFillResult": schemaObject(nil, map[string]any{
+				"series_id": stringSchema("Exact Emby Series ID"), "series_name": stringSchema("Series display name"),
+				"folder": stringSchema("Canonical Series folder"), "missing_episodes": stringArraySchema("Episodes missing before repair"),
+				"matched_episodes": stringArraySchema("Episodes covered by validated sources"), "transferred_episodes": stringArraySchema("Episodes transferred to 115"),
+				"remaining_episodes": stringArraySchema("Episodes still missing after verification"), "candidates_checked": map[string]any{"type": "integer", "minimum": 0},
+				"candidate_evidence": map[string]any{"type": "array", "description": "Redacted evidence for each candidate; URLs and passwords are excluded", "items": map[string]any{"type": "object"}},
+				"conflicts":          map[string]any{"type": "array", "description": "Cross-provider/resource episode conflicts", "items": map[string]any{"type": "object"}},
+				"queued_imports":     map[string]any{"type": "array", "description": "Queued Quark child imports without credentials or share secrets", "items": map[string]any{"type": "object"}},
+				"issue":              stringSchema("Failure or review reason"),
+			}),
+		},
+	}
+	return map[string]any{
+		"openapi":    "3.1.0",
+		"info":       map[string]any{"title": "EmbyMedia V2 API", "version": product.Version, "description": "Standalone drive, Emby, CloudDrive2, task, settings and Agent operations", "license": map[string]any{"name": "MIT", "identifier": "MIT"}},
+		"servers":    []any{map[string]any{"url": "/", "description": "Current EmbyMedia server"}},
+		"components": components,
+		"paths":      paths,
 	}
 }

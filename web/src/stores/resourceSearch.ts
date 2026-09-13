@@ -15,10 +15,11 @@ let snapshot: ResourceSearchSnapshot | null = null
 
 export function resourceQueryKey(query: LocationQueryRaw): string {
   const params = new URLSearchParams()
-  for (const key of ['q', 'channel', 'health']) {
+  for (const key of ['q', 'channel', 'health', 'provider']) {
     const value = query[key]
     if (typeof value === 'string' && value) params.set(key, value)
   }
+  if (!params.has('provider')) params.set('provider', 'all')
   return params.toString()
 }
 

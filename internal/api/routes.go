@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -184,7 +185,20 @@ func (s *Server) handleTrends(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"code": 0, "message": "success", "data": map[string]any{"trends": trends}})
 }
 func (s *Server) handleSearch(c echo.Context) error {
-	response, err := s.drive.SearchResourcesCtx(c.Request().Context(), c.QueryParams())
+	params := make(url.Values, len(c.QueryParams()))
+	for key, values := range c.QueryParams() {
+		params[key] = append([]string(nil), values...)
+	}
+	if provider := strings.TrimSpace(params.Get("provider")); provider != "" {
+		if provider != "115" && provider != "quark" {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider must be 115 or quark"})
+		}
+		if diskType := strings.TrimSpace(params.Get("disk_type")); diskType != "" && diskType != provider {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider and disk_type must match"})
+		}
+		params.Set("disk_type", provider)
+	}
+	response, err := s.drive.SearchResourcesCtx(c.Request().Context(), params)
 	if err != nil {
 		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
 	}
@@ -199,11 +213,41 @@ func (s *Server) handleGetLink(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]any{"code": 404, "message": "link not found"})
 	}
+	// Some older resource-index responses omitted disk_type from the link
+	// object. Deriving it only from the already-authenticated link URL keeps
+	// the UI handoff provider-aware without adding any credential material.
+	data, nested := res["data"].(map[string]any)
+	if !nested {
+		data = res
+	}
+	diskType, _ := data["disk_type"].(string)
+	if strings.TrimSpace(diskType) == "" {
+		if rawURL, _ := data["url"].(string); rawURL != "" {
+			if diskType := resourceDiskType(rawURL); diskType != "" {
+				data["disk_type"] = diskType
+			}
+		}
+	}
+	if nested {
+		res["data"] = data
+	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"code":    0,
 		"message": "success",
-		"data":    res,
+		"data":    data,
 	})
+}
+
+func resourceDiskType(rawURL string) string {
+	lower := strings.ToLower(strings.TrimSpace(rawURL))
+	switch {
+	case strings.Contains(lower, "115.com/s/"), strings.Contains(lower, "115cdn.com/s/"):
+		return "115"
+	case strings.Contains(lower, "quark.cn/"), strings.Contains(lower, "quark.cn/s/"):
+		return "quark"
+	default:
+		return ""
+	}
 }
 
 func (s *Server) handleCidMap(c echo.Context) error {
@@ -509,20 +553,26 @@ func (s *Server) handleDelete(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
 }
-
 func publicAsyncTask(task domain.AsyncTask) domain.AsyncTask {
 	if task.Type != "quark_to_115_import" {
 		return task
 	}
 	payload := make(map[string]any, len(task.Payload))
 	for key, value := range task.Payload {
-		if key == "share_password" || key == "share_url" {
+		if publicTaskPayloadKey(key) {
 			continue
 		}
 		payload[key] = value
 	}
 	task.Payload = payload
 	return task
+}
+
+func publicTaskPayloadKey(key string) bool {
+	if key == "share_password" || key == "share_url" || key == "expected_episodes" || key == "selected_source_ids" || key == "selected_source_manifest" || key == "parent_task_id" || key == "prior_import_task_id" {
+		return true
+	}
+	return strings.HasPrefix(key, "autofill_")
 }
 
 func (s *Server) handleListAsyncTasks(c echo.Context) error {
@@ -700,7 +750,9 @@ func (s *Server) handleCreateQuarkShareImport(c echo.Context) error {
 		SharePassword  string `json:"share_password"`
 		C115AccountID  string `json:"c115_account_id"`
 	}
-	if err := c.Bind(&request); err != nil {
+	decoder := json.NewDecoder(c.Request().Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
 	if strings.TrimSpace(request.QuarkAccountID) == "" || strings.TrimSpace(request.QuarkTargetID) == "" || strings.TrimSpace(request.ShareURL) == "" {

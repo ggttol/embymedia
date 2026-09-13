@@ -362,3 +362,61 @@ func TestDriveListingRejectsUnverifiableDeletionEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestProvider115SaveShareEntriesReceivesOnlySelectedLeaf(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSetting("share_snapshot_interval_ms", "0"); err != nil {
+		t.Fatal(err)
+	}
+	account := &domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "cookie", IsDefault: true}
+	if err := db.SaveAccount(account); err != nil {
+		t.Fatal(err)
+	}
+	var received string
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/share/snap":
+			var body string
+			switch request.URL.Query().Get("cid") {
+			case "0":
+				body = `{"state":true,"data":{"count":2,"shareinfo":{"share_title":"Nested"},"list":[{"cid":"folder","n":"Season 1"},{"fid":"root-sibling","cid":"0","n":"sibling.mkv","s":2}]}}`
+			case "folder":
+				body = `{"state":true,"data":{"count":2,"list":[{"fid":"selected","cid":"folder","n":"episode.mkv","s":7,"revision":"rev-selected"},{"fid":"nested-sibling","cid":"folder","n":"other.mkv","s":8}]}}`
+			default:
+				t.Errorf("unexpected share parent %q", request.URL.Query().Get("cid"))
+				body = `{"state":true,"data":{"count":0,"list":[]}}`
+			}
+			_, _ = io.WriteString(response, body)
+		case "/share/receive":
+			if err := request.ParseForm(); err != nil {
+				t.Errorf("parse receive: %v", err)
+			}
+			received = request.Form.Get("file_id")
+			_, _ = io.WriteString(response, `{"state":true}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	service := NewDriveService(db, "", "")
+	service.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme = upstreamURL.Scheme
+		clone.URL.Host = upstreamURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	provider := service.providers["115"].(*Provider115)
+	saved, err := provider.SaveShareEntries(context.Background(), account, "https://115.com/s/nested", "", "target", []string{"selected"})
+	if err != nil {
+		t.Fatalf("selective receive: %v", err)
+	}
+	if received != "selected" || saved.Count != 1 || len(saved.RootIDs) != 1 || saved.RootIDs[0] != "selected" {
+		t.Fatalf("received=%q saved=%+v", received, saved)
+	}
+}

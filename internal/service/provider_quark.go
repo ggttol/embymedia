@@ -404,23 +404,32 @@ func parseQuarkShare(rawURL, password string) (string, string, error) {
 	return id, strings.TrimSpace(password), nil
 }
 
-func (p *ProviderQuark) shareToken(ctx context.Context, account *domain.DriveAccount, rawURL, password string) (string, string, error) {
+func (p *ProviderQuark) shareTokenWithTitle(ctx context.Context, account *domain.DriveAccount, rawURL, password string) (string, string, string, error) {
 	shareID, password, err := parseQuarkShare(rawURL, password)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	var data struct {
-		Stoken string `json:"stoken"`
-		Title  string `json:"title"`
+		Stoken     string `json:"stoken"`
+		Title      string `json:"title"`
+		ShareTitle string `json:"share_title"`
 	}
 	err = p.request(ctx, account, http.MethodPost, "/share/sharepage/token", url.Values{"pr": {"ucpro"}, "fr": {"pc"}}, map[string]any{"pwd_id": shareID, "passcode": password}, &data)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if data.Stoken == "" {
-		return "", "", fmt.Errorf("Quark share is expired or password is invalid")
+		return "", "", "", fmt.Errorf("Quark share is expired or password is invalid")
 	}
-	return shareID, data.Stoken, nil
+	if strings.TrimSpace(data.Title) == "" {
+		data.Title = data.ShareTitle
+	}
+	return shareID, data.Stoken, strings.TrimSpace(data.Title), nil
+}
+
+func (p *ProviderQuark) shareToken(ctx context.Context, account *domain.DriveAccount, rawURL, password string) (string, string, error) {
+	shareID, stoken, _, err := p.shareTokenWithTitle(ctx, account, rawURL, password)
+	return shareID, stoken, err
 }
 
 func (p *ProviderQuark) shareEntries(ctx context.Context, account *domain.DriveAccount, shareID, stoken, parent string) ([]ShareEntry, error) {
@@ -440,12 +449,12 @@ func (p *ProviderQuark) shareEntries(ctx context.Context, account *domain.DriveA
 		}
 		before := len(entries)
 		for _, item := range data.List {
-			file, err := parseQuarkFile(item, "")
+			file, err := parseQuarkFile(item, parent)
 			if err != nil {
 				return entries, err
 			}
 			if _, duplicate := seen[file.FileID]; duplicate {
-				continue
+				return entries, fmt.Errorf("Quark share snapshot repeated object %s", file.FileID)
 			}
 			seen[file.FileID] = struct{}{}
 			entries = append(entries, ShareEntry{ID: file.FileID, Name: file.Name, Size: file.Size, IsDir: file.IsFolder, ParentID: file.ParentID, Revision: file.Revision, ShareToken: item.ShareToken})
@@ -462,6 +471,52 @@ func (p *ProviderQuark) shareEntries(ctx context.Context, account *domain.DriveA
 	}
 	return entries, nil
 }
+func (p *ProviderQuark) snapshotShareTree(ctx context.Context, account *domain.DriveAccount, shareID, stoken, title string) (string, []ShareEntry, error) {
+	entries := make([]ShareEntry, 0)
+	seenDirectories := make(map[string]struct{})
+	seenEntries := make(map[string]struct{})
+	var walk func(string, int, []string) error
+	walk = func(parent string, depth int, ancestors []string) error {
+		if depth > quarkMaxDepth {
+			return fmt.Errorf("Quark share directory depth exceeds %d", quarkMaxDepth)
+		}
+		if parent == "" {
+			parent = "0"
+		}
+		if _, repeated := seenDirectories[parent]; repeated {
+			return fmt.Errorf("Quark share directory %s was repeated", parent)
+		}
+		seenDirectories[parent] = struct{}{}
+		direct, err := p.shareEntries(ctx, account, shareID, stoken, parent)
+		if err != nil {
+			return err
+		}
+		for _, entry := range direct {
+			if _, repeated := seenEntries[entry.ID]; repeated {
+				return fmt.Errorf("Quark share tree repeated object %s", entry.ID)
+			}
+			seenEntries[entry.ID] = struct{}{}
+			entry.Ancestors = append([]string(nil), ancestors...)
+			entry.ParentID = parent
+			entries = append(entries, entry)
+			if len(entries) > quarkMaxEntries {
+				return fmt.Errorf("Quark share tree contains more than %d entries", quarkMaxEntries)
+			}
+			if entry.IsDir {
+				childAncestors := append(append([]string(nil), ancestors...), entry.Name)
+				if err := walk(entry.ID, depth+1, childAncestors); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk("0", 0, nil); err != nil {
+		return title, entries, err
+	}
+	return title, entries, nil
+}
+
 func (p *ProviderQuark) SnapshotShare(ctx context.Context, account *domain.DriveAccount, rawURL, password string) (ShareSnapshot, error) {
 	shareID, stoken, err := p.shareToken(ctx, account, rawURL, password)
 	if err != nil {
@@ -472,6 +527,16 @@ func (p *ProviderQuark) SnapshotShare(ctx context.Context, account *domain.Drive
 		return ShareSnapshot{}, err
 	}
 	return ShareSnapshot{Entries: entries}, nil
+}
+
+func (p *ProviderQuark) SnapshotShareTree(ctx context.Context, account *domain.DriveAccount, rawURL, password string) (ShareSnapshot, error) {
+	shareID, stoken, title, err := p.shareTokenWithTitle(ctx, account, rawURL, password)
+	if err != nil {
+		return ShareSnapshot{}, err
+	}
+	treeTitle, entries, err := p.snapshotShareTree(ctx, account, shareID, stoken, title)
+	title = treeTitle
+	return ShareSnapshot{Title: title, Entries: entries}, err
 }
 
 func (p *ProviderQuark) listDirectoryAll(ctx context.Context, account *domain.DriveAccount, parent string) ([]domain.DriveFile, error) {
@@ -487,6 +552,17 @@ func (p *ProviderQuark) listDirectoryAll(ctx context.Context, account *domain.Dr
 		}
 	}
 	return nil, fmt.Errorf("Quark directory contains more than %d entries", quarkMaxEntries)
+}
+func quarkIDSlice(values []any) ([]string, error) {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		id := quarkScalar(value)
+		if id == "" {
+			return nil, fmt.Errorf("Quark share save returned an invalid object ID")
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func resolveQuarkSavedRoots(entries []ShareEntry, before, after []domain.DriveFile, providerIDs []string) ([]string, error) {
@@ -560,13 +636,16 @@ func (p *ProviderQuark) SaveShare(ctx context.Context, account *domain.DriveAcco
 		}
 	}
 	var saved struct {
-		TaskID any      `json:"task_id"`
-		FIDs   []string `json:"fids"`
+		TaskID any   `json:"task_id"`
+		FIDs   []any `json:"fids"`
 	}
 	if err := p.request(ctx, account, http.MethodPost, "/share/sharepage/save", url.Values{"pr": {"ucpro"}, "fr": {"pc"}}, map[string]any{"fid_list": ids, "fid_token_list": tokens, "share_fid_token_list": tokens, "to_pdir_fid": parent, "pwd_id": shareID, "stoken": stoken, "pdir_fid": "0", "scene": "link"}, &saved); err != nil {
 		return SavedShare{}, err
 	}
-	rootIDs := append([]string(nil), saved.FIDs...)
+	rootIDs, err := quarkIDSlice(saved.FIDs)
+	if err != nil {
+		return SavedShare{}, err
+	}
 	if taskID := quarkScalar(saved.TaskID); len(rootIDs) == 0 && taskID != "" {
 		rootIDs, err = p.waitTask(ctx, account, taskID)
 		if err != nil {
@@ -591,14 +670,103 @@ func (p *ProviderQuark) SaveShare(ctx context.Context, account *domain.DriveAcco
 	}
 	return SavedShare{}, fmt.Errorf("Quark saved objects did not appear in the target directory")
 }
+
+func (p *ProviderQuark) SaveShareEntries(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string, selectedIDs []string) (SavedShare, error) {
+	selections := make([]ShareSelection, len(selectedIDs))
+	for index, id := range selectedIDs {
+		selections[index] = ShareSelection{ID: id}
+	}
+	return p.saveShareSelections(ctx, account, rawURL, password, parent, selections, false)
+}
+
+func (p *ProviderQuark) SaveShareSelections(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string, selections []ShareSelection) (SavedShare, error) {
+	return p.saveShareSelections(ctx, account, rawURL, password, parent, selections, true)
+}
+
+// saveShareSelections receives only explicitly selected file leaves from a fresh recursive snapshot.
+// Exact mode rejects any previewed name, size, or revision drift before the provider save request.
+func (p *ProviderQuark) saveShareSelections(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string, selections []ShareSelection, exact bool) (SavedShare, error) {
+	shareID, stoken, title, err := p.shareTokenWithTitle(ctx, account, rawURL, password)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	treeTitle, entries, err := p.snapshotShareTree(ctx, account, shareID, stoken, title)
+	title = treeTitle
+	if err != nil {
+		return SavedShare{}, err
+	}
+	var selected []ShareEntry
+	if exact {
+		selected, err = selectShareSelections(entries, selections)
+	} else {
+		ids := make([]string, len(selections))
+		for index := range selections {
+			ids[index] = selections[index].ID
+		}
+		selected, err = selectShareEntries(entries, ids)
+	}
+	if err != nil {
+		return SavedShare{}, err
+	}
+	if parent == "" {
+		parent = "0"
+	}
+	before, err := p.listDirectoryAll(ctx, account, parent)
+	if err != nil {
+		return SavedShare{}, fmt.Errorf("list Quark target before share save: %w", err)
+	}
+	ids := make([]string, len(selected))
+	tokens := make([]string, len(selected))
+	for i := range selected {
+		ids[i] = selected[i].ID
+		tokens[i] = strings.TrimSpace(selected[i].ShareToken)
+		if tokens[i] == "" {
+			return SavedShare{}, fmt.Errorf("Quark share entry %s did not include a save token", selected[i].ID)
+		}
+	}
+	var saved struct {
+		TaskID any   `json:"task_id"`
+		FIDs   []any `json:"fids"`
+	}
+	if err := p.request(ctx, account, http.MethodPost, "/share/sharepage/save", url.Values{"pr": {"ucpro"}, "fr": {"pc"}}, map[string]any{"fid_list": ids, "fid_token_list": tokens, "share_fid_token_list": tokens, "to_pdir_fid": parent, "pwd_id": shareID, "stoken": stoken, "pdir_fid": "0", "scene": "link"}, &saved); err != nil {
+		return SavedShare{}, err
+	}
+	rootIDs, err := quarkIDSlice(saved.FIDs)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	if taskID := quarkScalar(saved.TaskID); len(rootIDs) == 0 && taskID != "" {
+		rootIDs, err = p.waitTask(ctx, account, taskID)
+		if err != nil {
+			return SavedShare{}, err
+		}
+	}
+	for attempt := 0; attempt < 30; attempt++ {
+		after, listErr := p.listDirectoryAll(ctx, account, parent)
+		if listErr != nil {
+			return SavedShare{}, fmt.Errorf("list Quark target after share save: %w", listErr)
+		}
+		resolved, resolveErr := resolveQuarkSavedRoots(selected, before, after, rootIDs)
+		if resolveErr == nil {
+			return SavedShare{Title: title, RootIDs: resolved, Count: len(resolved)}, nil
+		}
+		if attempt == 29 {
+			return SavedShare{}, resolveErr
+		}
+		if err := p.sleep(ctx, time.Second); err != nil {
+			return SavedShare{}, err
+		}
+	}
+	return SavedShare{}, fmt.Errorf("Quark saved objects did not appear in the target directory")
+}
 func (p *ProviderQuark) waitTask(ctx context.Context, account *domain.DriveAccount, taskID string) ([]string, error) {
 	for attempt := 0; attempt < 120; attempt++ {
 		var data struct {
 			Status     any `json:"status"`
 			FinishedAt any `json:"finished_at"`
 			SaveAs     struct {
-				TopFIDs []string `json:"save_as_top_fids"`
-				FIDs    []string `json:"save_as_fids"`
+				TopFIDs []any `json:"save_as_top_fids"`
+				FIDs    []any `json:"save_as_fids"`
 			} `json:"save_as"`
 			Error   string `json:"error"`
 			Message string `json:"message"`
@@ -615,7 +783,7 @@ func (p *ProviderQuark) waitTask(ctx context.Context, account *domain.DriveAccou
 			if len(ids) == 0 {
 				return nil, fmt.Errorf("Quark task completed without saved object IDs")
 			}
-			return ids, nil
+			return quarkIDSlice(ids)
 		}
 		if status == "3" || status == "failed" || data.Error != "" {
 			message := data.Error

@@ -47,6 +47,7 @@ const showShareModal = ref(false)
 const shareForm = ref({ url: '', password: '' })
 const shareError = ref('')
 const shareBusy = ref(false)
+const resourcePreloadError = ref('')
 const operation = ref<FileOperation | null>(null)
 const operationError = ref('')
 const operationBusy = ref(false)
@@ -57,6 +58,8 @@ const importActionBusy = ref(false)
 let generation = 0
 let requestController = new AbortController()
 let importPollTimer: number | undefined
+let pendingResourceId = typeof route.query.resource_id === 'string' ? route.query.resource_id.trim() : ''
+let resourcePreloadBusy = false
 
 const providerLabel = computed(() => provider.value === '115' ? '115' : '夸克')
 const busy = computed(() => loading.value || accountsLoading.value || accountBusy.value || folderBusy.value || shareBusy.value || operationBusy.value || importActionBusy.value)
@@ -119,6 +122,7 @@ function resetProviderState() {
   accountsError.value = ''
   accountSuccess.value = ''
   accountActionError.value = ''
+  resourcePreloadError.value = ''
   importStatus.value = null
   importPollError.value = ''
   if (importPollTimer) window.clearTimeout(importPollTimer)
@@ -176,20 +180,58 @@ async function fetchFiles() {
     if (requestedGeneration === generation) files.value = data.files ?? []
   } catch (error) {
     if ((error as Error).name !== 'AbortError' && requestedGeneration === generation) filesError.value = errorMessage(error)
-  } finally { if (requestedGeneration === generation) loading.value = false }
+  } finally {
+    if (requestedGeneration === generation) loading.value = false
+    if (requestedGeneration === generation && !filesError.value) void maybePreloadResourceImport()
+  }
+}
+
+async function maybePreloadResourceImport() {
+  const resourceId = pendingResourceId
+  if (!resourceId || provider.value !== 'quark' || resourcePreloadBusy || !currentAccountId.value || !!accountsError.value || !!filesError.value || loading.value || accountsLoading.value) return
+  resourcePreloadBusy = true
+  const requestedGeneration = generation
+	resourcePreloadError.value = ''
+	try {
+		const response = await fetch(`/api/v1/links/${encodeURIComponent(resourceId)}`, { signal: requestController.signal })
+		await requireOk(response, '读取资源分享失败')
+		const payload = await response.json()
+		if (requestedGeneration !== generation) return
+		const resource = payload.data
+		if (!resource || (resource.disk_type && resource.disk_type !== 'quark') || typeof resource.url !== 'string' || !resource.url.trim()) throw new Error('该资源不是可用的夸克分享。')
+		shareForm.value = { url: resource.url.trim(), password: typeof resource.password === 'string' ? resource.password : '' }
+		shareError.value = ''
+		showShareModal.value = true
+		pendingResourceId = ''
+		await router.replace({ query: { ...route.query, provider: 'quark', resource_id: undefined } })
+	} catch (error) {
+		if ((error as Error).name !== 'AbortError' && requestedGeneration === generation) resourcePreloadError.value = errorMessage(error)
+  } finally {
+    resourcePreloadBusy = false
+  }
 }
 
 async function switchProvider(next: Provider, syncRoute = true) {
-  if (next === provider.value) return
+  if (next === provider.value) {
+    await maybePreloadResourceImport()
+    return
+  }
   resetProviderState()
   provider.value = next
-  if (syncRoute) await router.replace({ query: { ...route.query, provider: next, add_account: undefined } })
+  pendingResourceId = next === 'quark' && typeof route.query.resource_id === 'string' ? route.query.resource_id.trim() : ''
+  if (syncRoute) await router.replace({ query: { ...route.query, provider: next, add_account: undefined, resource_id: undefined } })
   await Promise.all([fetchAccounts(), fetchCidMap()])
   await fetchFiles()
+  await maybePreloadResourceImport()
 }
 
 watch(() => route.query.provider, (value) => {
   if ((value === '115' || value === 'quark') && value !== provider.value) void switchProvider(value, false)
+})
+
+watch(() => route.query.resource_id, (value) => {
+  pendingResourceId = typeof value === 'string' ? value.trim() : ''
+  void maybePreloadResourceImport()
 })
 async function changeAccount() {
   currentCid.value = '0'
@@ -198,6 +240,7 @@ async function changeAccount() {
   success.value = ''
   importStatus.value = null
   await fetchFiles()
+  await maybePreloadResourceImport()
 }
 function jumpToCid(name: string, cid: string) {
   currentCid.value = cid
@@ -386,9 +429,13 @@ async function showCompletedDestination() {
 
 onMounted(async () => {
   const requestedProvider = route.query.provider
+  const requestedResourceId = typeof route.query.resource_id === 'string' ? route.query.resource_id.trim() : ''
   if (requestedProvider === '115' || requestedProvider === 'quark') provider.value = requestedProvider
+  else if (requestedResourceId) provider.value = 'quark'
+  pendingResourceId = requestedResourceId
   await Promise.all([fetchAccounts(), fetchCidMap()])
   await fetchFiles()
+  await maybePreloadResourceImport()
   if (route.query.add_account === '1') {
     openAccountEditor()
     await router.replace({ query: { ...route.query, provider: provider.value, add_account: undefined } })
@@ -431,6 +478,11 @@ onUnmounted(() => {
       <p v-if="accountSuccess" role="status" class="text-sm text-accent break-words">{{ accountSuccess }}</p>
       <p v-if="accountActionError" role="alert" class="text-sm text-danger break-words">移除账号失败：{{ accountActionError }} 请重试移除操作。</p>
     </header>
+
+    <p v-if="resourcePreloadError" role="alert" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger/5 p-3.5 text-sm text-danger">
+      <span>无法打开资源导入：{{ resourcePreloadError }}</span>
+      <button type="button" :disabled="resourcePreloadBusy || !currentAccountId || !!accountsError" class="file-button border-danger/40" @click="maybePreloadResourceImport">重试</button>
+    </p>
 
     <section v-if="provider === '115' && (Object.keys(cidMap).length || mapError)" aria-label="分类目录" class="p-4 rounded-2xl border border-border/70 bg-surface shadow-xs space-y-3">
       <div v-if="Object.keys(cidMap).length" class="flex items-center gap-2 flex-wrap">

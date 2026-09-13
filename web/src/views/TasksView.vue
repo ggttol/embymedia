@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Activity, CalendarClock, FileText, FolderDown, ListTodo, Loader2, Play, Plus, RefreshCcw, RotateCcw, ScanSearch, ShieldCheck, WandSparkles, X } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
-type TaskType = 'series_auto_fill' | 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'emby_metadata_repair' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
+type TaskType = 'series_auto_fill' | 'quark_to_115_import' | 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'emby_metadata_repair' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
 
 interface AsyncTask {
   id: string
@@ -18,6 +18,44 @@ interface AsyncTask {
   max_attempts: number
   created_at: string
   updated_at: string
+}
+
+interface CrossDriveImport {
+  task_id: string
+  prior_task_id?: string
+  phase: string
+  quark_account_id?: string
+  quark_target_id?: string
+  c115_account_id?: string
+  destination_cid?: string
+  destination_path?: string
+  total_files: number
+  completed_files: number
+  total_bytes: number
+  completed_bytes: number
+  current_file?: string
+  cancel_requested: boolean
+  error?: string
+  updated_at?: string
+}
+
+interface CrossDriveItem {
+  relative_path: string
+  name?: string
+  size: number
+  state: string
+  downloaded_bytes: number
+  error?: string
+}
+
+interface CrossDriveImportDetail {
+  import: CrossDriveImport
+  items: CrossDriveItem[]
+}
+
+interface QuarkTaskDetailResponse {
+  task?: AsyncTask
+  detail?: CrossDriveImportDetail | null
 }
 
 interface ScheduledTask {
@@ -52,6 +90,7 @@ interface TaskDefinition {
 const taskTypeOrder: TaskType[] = ['series_auto_fill', 'emby_metadata_repair', 'emby_missing_posters', 'emby_refresh', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
 const taskDefinitions: Record<TaskType, TaskDefinition> = {
   series_auto_fill: { label: '自动补集', description: '只检查“电视剧追更”和“综艺追更”的已播缺集；验证资源内的准确集号后，精确转存到原剧集目录并刷新 Emby。', defaultName: '每日自动补集' },
+  quark_to_115_import: { label: '夸克分享发送到 115', description: '逐文件传输并核对 115 目标；自动补集会绑定到经过验证的剧集目录。', defaultName: '夸克分享发送到 115' },
   emby_refresh: { label: '同步媒体并刷新 Emby', description: '先把网盘视频同步为 STRM，再跟踪 Emby 全库扫描直到结束；指定媒体库 ID 时只提交该库刷新。', defaultName: '每日同步媒体并刷新 Emby' },
   emby_missing_posters: { label: '检查并修复海报', description: '检查没有主海报的电影和剧集，向 Emby 请求完整图片刷新，并复查实际修复结果。', defaultName: '每周检查并修复海报' },
   emby_metadata_repair: { label: '检查并修复元数据', description: '检查缺少 TMDB 身份的电影和剧集；仅自动应用标题、年份、类型唯一一致且不会产生重复条目的候选。', defaultName: '每周检查并修复元数据' },
@@ -61,6 +100,7 @@ const taskDefinitions: Record<TaskType, TaskDefinition> = {
   c115_save_share: { label: '转存 115 分享', description: '按计划把一个 115 分享链接转存到指定目录。', defaultName: '定时转存 115 分享' },
   c115_offline_download: { label: '提交 115 离线下载', description: '批量提交下载地址，并保存到指定 115 目录。', defaultName: '定时提交离线下载' },
 }
+
 const frequencyOptions = [
   { value: 'daily', label: '每天凌晨 3 点', cron: '0 0 3 * * *' },
   { value: 'sixHours', label: '每 6 小时', cron: '0 0 */6 * * *' },
@@ -84,7 +124,11 @@ function newScheduleForm() {
     urls: '',
     target_cid: '',
     account_id: '',
+    quark_account_id: '',
+    quark_target_id: '',
+    c115_account_id: '',
     library: '',
+
     auto_fill_libraries: ['电视剧追更', '综艺追更'] as string[],
     auto_fill_mode: 'transfer',
     candidate_limit: '10',
@@ -121,6 +165,11 @@ const executionFilter = ref<'all' | 'running' | 'completed' | 'attention'>('all'
 const executionPageSize = 5
 const visibleExecutionLimit = ref(executionPageSize)
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
+const quarkTaskDetails = ref<Record<string, QuarkTaskDetailResponse>>({})
+const quarkDetailErrors = ref<Record<string, string>>({})
+const seriesActionBusy = ref<string | null>(null)
+const seriesActionErrors = ref<Record<string, string>>({})
+const seriesOverrides = ref<Record<string, string>>({})
 const orderedTasks = computed(() => [...tasks.value].sort((left, right) => {
   const leftMinute = hourlyMinute(left.cron_expr)
   const rightMinute = hourlyMinute(right.cron_expr)
@@ -153,7 +202,6 @@ let pollTimer: number | undefined
 let schedulesGeneration = 0
 let executionsGeneration = 0
 function taskDefinition(type: string): TaskDefinition {
-  if (type === 'quark_to_115_import') return { label: '夸克分享发送到 115', description: '把分享保存到指定夸克目录，再逐文件传输并核对默认 115 账号的 /emby/_待整理。', defaultName: '夸克分享发送到 115' }
   return taskDefinitions[type as TaskType] ?? { label: '未知任务', description: '该任务类型不受当前页面支持。', defaultName: '未知任务' }
 }
 
@@ -204,14 +252,145 @@ function resultRecord(task: AsyncTask): Record<string, unknown> | null {
   return typeof result === 'object' && result !== null && !Array.isArray(result) ? result as Record<string, unknown> : null
 }
 
+function quarkImportState(task: AsyncTask): CrossDriveImport | null {
+  return quarkTaskDetails.value[task.id]?.detail?.import ?? null
+}
+
+function quarkImportItems(task: AsyncTask): CrossDriveItem[] {
+  return quarkTaskDetails.value[task.id]?.detail?.items ?? []
+}
+
+function importPhaseLabel(phase?: string) {
+  return ({ saving_share: '正在转存夸克分享', discovering: '正在读取文件清单', downloading: '正在下载到中转目录', uploading: '正在上传到 115', verifying: '正在核对 115 文件', verified: '已完成核对' } as Record<string, string>)[phase || ''] || '等待执行'
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '大小未知'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+}
+
+function quarkImportProgress(task: AsyncTask) {
+  const taskProgress = Math.min(100, Math.max(0, Number(task.progress || 0)))
+  const state = quarkImportState(task)
+  if (!state || Number(state.total_bytes) <= 0) return taskProgress
+  const verifiedProgress = Math.min(100, Math.max(0, Number(state.completed_bytes || 0) / Number(state.total_bytes) * 100))
+  return Math.max(taskProgress, verifiedProgress)
+}
+
+function taskProgress(task: AsyncTask) {
+  return task.type === 'quark_to_115_import' ? quarkImportProgress(task) : Math.min(100, Math.max(0, Number(task.progress || 0)))
+}
+
+function quarkCheckpointCounts(task: AsyncTask) {
+  const items = quarkImportItems(task)
+  let verified = 0
+  let queued = 0
+  let active = 0
+  let failed = 0
+  for (const item of items) {
+    if (item.state === 'verified') verified++
+    else if (item.state === 'failed') failed++
+    else if (item.state === 'discovered') queued++
+    else active++
+  }
+  const state = quarkImportState(task)
+  const durableVerified = Number(state?.completed_files || 0)
+  verified = Math.max(verified, durableVerified)
+  const total = Number(state?.total_files || items.length || 0)
+  return { verified, queued, active, failed, remaining: Math.max(0, total - verified), total }
+}
+
+function quarkImportVerified(task: AsyncTask) {
+  const state = quarkImportState(task)
+  if (!state || state.phase !== 'verified') return false
+  const counts = quarkCheckpointCounts(task)
+  return counts.remaining === 0 && (Number(state.total_bytes || 0) === 0 || Number(state.completed_bytes || 0) >= Number(state.total_bytes || 0))
+}
+
+function autoFillSeriesResults(task: AsyncTask): Record<string, unknown>[] {
+  return autoFillLibraryResults(task).flatMap((library) => recordList(library.series))
+}
+
+function seriesCandidateEvidence(series: Record<string, unknown>): Record<string, unknown>[] {
+  return recordList(series.candidate_evidence)
+}
+
+function seriesConflicts(series: Record<string, unknown>): Record<string, unknown>[] {
+  return recordList(series.conflicts)
+}
+
+function seriesQueuedImports(series: Record<string, unknown>): Record<string, unknown>[] {
+  return recordList(series.queued_imports)
+}
+
+function conflictResourceIDs(series: Record<string, unknown>): string[] {
+  const ids = new Set<string>()
+  for (const conflict of seriesConflicts(series)) textList(conflict.resource_ids).forEach((id) => ids.add(id))
+  return [...ids]
+}
+
+function candidateResourceLabel(series: Record<string, unknown>, resourceID: string) {
+  const evidence = seriesCandidateEvidence(series).find((item) => `${String(item.provider || '').trim()}:${String(item.resource_id || '')}` === resourceID || String(item.resource_id || '') === resourceID)
+  if (!evidence) return resourceID
+  const provider = String(evidence.provider || '').trim()
+  const title = String(evidence.resource_title || evidence.share_title || '').trim()
+  const episodes = textList(evidence.matched_episodes).join('、')
+  return `${provider ? `${provider} · ` : ''}${title || resourceID}${episodes ? ` · ${episodes}` : ''}`
+}
+
+function seriesActionKey(task: AsyncTask, series: Record<string, unknown>, action: 'preview' | 'transfer') {
+  return `${task.id}:${String(series.series_id || '')}:${action}`
+}
+
+function seriesOverrideKey(task: AsyncTask, series: Record<string, unknown>) {
+  return `${task.id}:${String(series.series_id || '')}`
+}
+
+function seriesOverride(task: AsyncTask, series: Record<string, unknown>) {
+  return seriesOverrides.value[seriesOverrideKey(task, series)] || ''
+}
+function setSeriesOverride(task: AsyncTask, series: Record<string, unknown>, event: Event) {
+  const value = (event.currentTarget as HTMLSelectElement).value
+  const key = seriesOverrideKey(task, series)
+  const next = { ...seriesOverrides.value }
+  if (value) next[key] = value
+  else delete next[key]
+  seriesOverrides.value = next
+  const errors = { ...seriesActionErrors.value }
+  delete errors[key]
+  seriesActionErrors.value = errors
+}
+
+function seriesOutcomeLabel(series: Record<string, unknown>) {
+  if (seriesConflicts(series).length) return '存在跨资源冲突'
+  if (seriesQueuedImports(series).length) return '已排队，等待核对'
+  if (textList(series.remaining_episodes).length) return '仍有缺集'
+  if (textList(series.transferred_episodes).length) return '已转存并核对'
+  if (textList(series.matched_episodes).length) return '已匹配'
+  return series.issue ? '需人工检查' : '未发现候选'
+}
+function isPreviewResult(task: AsyncTask) {
+  return resultRecord(task)?.mode === 'preview' || task.payload.transfer === false
+}
+
+function candidateDecisionLabel(decision: unknown) {
+  return ({ matched: '已匹配', queued: '已排队', verified: '已核对', remaining: '仍缺', conflict: '需选择' } as Record<string, string>)[String(decision || '')] || String(decision || '候选证据')
+}
+
 function taskHasFindings(task: AsyncTask) {
   if (task.status === 'failed' || task.status === 'cancelled') return true
   if (task.status !== 'completed') return false
+  if (task.type === 'quark_to_115_import') return !quarkImportVerified(task)
   const result = resultRecord(task)
   if (!result) return false
   if (task.type === 'emby_missing_posters') return Number(result.remaining || 0) > 0 || (Array.isArray(result.failed) && result.failed.length > 0)
   if (task.type === 'emby_metadata_repair') return Number(result.needs_review || 0) > 0 || Number(result.no_match || 0) > 0
-  if (task.type === 'series_auto_fill') return Number(result.remaining || 0) > 0 || (Array.isArray(result.libraries) && result.libraries.some((library) => typeof library === 'object' && library !== null && Array.isArray((library as Record<string, unknown>).issues) && ((library as Record<string, unknown>).issues as unknown[]).length > 0))
+  if (task.type === 'series_auto_fill') {
+    return Number(result.remaining || 0) > 0 || (autoFillSeriesResults(task).some((series) => seriesConflicts(series).length > 0 || seriesQueuedImports(series).length > 0 || textList(series.remaining_episodes).length > 0)) || (Array.isArray(result.libraries) && result.libraries.some((library) => typeof library === 'object' && library !== null && Array.isArray((library as Record<string, unknown>).issues) && ((library as Record<string, unknown>).issues as unknown[]).length > 0))
+  }
   if (task.type === 'strm_sync' || task.type === 'strm_verify' || task.type === 'emby_refresh') {
     const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
     if (Number(strm?.missing || 0) > 0 || Number(strm?.invalid || 0) > 0) return true
@@ -220,6 +399,12 @@ function taskHasFindings(task: AsyncTask) {
 }
 
 function taskStatusLabel(task: AsyncTask) {
+  if (task.type === 'quark_to_115_import') {
+    if (task.status === 'completed' && !quarkImportVerified(task)) return '已结束 · 待核对'
+    if (task.status === 'completed' && quarkImportVerified(task)) return '已完成核对'
+    const state = quarkImportState(task)
+    if (state?.phase) return state.phase === 'verified' && task.status !== 'completed' ? `${statusLabel(task.status)} · 等待任务结束` : importPhaseLabel(state.phase)
+  }
   return task.status === 'completed' && taskHasFindings(task) ? '已完成 · 有发现' : statusLabel(task.status)
 }
 
@@ -229,7 +414,9 @@ function resultSummary(task: AsyncTask) {
   switch (task.type) {
     case 'series_auto_fill': {
       const mode = result.mode === 'preview' ? '预检' : '自动转存'
-      return `${mode}：发现 ${Number(result.missing || 0)} 集，匹配 ${Number(result.matched || 0)} 集，转存 ${Number(result.transferred || 0)} 集，仍缺 ${Number(result.remaining || 0)} 集。`
+      const conflicts = autoFillSeriesResults(task).reduce((count, series) => count + seriesConflicts(series).length, 0)
+      const queued = autoFillSeriesResults(task).reduce((count, series) => count + seriesQueuedImports(series).length, 0)
+      return `${mode}：发现 ${Number(result.missing || 0)} 集，匹配 ${Number(result.matched || 0)} 集，转存 ${Number(result.transferred || 0)} 集，仍缺 ${Number(result.remaining || 0)} 集${conflicts ? `，冲突 ${conflicts} 项` : ''}${queued ? `，已排队 ${queued} 个子任务` : ''}。`
     }
     case 'emby_refresh': {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
@@ -251,7 +438,13 @@ function resultSummary(task: AsyncTask) {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
       return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}${Number(strm.removed || 0) > 0 || Number(strm.removed_directories || 0) > 0 ? ` · 已清理 ${Number(strm.removed || 0)} 个旧 STRM 和 ${Number(strm.removed_directories || 0)} 个空目录` : ''}` : 'STRM 操作已完成。'
     }
-    case 'quark_to_115_import': return `已核对 ${Number(result.files_completed || 0)} 个文件、${Number(result.bytes_completed || 0)} 字节，目标目录 /emby/_待整理。`
+    case 'quark_to_115_import': {
+      const state = quarkImportState(task)
+      const files = Number(state?.completed_files ?? result.files_completed ?? 0)
+      const bytes = Number(state?.completed_bytes ?? result.bytes_completed ?? 0)
+      const destination = String(state?.destination_path || result.destination_path || '/emby/_待整理')
+      return `${state ? importPhaseLabel(state.phase) : '等待详细核对'}：已核对 ${files} 个文件、${formatBytes(bytes)}，目标目录 ${destination}。`
+    }
     default: return '任务已保存执行结果。'
   }
 }
@@ -352,6 +545,7 @@ function buildPayload(): Record<string, unknown> {
         ...(form.target_cid.trim() ? { target_cid: form.target_cid.trim() } : {}),
         ...(form.account_id.trim() ? { account_id: form.account_id.trim() } : {}),
       }
+    case 'quark_to_115_import': throw new Error('请从“网盘文件”提交夸克分享导入。')
     case 'c115_offline_download': {
       const urls = form.urls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
       if (urls.length === 0) throw new Error('请至少填写一个下载地址。')
@@ -383,6 +577,23 @@ async function fetchSchedules() {
   }
 }
 
+async function fetchQuarkTaskDetail(taskID: string, generation: number) {
+  try {
+    const response = await fetch(`/api/v1/quark/share-imports/${encodeURIComponent(taskID)}`)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '读取夸克导入进度失败')
+    if (generation !== executionsGeneration) return
+    quarkTaskDetails.value = { ...quarkTaskDetails.value, [taskID]: data as QuarkTaskDetailResponse }
+    const detailTask = (data as QuarkTaskDetailResponse).task
+    if (detailTask?.id) asyncTasks.value = asyncTasks.value.map((task) => task.id === detailTask.id ? { ...task, ...detailTask } : task)
+    const errors = { ...quarkDetailErrors.value }
+    delete errors[taskID]
+    quarkDetailErrors.value = errors
+  } catch (error) {
+    if (generation !== executionsGeneration) return
+    quarkDetailErrors.value = { ...quarkDetailErrors.value, [taskID]: error instanceof Error ? error.message : '读取夸克导入进度失败' }
+  }
+}
 async function fetchExecutions() {
   const generation = ++executionsGeneration
   try {
@@ -393,6 +604,8 @@ async function fetchExecutions() {
     asyncTasks.value = data.tasks ?? []
     executionsLoaded.value = true
     executionsError.value = ''
+    const quarkTasks = asyncTasks.value.filter((task) => task.type === 'quark_to_115_import')
+    await Promise.all(quarkTasks.map((task) => fetchQuarkTaskDetail(task.id, generation)))
     await Promise.all(Object.keys(taskRuns.value).map((id) => fetchTaskRuns(id, true)))
   } catch (error) {
     if (generation === executionsGeneration) executionsError.value = error instanceof Error ? error.message : '读取执行记录失败'
@@ -435,6 +648,56 @@ async function runTask(task: ScheduledTask) {
     scheduleErrors.value[task.id] = error instanceof Error ? error.message : '启动任务失败'
   } finally {
     executingId.value = null
+  }
+}
+async function enqueueSeriesAutoFill(task: AsyncTask, library: Record<string, unknown>, series: Record<string, unknown>, mode: 'preview' | 'transfer') {
+  const seriesID = String(series.series_id || '').trim()
+  const libraryName = String(library.library_name || '').trim()
+  const actionKey = seriesActionKey(task, series, mode)
+  const errorKey = seriesOverrideKey(task, series)
+  if (!seriesID || !libraryName || seriesActionBusy.value) return
+  const override = seriesOverride(task, series)
+  if (mode === 'transfer' && seriesConflicts(series).length > 0 && !override) {
+    seriesActionErrors.value = { ...seriesActionErrors.value, [errorKey]: '该剧集存在多个资源候选，请先选择要转存的资源。' }
+    return
+  }
+  seriesActionBusy.value = actionKey
+  const errors = { ...seriesActionErrors.value }
+  delete errors[errorKey]
+  seriesActionErrors.value = errors
+  actionMessage.value = ''
+  try {
+    const rawLimit = Number(task.payload.candidate_limit)
+    const candidateLimit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(100, rawLimit) : 30
+    const payload: Record<string, unknown> = {
+      libraries: [libraryName],
+      series_ids: [seriesID],
+      transfer: mode === 'transfer',
+      replace_completed_pack: false,
+      candidate_limit: candidateLimit,
+      max_series: 1,
+      ...(mode === 'transfer' && override ? { candidate_overrides: { [seriesID]: override } } : {}),
+    }
+    const response = await fetch('/api/v1/tasks/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operations: [{ action: 'series_auto_fill', payload }] }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || `${mode === 'preview' ? '预检' : '转存'}任务提交失败`)
+    const queuedID = Array.isArray(data.async_task_ids) ? String(data.async_task_ids[0] || '') : String(data.task_id || data.id || '')
+    if (!queuedID) throw new Error('服务未返回可跟踪的执行记录')
+    taskRuns.value = { ...taskRuns.value, [queuedID]: [] }
+    highlightedTaskId.value = queuedID
+    actionMessage.value = mode === 'preview' ? `已为「${String(series.series_name || seriesID)}」创建预检任务。` : `已为「${String(series.series_name || seriesID)}」创建单剧集转存任务。`
+    await fetchExecutions()
+    schedulePoll(250)
+    await nextTick()
+    document.getElementById(`execution-${queuedID}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  } catch (error) {
+    seriesActionErrors.value = { ...seriesActionErrors.value, [errorKey]: error instanceof Error ? error.message : '任务提交失败' }
+  } finally {
+    seriesActionBusy.value = null
   }
 }
 
@@ -742,6 +1005,16 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
               <li><ScanSearch /><span><b>01</b> 读取已播缺集</span></li><li><ShieldCheck /><span><b>02</b> 核验剧名与集号</span></li><li><FolderDown /><span><b>03</b> 精确转存原目录</span></li><li><RefreshCcw /><span><b>04</b> 刷新并复查 Emby</span></li>
             </ol>
           </div>
+          <div v-else-if="scheduleForm.type === 'quark_to_115_import'" class="md:col-span-2 space-y-4">
+            <div class="rounded-xl border border-accent/25 bg-accent/5 p-4 text-sm text-text-muted"><strong class="font-serif text-text">夸克分享 → 默认 115</strong><p class="mt-1 text-xs leading-5">任务会保存到指定夸克目录，再逐文件下载、上传并核对；115 目标始终固定为 /emby/_待整理，不接受任意目标路径。</p></div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div><label for="quark-account-id" class="mb-2 block text-xs font-medium text-text-muted">夸克账号 ID</label><input id="quark-account-id" v-model="scheduleForm.quark_account_id" required placeholder="例如：quark-default" class="min-h-11 w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+              <div><label for="quark-target-id" class="mb-2 block text-xs font-medium text-text-muted">夸克保存目录 ID</label><input id="quark-target-id" v-model="scheduleForm.quark_target_id" required placeholder="留空不可提交；可在文件页复制目录 ID" class="min-h-11 w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+              <div class="sm:col-span-2"><label for="quark-share-url" class="mb-2 block text-xs font-medium text-text-muted">夸克分享链接</label><input id="quark-share-url" v-model="scheduleForm.share_url" type="url" required placeholder="https://pan.quark.cn/s/..." class="min-h-11 w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+              <div><label for="quark-share-password" class="mb-2 block text-xs font-medium text-text-muted">提取码（可选）</label><input id="quark-share-password" v-model="scheduleForm.share_password" type="password" autocomplete="new-password" class="min-h-11 w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+              <div><label for="quark-c115-account-id" class="mb-2 block text-xs font-medium text-text-muted">115 账号 ID</label><input id="quark-c115-account-id" v-model="scheduleForm.c115_account_id" required placeholder="指定默认 115 账号 ID" class="min-h-11 w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
+            </div>
+          </div>
           <div v-else-if="scheduleForm.type === 'emby_refresh'" class="md:col-span-2"><label for="library-id" class="block mb-2 text-xs font-medium text-text-muted">媒体库 ID（可选）</label><input id="library-id" v-model="scheduleForm.library_id" placeholder="留空时刷新全部媒体库" class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
           <template v-else-if="scheduleForm.type === 'emby_match'">
             <div><label for="item-id" class="block mb-2 text-xs font-medium text-text-muted">Emby 条目 ID</label><input id="item-id" v-model="scheduleForm.item_id" required class="w-full min-h-11 rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
@@ -839,7 +1112,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           <div class="text-xs font-mono text-text-faint sm:text-right"><span class="block">入队：{{ formatTime(task.created_at) }}</span><span class="block mt-1">更新：{{ formatTime(task.updated_at) }}</span></div>
         </div>
 
-        <div v-if="task.status === 'running' || task.progress > 0" class="flex items-center gap-3">
+        <div v-if="task.status === 'running' || taskProgress(task) > 0 || (task.type === 'quark_to_115_import' && quarkImportState(task))" class="flex items-center gap-3">
           <div class="flex-1 h-2 rounded-full bg-bg-muted/80 p-0.5 border border-border/40 overflow-hidden">
             <div
               class="h-full rounded-full transition-all duration-300"
@@ -848,11 +1121,29 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
                 'progress-streamer-warn bg-warn': taskHasFindings(task),
                 'progress-streamer bg-accent': task.status !== 'failed' && !taskHasFindings(task)
               }"
-              :style="{ width: Math.min(100, task.progress || 0) + '%' }"
+              :style="{ width: taskProgress(task) + '%' }"
             ></div>
           </div>
-          <span class="text-xs font-mono font-medium text-text-muted w-12 text-right">{{ Math.round(task.progress || 0) }}%</span>
+          <span class="text-xs font-mono font-medium text-text-muted w-12 text-right">{{ Math.round(taskProgress(task)) }}%</span>
         </div>
+        <section v-if="task.type === 'quark_to_115_import'" class="rounded-xl border border-accent/25 bg-accent/5 p-4 text-sm space-y-3" aria-label="夸克发送到 115 进度">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <strong class="font-serif text-text">{{ quarkImportState(task) ? importPhaseLabel(quarkImportState(task)?.phase) : task.status === 'completed' ? '已结束 · 详细核对不可用' : '等待检查点' }}</strong>
+            <span v-if="quarkImportState(task)?.cancel_requested" class="rounded-full border border-warn/30 bg-warn/10 px-2.5 py-1 text-xs text-warn">已记录停止请求</span>
+          </div>
+          <dl class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div><dt class="text-xs text-text-faint">文件</dt><dd class="mt-1 font-mono text-text">{{ Number(quarkImportState(task)?.completed_files || 0) }} / {{ Number(quarkImportState(task)?.total_files || quarkImportItems(task).length || 0) }} 已核对</dd></div>
+            <div><dt class="text-xs text-text-faint">字节</dt><dd class="mt-1 font-mono text-text">{{ formatBytes(Number(quarkImportState(task)?.completed_bytes || 0)) }} / {{ formatBytes(Number(quarkImportState(task)?.total_bytes || 0)) }}</dd></div>
+            <div><dt class="text-xs text-text-faint">已确认检查点</dt><dd class="mt-1 font-mono text-ok">{{ quarkCheckpointCounts(task).verified }}</dd></div>
+            <div><dt class="text-xs text-text-faint">待处理 / 失败</dt><dd class="mt-1 font-mono text-warn">{{ quarkCheckpointCounts(task).remaining }} / {{ quarkCheckpointCounts(task).failed }}</dd></div>
+          </dl>
+          <p class="text-xs text-text-muted">当前文件：{{ quarkImportState(task)?.current_file || (quarkImportState(task)?.phase === 'verified' ? '全部文件已完成核对' : '等待 worker 更新') }}</p>
+          <p v-if="quarkImportState(task)?.destination_cid" class="text-xs text-text-faint">目标：{{ quarkImportState(task)?.destination_path || '/emby/_待整理' }} · CID {{ quarkImportState(task)?.destination_cid }}</p>
+          <p v-if="quarkDetailErrors[task.id]" role="status" class="rounded-lg border border-warn/30 bg-warn/5 p-2.5 text-xs text-warn">详细检查点暂时读取失败，保留上次任务状态；不会重复提交：{{ quarkDetailErrors[task.id] }}</p>
+          <p v-if="task.status === 'failed' || task.status === 'cancelled'" class="text-xs text-text-muted">本次没有声明全部文件已核对；点击“重新执行”后将沿用已协调的检查点。</p>
+          <p v-else-if="task.status === 'completed' && !quarkImportVerified(task)" class="text-xs text-warn">任务已结束但详细检查点尚未确认全部文件，请查看任务记录后再决定是否重试。</p>
+          <p v-if="task.attempts || task.max_attempts" class="text-xs text-text-faint">执行尝试：{{ task.attempts }} / {{ task.max_attempts }}<span v-if="quarkImportState(task)?.prior_task_id"> · 来源检查点：{{ quarkImportState(task)?.prior_task_id }}</span></p>
+        </section>
 
         <div v-if="task.error" class="p-3.5 rounded-xl border border-danger/30 bg-danger/5 text-sm text-danger">{{ userError(task.error) }}</div>
 
@@ -866,11 +1157,39 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
               </dl>
               <details v-if="recordList(library.series).length" class="border-t border-border/60 px-3.5"><summary class="min-h-11 cursor-pointer py-3 text-xs font-medium text-text-muted hover:text-text">查看 {{ recordList(library.series).length }} 部剧集明细</summary>
                 <ul class="space-y-2 pb-3.5">
-                  <li v-for="series in recordList(library.series)" :key="String(series.series_id)" class="border-l-2 px-3 py-2" :class="series.issue || textList(series.remaining_episodes).length ? 'border-warn bg-warn/5' : 'border-ok bg-ok/5'">
-                    <div class="flex flex-wrap items-center justify-between gap-2"><strong class="text-sm text-text">{{ series.series_name }}</strong><span class="font-mono text-[10px] text-text-faint">{{ series.folder || series.series_id }}</span></div>
-                    <p class="mt-1 text-xs text-text-muted">缺集 {{ textList(series.missing_episodes).join('、') || '—' }}<span v-if="textList(series.matched_episodes).length"> · 候选匹配 {{ textList(series.matched_episodes).join('、') }}</span><span v-if="textList(series.transferred_episodes).length"> · 已转存 {{ textList(series.transferred_episodes).join('、') }}</span><span v-if="textList(series.remaining_episodes).length"> · 仍缺 {{ textList(series.remaining_episodes).join('、') }}</span></p>
+                  <li v-for="series in recordList(library.series)" :key="String(series.series_id)" class="border-l-2 px-3 py-2" :class="seriesConflicts(series).length || seriesQueuedImports(series).length || series.issue || textList(series.remaining_episodes).length ? 'border-warn bg-warn/5' : 'border-ok bg-ok/5'">
+                    <div class="flex flex-wrap items-center justify-between gap-2"><div class="flex flex-wrap items-center gap-2"><strong class="text-sm text-text">{{ series.series_name }}</strong><span class="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-text-muted">{{ seriesOutcomeLabel(series) }}</span></div><span class="font-mono text-[10px] text-text-faint">{{ series.folder || series.series_id }}</span></div>
+                    <p class="mt-1 text-xs text-text-muted">缺集 {{ textList(series.missing_episodes).join('、') || '—' }}<span v-if="textList(series.matched_episodes).length"> · 已匹配 {{ textList(series.matched_episodes).join('、') }}</span><span v-if="textList(series.transferred_episodes).length"> · 已核对 {{ textList(series.transferred_episodes).join('、') }}</span><span v-if="textList(series.remaining_episodes).length"> · 仍缺 {{ textList(series.remaining_episodes).join('、') }}</span></p>
                     <p v-if="series.replacement_status" class="mt-1 text-xs font-medium" :class="series.replacement_status === 'replaced' ? 'text-ok' : 'text-warn'">{{ series.replacement_status === 'replaced' ? `整包替换完成：规范目录 ${series.replacement_folder}，旧资源与恢复记录已保留。` : series.replacement_status === 'staged' ? '新整包已暂存，正在验证规范目录切换。' : series.replacement_status === 'recovery_required' ? '替换或回滚未完成，请根据恢复记录检查目录与用户状态。' : '整包替换未完成，原目录已恢复。' }}</p>
                     <p v-if="series.issue" class="mt-1 text-xs text-warn">{{ userError(String(series.issue)) }}</p>
+                    <div v-if="seriesCandidateEvidence(series).length" class="mt-3 space-y-2 rounded-lg border border-border/60 bg-bg-muted/30 p-3">
+                      <p class="text-xs font-medium text-text">候选证据（{{ seriesCandidateEvidence(series).length }}）</p>
+                      <ul class="space-y-2">
+                        <li v-for="(evidence, index) in seriesCandidateEvidence(series)" :key="`${String(evidence.resource_id || 'candidate')}:${index}`" class="rounded-lg border border-border/50 bg-surface p-2.5">
+                          <div class="flex flex-wrap items-center justify-between gap-2"><span class="text-xs font-medium text-text">{{ evidence.provider || '未知来源' }} · {{ evidence.resource_title || evidence.share_title || evidence.resource_id }}</span><span class="rounded-full border border-border/70 px-2 py-0.5 text-[10px] text-text-muted">{{ candidateDecisionLabel(evidence.decision) }}</span></div>
+                          <p class="mt-1 text-[11px] text-text-muted">匹配集 {{ textList(evidence.matched_episodes).join('、') || '—' }} · 选中文件 {{ textList(evidence.selected_names).join('、') || '—' }} · 大小 {{ formatBytes(Number(evidence.total_bytes || 0)) }}</p>
+                          <p v-if="evidence.rejection_reason" class="mt-1 text-[11px] text-warn">原因：{{ evidence.rejection_reason }}</p>
+                        </li>
+                      </ul>
+                    </div>
+                    <div v-if="seriesConflicts(series).length" class="mt-3 rounded-lg border border-warn/30 bg-warn/5 p-3">
+                      <p class="text-xs font-medium text-warn">资源冲突：转存前必须明确选择一个资源</p>
+                      <ul class="mt-2 space-y-1 text-[11px] text-text-muted"><li v-for="(conflict, index) in seriesConflicts(series)" :key="`${String(conflict.episode || 'episode')}:${index}`">{{ conflict.episode || '集数未知' }}：{{ textList(conflict.providers).join('、') || '多个来源' }} · {{ textList(conflict.resource_ids).join('、') || '资源 ID 未返回' }}<span v-if="conflict.reason"> · {{ conflict.reason }}</span></li></ul>
+                      <label :for="`series-override-${task.id}-${String(series.series_id)}`" class="mt-3 block text-xs font-medium text-text">选择转存资源</label>
+                      <select :id="`series-override-${task.id}-${String(series.series_id)}`" :value="seriesOverride(task, series)" class="mt-1 min-h-10 w-full rounded-lg border border-border/80 bg-bg px-3 text-xs text-text focus:border-accent focus:outline-none" @change="setSeriesOverride(task, series, $event)">
+                        <option value="">请选择资源（未选择时禁止转存）</option>
+                        <option v-for="resourceID in conflictResourceIDs(series)" :key="resourceID" :value="resourceID">{{ candidateResourceLabel(series, resourceID) }}</option>
+                      </select>
+                    </div>
+                    <div v-if="seriesQueuedImports(series).length" class="mt-3 rounded-lg border border-accent/25 bg-accent/5 p-3">
+                      <p class="text-xs font-medium text-accent">已排队的夸克子任务（{{ seriesQueuedImports(series).length }}）</p>
+                      <ul class="mt-2 space-y-1 text-[11px] text-text-muted"><li v-for="(queued, index) in seriesQueuedImports(series)" :key="`${String(queued.task_id || 'queued')}:${index}`">{{ queued.provider || 'quark' }} · 任务 {{ queued.task_id || '未返回 ID' }} · 集 {{ textList(queued.episodes).join('、') || '—' }} · {{ formatBytes(Number(queued.bytes || 0)) }}<span class="text-accent"> · 等待子任务核对</span></li></ul>
+                    </div>
+                    <div class="mt-3 flex flex-wrap items-center gap-2">
+                      <button type="button" :disabled="Boolean(seriesActionBusy)" :aria-label="`预检${String(series.series_name || series.series_id)}`" class="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-accent/40 px-3 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-50" @click="enqueueSeriesAutoFill(task, library, series, 'preview')"><Loader2 v-if="seriesActionBusy === seriesActionKey(task, series, 'preview')" class="h-3.5 w-3.5 animate-spin" /><ScanSearch v-else class="h-3.5 w-3.5" />{{ seriesActionBusy === seriesActionKey(task, series, 'preview') ? '正在创建预检' : '预检此剧集' }}</button>
+                      <button v-if="isPreviewResult(task) || seriesConflicts(series).length" type="button" :disabled="Boolean(seriesActionBusy) || (seriesConflicts(series).length > 0 && !seriesOverride(task, series))" :aria-label="`转存${String(series.series_name || series.series_id)}`" class="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-ok/40 px-3 text-xs font-medium text-ok hover:bg-ok/5 disabled:cursor-not-allowed disabled:opacity-50" @click="enqueueSeriesAutoFill(task, library, series, 'transfer')"><Loader2 v-if="seriesActionBusy === seriesActionKey(task, series, 'transfer')" class="h-3.5 w-3.5 animate-spin" /><FolderDown v-else class="h-3.5 w-3.5" />{{ seriesConflicts(series).length && !seriesOverride(task, series) ? '先选择资源' : seriesActionBusy === seriesActionKey(task, series, 'transfer') ? '正在创建转存' : '单剧集转存' }}</button>
+                    </div>
+                    <p v-if="seriesActionErrors[seriesOverrideKey(task, series)]" role="alert" class="mt-2 rounded-lg border border-danger/30 bg-danger/5 p-2.5 text-xs text-danger">{{ seriesActionErrors[seriesOverrideKey(task, series)] }}</p>
                   </li>
                 </ul>
               </details>

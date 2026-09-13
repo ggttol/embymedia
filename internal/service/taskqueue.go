@@ -150,6 +150,120 @@ func stringSlicePayload(payload map[string]any, key string) ([]string, error) {
 	}
 }
 
+func optionalStringSlicePayload(payload map[string]any, key string) ([]string, error) {
+	value, present := payload[key]
+	if !present || value == nil {
+		return nil, nil
+	}
+	switch values := value.(type) {
+	case []string:
+		result := make([]string, 0, len(values))
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				return nil, fmt.Errorf("%s must contain non-empty strings", key)
+			}
+			if _, ok := seen[value]; ok {
+				return nil, fmt.Errorf("%s must not contain duplicates", key)
+			}
+			seen[value] = struct{}{}
+			result = append(result, value)
+		}
+		return result, nil
+	case []any:
+		result := make([]string, 0, len(values))
+		seen := make(map[string]struct{}, len(values))
+		for _, raw := range values {
+			value, ok := raw.(string)
+			value = strings.TrimSpace(value)
+			if !ok || value == "" {
+				return nil, fmt.Errorf("%s must contain non-empty strings", key)
+			}
+			if _, ok := seen[value]; ok {
+				return nil, fmt.Errorf("%s must not contain duplicates", key)
+			}
+			seen[value] = struct{}{}
+			result = append(result, value)
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("%s must be an array of strings", key)
+	}
+}
+func validateQuarkImportPayload(payload map[string]any, allowAutofillBinding bool) error {
+	for _, key := range []string{"quark_account_id", "quark_target_id", "share_url", "c115_account_id"} {
+		if _, err := stringPayload(payload, key, true); err != nil {
+			return err
+		}
+	}
+	priorTaskID, err := stringPayload(payload, "prior_import_task_id", false)
+	if err != nil {
+		return err
+	}
+	parentTaskID, err := stringPayload(payload, "parent_task_id", false)
+	if err != nil {
+		return err
+	}
+	selected, err := optionalStringSlicePayload(payload, "selected_source_ids")
+	if err != nil {
+		return err
+	}
+	selections, err := shareSelectionsPayload(payload, "selected_source_manifest")
+	if err != nil {
+		return err
+	}
+	bindingKeys := []string{"autofill_library_name", "autofill_library_id", "autofill_library_cid", "autofill_series_id", "autofill_tmdb_id", "autofill_series_folder"}
+	bound := false
+	for _, key := range bindingKeys {
+		value, err := stringPayload(payload, key, false)
+		if err != nil {
+			return err
+		}
+		bound = bound || value != ""
+	}
+	expected, err := optionalStringSlicePayload(payload, "expected_episodes")
+	if err != nil {
+		return err
+	}
+	if !bound {
+		if len(selected) > 0 || len(selections) > 0 || len(expected) > 0 || parentTaskID != "" {
+			return fmt.Errorf("source selections, parent_task_id, and expected_episodes are reserved for internal autofill imports")
+		}
+		if priorTaskID != "" && !allowAutofillBinding {
+			return fmt.Errorf("prior_import_task_id is reserved for internal retry")
+		}
+		return nil
+	}
+	if !allowAutofillBinding {
+		return fmt.Errorf("autofill destination bindings are internal and cannot be submitted directly")
+	}
+	if len(selected) == 0 {
+		return fmt.Errorf("selected_source_ids is required for autofill transfer")
+	}
+	if len(expected) == 0 {
+		return fmt.Errorf("expected_episodes is required for autofill transfer")
+	}
+	if parentTaskID == "" {
+		return fmt.Errorf("parent_task_id is required for autofill transfer")
+	}
+	if len(selections) != len(selected) {
+		return fmt.Errorf("selected_source_manifest must describe every selected source")
+	}
+	for index := range selected {
+		if selections[index].ID != selected[index] {
+			return fmt.Errorf("selected_source_manifest order must match selected_source_ids")
+		}
+	}
+	for _, key := range bindingKeys {
+		value, _ := stringPayload(payload, key, false)
+		if value == "" {
+			return fmt.Errorf("%s is required for autofill transfer", key)
+		}
+	}
+	return nil
+}
+
 func validateTask(taskType string, payload map[string]any) error {
 	switch taskType {
 	case "emby_refresh":
@@ -204,17 +318,7 @@ func validateTask(taskType string, payload map[string]any) error {
 		}
 		return nil
 	case "quark_to_115_import":
-		for _, key := range []string{"quark_account_id", "quark_target_id", "share_url", "c115_account_id"} {
-			if _, err := stringPayload(payload, key, true); err != nil {
-				return err
-			}
-		}
-		for _, key := range []string{"share_password", "prior_import_task_id"} {
-			if _, err := stringPayload(payload, key, false); err != nil {
-				return err
-			}
-		}
-		return nil
+		return validateQuarkImportPayload(payload, false)
 	case "strm_sync", "strm_verify":
 		_, err := stringPayload(payload, "library", false)
 		return err
@@ -246,6 +350,17 @@ func (s *TaskQueueService) enqueue(taskType string, payload map[string]any, sche
 	if err := validateTask(taskType, payload); err != nil {
 		return nil, err
 	}
+	return s.persistTask(taskType, payload, scheduleID)
+}
+
+func (s *TaskQueueService) enqueueAutofillQuarkImport(payload map[string]any) (*domain.AsyncTask, error) {
+	if err := validateQuarkImportPayload(payload, true); err != nil {
+		return nil, err
+	}
+	return s.persistTask("quark_to_115_import", payload, "")
+}
+
+func (s *TaskQueueService) persistTask(taskType string, payload map[string]any, scheduleID string) (*domain.AsyncTask, error) {
 	now := time.Now()
 	task := &domain.AsyncTask{
 		ID:          uuid.NewString(),
@@ -547,6 +662,7 @@ func (s *TaskQueueService) Retry(taskID string) (*domain.AsyncTask, error) {
 	}
 	if task.Type == "quark_to_115_import" {
 		payload["prior_import_task_id"] = task.ID
+		return s.enqueueAutofillQuarkImport(payload)
 	}
 	return s.enqueue(task.Type, payload, task.ScheduleID)
 }

@@ -39,26 +39,58 @@ const (
 
 type seriesAutoFillSpec struct {
 	Libraries            []string
+	SeriesIDs            []string
+	CandidateOverrides   map[string]string
+	ParentTaskID         string
 	Transfer             bool
 	ReplaceCompletedPack bool
 	CandidateLimit       int
 	MaxSeries            int
 }
 
+type AutoFillCandidateEvidence struct {
+	Provider        string   `json:"provider"`
+	ResourceID      string   `json:"resource_id,omitempty"`
+	ResourceTitle   string   `json:"resource_title,omitempty"`
+	ShareTitle      string   `json:"share_title,omitempty"`
+	MatchedEpisodes []string `json:"matched_episodes,omitempty"`
+	SelectedNames   []string `json:"selected_names,omitempty"`
+	TotalBytes      int64    `json:"total_bytes,omitempty"`
+	Decision        string   `json:"decision,omitempty"`
+	RejectionReason string   `json:"rejection_reason,omitempty"`
+}
+
+type AutoFillConflict struct {
+	Episode     string   `json:"episode"`
+	ResourceIDs []string `json:"resource_ids"`
+}
+
+type AutoFillQueuedImport struct {
+	TaskID        string   `json:"task_id"`
+	Provider      string   `json:"provider"`
+	ResourceID    string   `json:"resource_id,omitempty"`
+	Episodes      []string `json:"episodes"`
+	SelectedNames []string `json:"selected_names,omitempty"`
+	Bytes         int64    `json:"bytes,omitempty"`
+}
+
 // SeriesAutoFillResult records discovery, exact transfer, and post-scan verification for one Series.
 type SeriesAutoFillResult struct {
-	SeriesID            string            `json:"series_id"`
-	SeriesName          string            `json:"series_name"`
-	Folder              string            `json:"folder,omitempty"`
-	MissingEpisodes     []string          `json:"missing_episodes"`
-	MatchedEpisodes     []string          `json:"matched_episodes,omitempty"`
-	Transferred         []string          `json:"transferred_episodes,omitempty"`
-	RemainingEpisodes   []string          `json:"remaining_episodes,omitempty"`
-	CandidatesChecked   int               `json:"candidates_checked"`
-	Issue               string            `json:"issue,omitempty"`
-	ReplacementStatus   string            `json:"replacement_status,omitempty"`
-	ReplacementFolder   string            `json:"replacement_folder,omitempty"`
-	ReplacementRecovery map[string]string `json:"replacement_recovery,omitempty"`
+	SeriesID            string                      `json:"series_id"`
+	SeriesName          string                      `json:"series_name"`
+	Folder              string                      `json:"folder,omitempty"`
+	MissingEpisodes     []string                    `json:"missing_episodes"`
+	MatchedEpisodes     []string                    `json:"matched_episodes,omitempty"`
+	Transferred         []string                    `json:"transferred_episodes,omitempty"`
+	RemainingEpisodes   []string                    `json:"remaining_episodes,omitempty"`
+	CandidatesChecked   int                         `json:"candidates_checked"`
+	CandidateEvidence   []AutoFillCandidateEvidence `json:"candidate_evidence,omitempty"`
+	Conflicts           []AutoFillConflict          `json:"conflicts,omitempty"`
+	QueuedImports       []AutoFillQueuedImport      `json:"queued_imports,omitempty"`
+	Issue               string                      `json:"issue,omitempty"`
+	ReplacementStatus   string                      `json:"replacement_status,omitempty"`
+	ReplacementFolder   string                      `json:"replacement_folder,omitempty"`
+	ReplacementRecovery map[string]string           `json:"replacement_recovery,omitempty"`
 	replacement         *completedPackReplacement
 	probeErr            error
 }
@@ -77,15 +109,19 @@ type LibraryAutoFillResult struct {
 }
 
 type autoFillCandidate struct {
-	ID       string
-	Title    string
-	URL      string
-	Password string
+	ID             string
+	Provider       string
+	Title          string
+	URL            string
+	Password       string
+	DiscoveryError string
 }
 
 type autoFillLeaf struct {
 	ID        string
+	Revision  string
 	Name      string
+	Size      int64
 	Ancestors []string
 }
 
@@ -136,6 +172,34 @@ func booleanPayload(payload map[string]any, key string, fallback bool) (bool, er
 	return result, nil
 }
 
+func candidateOverridesPayload(payload map[string]any) (map[string]string, error) {
+	value, present := payload["candidate_overrides"]
+	if !present {
+		return nil, nil
+	}
+	result := make(map[string]string)
+	switch values := value.(type) {
+	case map[string]string:
+		for key, value := range values {
+			if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("candidate_overrides must contain non-empty IDs")
+			}
+			result[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		}
+	case map[string]any:
+		for key, value := range values {
+			text, ok := value.(string)
+			if !ok || strings.TrimSpace(key) == "" || strings.TrimSpace(text) == "" {
+				return nil, fmt.Errorf("candidate_overrides must map series IDs to non-empty resource IDs")
+			}
+			result[strings.TrimSpace(key)] = strings.TrimSpace(text)
+		}
+	default:
+		return nil, fmt.Errorf("candidate_overrides must be an object")
+	}
+	return result, nil
+}
+
 func resolveSeriesAutoFillSpec(payload map[string]any) (seriesAutoFillSpec, error) {
 	libraries, err := stringSlicePayload(payload, "libraries")
 	if err != nil {
@@ -150,6 +214,14 @@ func resolveSeriesAutoFillSpec(payload map[string]any) (seriesAutoFillSpec, erro
 			return seriesAutoFillSpec{}, fmt.Errorf("libraries must not contain duplicates")
 		}
 		seen[library] = struct{}{}
+	}
+	seriesIDs, err := optionalStringSlicePayload(payload, "series_ids")
+	if err != nil {
+		return seriesAutoFillSpec{}, err
+	}
+	overrides, err := candidateOverridesPayload(payload)
+	if err != nil {
+		return seriesAutoFillSpec{}, err
 	}
 	transfer, err := booleanPayload(payload, "transfer", true)
 	if err != nil {
@@ -167,9 +239,76 @@ func resolveSeriesAutoFillSpec(payload map[string]any) (seriesAutoFillSpec, erro
 	if err != nil {
 		return seriesAutoFillSpec{}, err
 	}
-	return seriesAutoFillSpec{Libraries: libraries, Transfer: transfer, ReplaceCompletedPack: replaceCompletedPack, CandidateLimit: candidateLimit, MaxSeries: maxSeries}, nil
+	return seriesAutoFillSpec{Libraries: libraries, SeriesIDs: seriesIDs, CandidateOverrides: overrides, Transfer: transfer, ReplaceCompletedPack: replaceCompletedPack, CandidateLimit: candidateLimit, MaxSeries: maxSeries}, nil
 }
 
+func parseAutoFillCandidates(result map[string]any, providerName string) []autoFillCandidate {
+	links, _ := result["links"].([]any)
+	candidates := make([]autoFillCandidate, 0, len(links))
+	seen := make(map[string]struct{})
+	providerName = strings.ToLower(strings.TrimSpace(providerName))
+	if providerName == "" {
+		providerName = "115"
+	}
+	for _, value := range links {
+		link, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		rawURL, _ := link["url"].(string)
+		title, _ := link["title"].(string)
+		if rawURL == "" || title == "" {
+			continue
+		}
+		key := providerName + "\x00" + rawURL
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		password, _ := link["password"].(string)
+		var id string
+		switch value := link["id"].(type) {
+		case float64:
+			id = strconv.FormatFloat(value, 'f', -1, 64)
+		default:
+			id = fmt.Sprint(value)
+		}
+		candidates = append(candidates, autoFillCandidate{ID: id, Provider: providerName, Title: title, URL: rawURL, Password: password})
+	}
+	return candidates
+}
+
+func (s *TaskQueueService) searchAutoFillCandidates(ctx context.Context, seriesName string, limit int) ([]autoFillCandidate, []error, error) {
+	result, err := s.driveSvc.SearchResourcesCtx(ctx, url.Values{
+		"q": {seriesName}, "disk_type": {"115"}, "sort": {"latest"}, "limit": {strconv.Itoa(limit)},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	c115Candidates := parseAutoFillCandidates(result, "115")
+	quarkCandidates := []autoFillCandidate(nil)
+	var isolated []error
+	if _, err := s.driveSvc.GetDefaultAccount("quark"); err == nil {
+		result, err = s.driveSvc.SearchResourcesCtx(ctx, url.Values{
+			"q": {seriesName}, "disk_type": {"quark"}, "sort": {"latest"}, "limit": {strconv.Itoa(limit)},
+		})
+		if err != nil {
+			isolated = append(isolated, fmt.Errorf("quark resource discovery: %w", err))
+		} else {
+			quarkCandidates = parseAutoFillCandidates(result, "quark")
+		}
+	}
+	candidates := make([]autoFillCandidate, 0, limit)
+	for index := 0; len(candidates) < limit && (index < len(c115Candidates) || index < len(quarkCandidates)); index++ {
+		if index < len(c115Candidates) {
+			candidates = append(candidates, c115Candidates[index])
+		}
+		if index < len(quarkCandidates) && len(candidates) < limit {
+			candidates = append(candidates, quarkCandidates[index])
+		}
+	}
+	return candidates, isolated, nil
+}
 func normalizeMediaTitle(value string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsNumber(r) {
@@ -207,47 +346,6 @@ func episodeKeysFromName(name string) []episodeKey {
 	return keys
 }
 
-func parseAutoFillCandidates(result map[string]any) []autoFillCandidate {
-	links, _ := result["links"].([]any)
-	candidates := make([]autoFillCandidate, 0, len(links))
-	seen := make(map[string]struct{})
-	for _, value := range links {
-		link, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		rawURL, _ := link["url"].(string)
-		title, _ := link["title"].(string)
-		if rawURL == "" || title == "" {
-			continue
-		}
-		if _, duplicate := seen[rawURL]; duplicate {
-			continue
-		}
-		seen[rawURL] = struct{}{}
-		password, _ := link["password"].(string)
-		var id string
-		switch value := link["id"].(type) {
-		case float64:
-			id = strconv.FormatFloat(value, 'f', -1, 64)
-		default:
-			id = fmt.Sprint(value)
-		}
-		candidates = append(candidates, autoFillCandidate{ID: id, Title: title, URL: rawURL, Password: password})
-	}
-	return candidates
-}
-
-func (s *TaskQueueService) searchAutoFillCandidates(ctx context.Context, seriesName string, limit int) ([]autoFillCandidate, error) {
-	result, err := s.driveSvc.SearchResourcesCtx(ctx, url.Values{
-		"q": {seriesName}, "disk_type": {"115"}, "sort": {"latest"}, "limit": {strconv.Itoa(limit)},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return parseAutoFillCandidates(result), nil
-}
-
 func stopAutoFillShareProbes(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
@@ -257,53 +355,50 @@ func stopAutoFillShareProbes(err error) bool {
 }
 
 func (s *TaskQueueService) scanAutoFillShare(ctx context.Context, candidate autoFillCandidate) (string, []autoFillLeaf, error) {
-	account, err := s.driveSvc.getAccount("")
-	if err != nil {
-		return "", nil, err
+	provider := strings.ToLower(strings.TrimSpace(candidate.Provider))
+	if provider == "" {
+		provider = "115"
 	}
-	shareCode, receiveCode, err := ParseShareCode(candidate.URL, candidate.Password)
-	if err != nil {
-		return "", nil, err
-	}
-	title := ""
-	leaves := make([]autoFillLeaf, 0)
-	seenDirectories := make(map[string]struct{})
-	var walk func(string, int, []string) error
-	walk = func(cid string, depth int, ancestors []string) error {
-		if depth > autoFillShareDepthLimit {
-			return fmt.Errorf("share directory depth exceeds %d", autoFillShareDepthLimit)
+	if provider != "quark" {
+		account, err := s.driveSvc.GetDefaultAccount("115")
+		if err != nil {
+			return "", nil, err
 		}
-		if _, exists := seenDirectories[cid]; exists {
-			return nil
+		snapshot, err := s.driveSvc.SnapshotProviderShareTree(ctx, "115", account.ID, candidate.URL, candidate.Password)
+		if err != nil {
+			return snapshot.Title, nil, err
 		}
-		seenDirectories[cid] = struct{}{}
-		pageTitle, entries, snapshotErr := s.driveSvc.snapshotShareEntries(ctx, account, shareCode, receiveCode, cid)
-		if title == "" {
-			title = pageTitle
-		}
-		for _, entry := range entries {
-			if len(leaves)+len(seenDirectories) > autoFillShareEntryLimit {
-				return errors.Join(snapshotErr, fmt.Errorf("share tree exceeds %d entries", autoFillShareEntryLimit))
-			}
+		leaves := make([]autoFillLeaf, 0, len(snapshot.Entries))
+		for _, entry := range snapshot.Entries {
 			if entry.IsDir {
-				if snapshotErr != nil {
-					continue
-				}
-				if err := walk(entry.ID, depth+1, append(ancestors, entry.Name)); err != nil {
-					return err
-				}
 				continue
 			}
-			if _, video := videoExtensions[strings.ToLower(filepath.Ext(entry.Name))]; video {
-				leaves = append(leaves, autoFillLeaf{ID: entry.ID, Name: entry.Name, Ancestors: append([]string(nil), ancestors...)})
+			if _, video := videoExtensions[strings.ToLower(filepath.Ext(entry.Name))]; !video {
+				continue
 			}
+			leaves = append(leaves, autoFillLeaf{ID: entry.ID, Revision: entry.Revision, Name: entry.Name, Size: entry.Size, Ancestors: append([]string(nil), entry.Ancestors...)})
 		}
-		return snapshotErr
+		return snapshot.Title, leaves, nil
 	}
-	if err := walk("0", 0, nil); err != nil {
-		return title, leaves, err
+	account, err := s.driveSvc.GetDefaultAccount("quark")
+	if err != nil {
+		return "", nil, err
 	}
-	return title, leaves, nil
+	snapshot, err := s.driveSvc.SnapshotProviderShareTree(ctx, "quark", account.ID, candidate.URL, candidate.Password)
+	if err != nil {
+		return snapshot.Title, nil, err
+	}
+	leaves := make([]autoFillLeaf, 0, len(snapshot.Entries))
+	for _, entry := range snapshot.Entries {
+		if entry.IsDir {
+			continue
+		}
+		if _, video := videoExtensions[strings.ToLower(filepath.Ext(entry.Name))]; !video {
+			continue
+		}
+		leaves = append(leaves, autoFillLeaf{ID: entry.ID, Revision: entry.Revision, Name: entry.Name, Size: entry.Size, Ancestors: append([]string(nil), entry.Ancestors...)})
+	}
+	return snapshot.Title, leaves, nil
 }
 
 func (s *TaskQueueService) resolveAutoFillFolder(ctx context.Context, libraryCID, folderName string) (string, error) {
@@ -355,6 +450,14 @@ func waitForAutoFillFiles(ctx context.Context, paths []string) error {
 	}
 }
 
+func setEpisodeKeys(keys []episodeKey) map[episodeKey]struct{} {
+	result := make(map[episodeKey]struct{}, len(keys))
+	for _, key := range keys {
+		result[key] = struct{}{}
+	}
+	return result
+}
+
 func sortedEpisodeLabels(keys map[episodeKey]struct{}) []string {
 	ordered := make([]episodeKey, 0, len(keys))
 	for key := range keys {
@@ -388,6 +491,53 @@ func gapsBySeries(episodes []EmbyMissingEpisode) ([]string, map[string]map[episo
 	return order, gaps, names
 }
 
+func filterAutoFillMissingEpisodes(episodes []EmbyMissingEpisode, seriesIDs []string) []EmbyMissingEpisode {
+	if len(seriesIDs) == 0 {
+		return episodes
+	}
+	allowed := make(map[string]struct{}, len(seriesIDs))
+	for _, id := range seriesIDs {
+		allowed[id] = struct{}{}
+	}
+	filtered := make([]EmbyMissingEpisode, 0, len(episodes))
+	for _, episode := range episodes {
+		if _, ok := allowed[episode.SeriesID]; ok {
+			filtered = append(filtered, episode)
+		}
+	}
+	return filtered
+}
+
+func publicAutoFillError(candidate autoFillCandidate, err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	for _, secret := range []string{candidate.URL, candidate.Password} {
+		if secret != "" {
+			message = strings.ReplaceAll(message, secret, "[redacted]")
+		}
+	}
+	return message
+}
+
+func (s *TaskQueueService) cancelQueuedAutoFillImports(results []LibraryAutoFillResult) error {
+	var result error
+	for _, libraryResult := range results {
+		for _, seriesResult := range libraryResult.Series {
+			for _, queued := range seriesResult.QueuedImports {
+				cancelled, err := s.db.CancelPendingAsyncTask(queued.TaskID)
+				if err != nil {
+					result = errors.Join(result, fmt.Errorf("cancel queued Quark import %s: %w", queued.TaskID, err))
+				} else if !cancelled {
+					result = errors.Join(result, fmt.Errorf("queued Quark import %s was no longer pending during parent cleanup", queued.TaskID))
+				}
+			}
+		}
+	}
+	return result
+}
+
 func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library domain.EmbyLibrary, libraryCID string, gaps map[episodeKey]struct{}, seriesID, seriesName string, canonical *domain.EmbyMediaItem, tmdbCount int, spec seriesAutoFillSpec) (SeriesAutoFillResult, []string) {
 	result := SeriesAutoFillResult{SeriesID: seriesID, SeriesName: seriesName, MissingEpisodes: sortedEpisodeLabels(gaps)}
 	if canonical == nil || canonical.Type != "Series" {
@@ -415,7 +565,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		result.RemainingEpisodes = result.MissingEpisodes
 		return result, nil
 	}
-	candidates, err := s.searchAutoFillCandidates(ctx, seriesName, spec.CandidateLimit)
+	candidates, discoveryErrors, err := s.searchAutoFillCandidates(ctx, seriesName, spec.CandidateLimit)
 	if err != nil {
 		result.Issue = err.Error()
 		result.RemainingEpisodes = result.MissingEpisodes
@@ -448,80 +598,237 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 	var inspectionErrors []error
 	transferredPaths := make([]string, 0)
 	mediaRoot, _ := s.db.GetSetting("media_root")
+	for _, discoveryErr := range discoveryErrors {
+		inspectionErrors = append(inspectionErrors, discoveryErr)
+		result.CandidateEvidence = append(result.CandidateEvidence, AutoFillCandidateEvidence{Provider: "quark", Decision: "rejected", RejectionReason: discoveryErr.Error()})
+	}
+	type candidateMatch struct {
+		candidate         autoFillCandidate
+		shareTitle        string
+		selectedIDs       []string
+		selectedKeys      []episodeKey
+		selectedNames     []string
+		selectedRevisions []string
+		selectedSizes     []int64
+		totalBytes        int64
+	}
+	inspected := make([]candidateMatch, 0, len(candidates))
 	for _, candidate := range candidates {
-		if len(unmatched) == 0 {
-			break
-		}
 		if err := ctx.Err(); err != nil {
 			result.probeErr = err
 			result.Issue = err.Error()
 			break
 		}
 		result.CandidatesChecked++
-		shareTitle, leaves, scanErr := s.scanAutoFillShare(ctx, candidate)
-		if scanErr != nil {
-			result.probeErr = scanErr
-			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %w", candidate.ID, scanErr))
+		provider := strings.ToLower(strings.TrimSpace(candidate.Provider))
+		if provider == "" {
+			provider = "115"
 		}
-		selectedIDs := make([]string, 0)
-		selectedKeys := make([]episodeKey, 0)
-		selectedNames := make([]string, 0)
+		evidence := AutoFillCandidateEvidence{Provider: provider, ResourceID: candidate.ID, ResourceTitle: candidate.Title}
+		if candidate.DiscoveryError != "" {
+			evidence.Decision, evidence.RejectionReason = "rejected", candidate.DiscoveryError
+			result.CandidateEvidence = append(result.CandidateEvidence, evidence)
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %s", candidate.ID, candidate.DiscoveryError))
+			continue
+		}
+		shareTitle, leaves, scanErr := s.scanAutoFillShare(ctx, candidate)
+		evidence.ShareTitle = shareTitle
+		if scanErr != nil {
+			publicError := publicAutoFillError(candidate, scanErr)
+			evidence.Decision, evidence.RejectionReason = "rejected", publicError
+			result.CandidateEvidence = append(result.CandidateEvidence, evidence)
+			result.probeErr = scanErr
+			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %s", candidate.ID, publicError))
+			if stopAutoFillShareProbes(scanErr) {
+				break
+			}
+			continue
+		}
 		claimed := make(map[episodeKey]struct{})
+		match := candidateMatch{candidate: candidate, shareTitle: shareTitle}
 		for _, leaf := range leaves {
 			if !autoFillEpisodeIdentityMatches(series, candidate.Title, shareTitle, leaf) {
 				continue
 			}
 			for _, key := range episodeKeysFromName(leaf.Name) {
-				if _, needed := unmatched[key]; !needed {
+				if _, needed := gaps[key]; !needed {
 					continue
 				}
 				if _, duplicate := claimed[key]; duplicate {
 					continue
 				}
 				claimed[key] = struct{}{}
-				matched[key] = struct{}{}
-				selectedIDs = append(selectedIDs, leaf.ID)
-				selectedKeys = append(selectedKeys, key)
-				selectedNames = append(selectedNames, leaf.Name)
+				match.selectedIDs = append(match.selectedIDs, leaf.ID)
+				match.selectedKeys = append(match.selectedKeys, key)
+				match.selectedNames = append(match.selectedNames, leaf.Name)
+				match.selectedRevisions = append(match.selectedRevisions, leaf.Revision)
+				match.selectedSizes = append(match.selectedSizes, leaf.Size)
+				match.totalBytes += leaf.Size
 				break
 			}
 		}
-		if scanErr != nil {
-			if stopAutoFillShareProbes(scanErr) {
-				break
-			}
-			continue
+		evidence.MatchedEpisodes = sortedEpisodeLabels(setEpisodeKeys(match.selectedKeys))
+		evidence.SelectedNames = append([]string(nil), match.selectedNames...)
+		evidence.TotalBytes = match.totalBytes
+		if len(match.selectedIDs) == 0 {
+			evidence.Decision = "no_match"
+		} else {
+			evidence.Decision = "matched"
+			inspected = append(inspected, match)
 		}
-		if len(selectedIDs) == 0 {
+		result.CandidateEvidence = append(result.CandidateEvidence, evidence)
+	}
+	byEpisode := make(map[episodeKey][]int)
+	for index, candidate := range inspected {
+		for _, key := range candidate.selectedKeys {
+			byEpisode[key] = append(byEpisode[key], index)
+		}
+	}
+	episodeOrder := make([]episodeKey, 0, len(byEpisode))
+	for key := range byEpisode {
+		episodeOrder = append(episodeOrder, key)
+	}
+	sort.Slice(episodeOrder, func(i, j int) bool {
+		if episodeOrder[i].Season != episodeOrder[j].Season {
+			return episodeOrder[i].Season < episodeOrder[j].Season
+		}
+		return episodeOrder[i].Episode < episodeOrder[j].Episode
+	})
+	chosen := make(map[int][]episodeKey)
+	for _, key := range episodeOrder {
+		refs := byEpisode[key]
+		selected := -1
+		if override := strings.TrimSpace(spec.CandidateOverrides[seriesID]); override != "" {
+			for _, index := range refs {
+				candidate := inspected[index].candidate
+				providerQualifiedID := candidate.Provider + ":" + candidate.ID
+				if candidate.ID == override || providerQualifiedID == override {
+					selected = index
+					break
+				}
+			}
+			if selected < 0 {
+				result.Conflicts = append(result.Conflicts, AutoFillConflict{Episode: key.String(), ResourceIDs: []string{override}})
+				continue
+			}
+		} else if len(refs) > 1 {
+			ids := make([]string, 0, len(refs))
+			for _, index := range refs {
+				ids = append(ids, inspected[index].candidate.Provider+":"+inspected[index].candidate.ID)
+			}
+			sort.Strings(ids)
+			result.Conflicts = append(result.Conflicts, AutoFillConflict{Episode: key.String(), ResourceIDs: ids})
 			continue
+		} else {
+			selected = refs[0]
+		}
+		chosen[selected] = append(chosen[selected], key)
+		matched[key] = struct{}{}
+	}
+	chosenIndices := make([]int, 0, len(chosen))
+	for index := range chosen {
+		chosenIndices = append(chosenIndices, index)
+	}
+	sort.Ints(chosenIndices)
+	for _, index := range chosenIndices {
+		keys := chosen[index]
+		match := inspected[index]
+		provider := strings.ToLower(strings.TrimSpace(match.candidate.Provider))
+		if provider == "" {
+			provider = "115"
 		}
 		if !spec.Transfer {
-			for _, key := range selectedKeys {
+			for _, key := range keys {
 				delete(unmatched, key)
 			}
 			continue
 		}
-		account, err := s.driveSvc.getAccount("")
-		if err != nil {
-			result.Issue = err.Error()
-			break
-		}
-		shareCode, receiveCode, err := ParseShareCode(candidate.URL, candidate.Password)
-		if err != nil {
+		if provider == "quark" {
+			quarkAccount, accountErr := s.driveSvc.GetDefaultAccount("quark")
+			targetID, targetErr := s.db.GetSetting("quark_autofill_target_id")
+			c115Account, c115Err := s.driveSvc.GetDefaultAccount("115")
+			if accountErr != nil || targetErr != nil || strings.TrimSpace(targetID) == "" || c115Err != nil {
+				err := errors.Join(accountErr, targetErr, c115Err)
+				if err == nil {
+					err = fmt.Errorf("quark_autofill_target_id is required")
+				}
+				result.Issue = err.Error()
+				lastTransferError = err.Error()
+				continue
+			}
+			selectedKeys := make(map[episodeKey]struct{}, len(keys))
+			selectedIDs := make([]string, 0, len(match.selectedIDs))
+			selectedNames := make([]string, 0, len(match.selectedNames))
+			selectedManifest := make([]ShareSelection, 0, len(match.selectedIDs))
+			var selectedBytes int64
+			for i, key := range match.selectedKeys {
+				for _, wanted := range keys {
+					if key == wanted {
+						selectedKeys[key] = struct{}{}
+						selectedIDs = append(selectedIDs, match.selectedIDs[i])
+						selectedNames = append(selectedNames, match.selectedNames[i])
+						selectedManifest = append(selectedManifest, ShareSelection{ID: match.selectedIDs[i], Revision: match.selectedRevisions[i], Name: match.selectedNames[i], Size: match.selectedSizes[i]})
+						selectedBytes += match.selectedSizes[i]
+					}
+				}
+			}
+			payload := map[string]any{
+				"quark_account_id": quarkAccount.ID, "quark_target_id": strings.TrimSpace(targetID),
+				"share_url": match.candidate.URL, "share_password": match.candidate.Password,
+				"c115_account_id": c115Account.ID, "selected_source_ids": selectedIDs, "selected_source_manifest": selectedManifest,
+				"parent_task_id":        spec.ParentTaskID,
+				"autofill_library_name": library.Name, "autofill_library_id": library.ID,
+				"autofill_library_cid": libraryCID, "autofill_series_id": seriesID,
+				"autofill_tmdb_id": tmdbID, "autofill_series_folder": folder,
+				"expected_episodes": sortedEpisodeLabels(selectedKeys),
+			}
+			child, queueErr := s.enqueueAutofillQuarkImport(payload)
+			if queueErr != nil {
+				result.Issue = queueErr.Error()
+				lastTransferError = queueErr.Error()
+				continue
+			}
+			result.QueuedImports = append(result.QueuedImports, AutoFillQueuedImport{TaskID: child.ID, Provider: "quark", ResourceID: match.candidate.ID, Episodes: sortedEpisodeLabels(selectedKeys), SelectedNames: selectedNames, Bytes: selectedBytes})
+			for _, key := range keys {
+				delete(unmatched, key)
+			}
 			continue
 		}
-		if _, _, err := s.driveSvc.receiveShareEntriesCtx(ctx, account, shareCode, receiveCode, selectedIDs, targetCID, shareTitle); err != nil {
-			lastTransferError = err.Error()
-			if stopAutoFillShareProbes(err) {
-				result.probeErr = err
+		account, accountErr := s.driveSvc.getAccount("")
+		if accountErr != nil {
+			result.Issue = accountErr.Error()
+			lastTransferError = accountErr.Error()
+			continue
+		}
+		shareCode, receiveCode, parseErr := ParseShareCode(match.candidate.URL, match.candidate.Password)
+		if parseErr != nil {
+			lastTransferError = publicAutoFillError(match.candidate, parseErr)
+			continue
+		}
+		selectedIDs := make([]string, 0, len(match.selectedIDs))
+		selectedNames := make([]string, 0, len(match.selectedNames))
+		for i, key := range match.selectedKeys {
+			for _, wanted := range keys {
+				if key == wanted {
+					selectedIDs = append(selectedIDs, match.selectedIDs[i])
+					selectedNames = append(selectedNames, match.selectedNames[i])
+				}
+			}
+		}
+		if _, _, transferErr := s.driveSvc.receiveShareEntriesCtx(ctx, account, shareCode, receiveCode, selectedIDs, targetCID, match.shareTitle); transferErr != nil {
+			lastTransferError = transferErr.Error()
+			if stopAutoFillShareProbes(transferErr) {
+				result.probeErr = transferErr
 				break
 			}
 			continue
 		}
-		for index, key := range selectedKeys {
+		for i, key := range keys {
 			delete(unmatched, key)
 			transferred[key] = struct{}{}
-			transferredPaths = append(transferredPaths, filepath.Join(mediaRoot, library.Name, folder, selectedNames[index]))
+			if i < len(selectedNames) {
+				transferredPaths = append(transferredPaths, filepath.Join(mediaRoot, library.Name, folder, selectedNames[i]))
+			}
 		}
 	}
 	if len(unmatched) > 0 && result.Issue == "" {
@@ -562,6 +869,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 	if err != nil {
 		return nil, err
 	}
+	spec.ParentTaskID = task.ID
 	if spec.Transfer && spec.ReplaceCompletedPack {
 		enabled, _ := s.db.GetSetting("dangerous_actions_enabled")
 		if enabled != "true" {
@@ -621,6 +929,12 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 			_, err := s.embySvc.RunLibraryScanCtx(cleanupCtx, func(float64, string) error { return nil })
 			runErr = errors.Join(runErr, err)
 		}
+		if err := ctx.Err(); err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+		if runErr != nil {
+			runErr = errors.Join(runErr, s.cancelQueuedAutoFillImports(results))
+		}
 		if runErr != nil && len(results) > 0 {
 			mode := "transfer"
 			if !spec.Transfer {
@@ -649,6 +963,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 		if err != nil {
 			return nil, err
 		}
+		missing = filterAutoFillMissingEpisodes(missing, spec.SeriesIDs)
 		seriesInventory, err := s.embySvc.ListSeriesCtx(ctx, library.ID)
 		if err != nil {
 			return nil, err
@@ -749,6 +1064,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 		if err != nil {
 			return nil, err
 		}
+		remaining = filterAutoFillMissingEpisodes(remaining, spec.SeriesIDs)
 		results[index].RemainingCount = len(remaining)
 		totalRemaining += len(remaining)
 		remainingBySeries := make(map[string]map[episodeKey]struct{})
@@ -820,6 +1136,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 			if err != nil {
 				return nil, err
 			}
+			remaining = filterAutoFillMissingEpisodes(remaining, spec.SeriesIDs)
 			results[index].RemainingCount = len(remaining)
 			totalRemaining += len(remaining)
 		}
@@ -838,6 +1155,9 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 	issues := make([]string, 0)
 	for _, libraryResult := range results {
 		issues = append(issues, libraryResult.Issues...)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
 	}
 	if len(issues) > 0 {
 		return result, fmt.Errorf("automatic episode completion failed: %s", strings.Join(issues, "; "))

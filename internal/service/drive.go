@@ -65,7 +65,9 @@ func decodeProviderJSON(response *http.Response, operation string, target any) e
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return &ProviderHTTPError{Operation: operation, StatusCode: response.StatusCode}
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(target); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 8<<20))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("decode %s response: %w", operation, err)
 	}
 	return nil
@@ -633,13 +635,14 @@ func (e *PartialBatchError) Unwrap() error { return e.Err }
 
 // ShareEntry is one entry inside a share snapshot.
 type ShareEntry struct {
-	ID         string `json:"id"`
-	ParentID   string `json:"parent_id,omitempty"`
-	Revision   string `json:"revision,omitempty"`
-	ShareToken string `json:"-"`
-	Name       string `json:"name"`
-	Size       int64  `json:"size,omitempty"`
-	IsDir      bool   `json:"is_dir"`
+	ID         string   `json:"id"`
+	ParentID   string   `json:"parent_id,omitempty"`
+	Revision   string   `json:"revision,omitempty"`
+	ShareToken string   `json:"-"`
+	Name       string   `json:"name"`
+	Size       int64    `json:"size,omitempty"`
+	IsDir      bool     `json:"is_dir"`
+	Ancestors  []string `json:"ancestors,omitempty"`
 }
 
 var shareURLPattern = regexp.MustCompile(`115(?:cdn)?\.com/s/([A-Za-z0-9]+)`)
@@ -719,6 +722,21 @@ func (s *DriveService) decodeShareSnapshot(req *http.Request, target any) error 
 	return decodeErr
 }
 
+func parseShareEntrySize(value any) (int64, error) {
+	if value == nil {
+		return 0, nil
+	}
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "" || text == "<nil>" {
+		return 0, nil
+	}
+	size, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || size < 0 {
+		return 0, fmt.Errorf("115 share entry has an invalid size")
+	}
+	return size, nil
+}
+
 func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain.DriveAccount, shareCode, receiveCode, cid string) (string, []ShareEntry, error) {
 	const pageSize = 1000
 	const maxEntries = 50000
@@ -745,10 +763,12 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 					FileName   string `json:"file_name"`
 				} `json:"shareinfo"`
 				List []struct {
-					Fid any    `json:"fid"`
-					Cid any    `json:"cid"`
-					N   string `json:"n"`
-					S   int64  `json:"s"`
+					Fid      any    `json:"fid"`
+					Cid      any    `json:"cid"`
+					Pid      any    `json:"pid"`
+					N        string `json:"n"`
+					S        any    `json:"s"`
+					Revision any    `json:"revision"`
 				} `json:"list"`
 			} `json:"data"`
 		}
@@ -764,6 +784,7 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 				title = raw.Data.ShareInfo.FileName
 			}
 		}
+		before := len(entries)
 		for _, item := range raw.Data.List {
 			fid := strings.TrimSpace(fmt.Sprint(item.Fid))
 			folderID := strings.TrimSpace(fmt.Sprint(item.Cid))
@@ -776,13 +797,31 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 				continue
 			}
 			if _, duplicate := seen[id]; duplicate {
-				continue
+				return title, entries, fmt.Errorf("115 share snapshot repeated object %s", id)
 			}
 			seen[id] = struct{}{}
-			entries = append(entries, ShareEntry{ID: id, Name: item.N, Size: item.S, IsDir: isDirectory})
+			parentID := strings.TrimSpace(fmt.Sprint(item.Pid))
+			if parentID == "" || parentID == "<nil>" {
+				parentID = cid
+			}
+			size := int64(0)
+			if !isDirectory {
+				size, err = parseShareEntrySize(item.S)
+				if err != nil {
+					return title, entries, err
+				}
+			}
+			revision := strings.TrimSpace(fmt.Sprint(item.Revision))
+			if revision == "<nil>" {
+				revision = ""
+			}
+			entries = append(entries, ShareEntry{ID: id, ParentID: parentID, Revision: revision, Name: item.N, Size: size, IsDir: isDirectory})
 			if len(entries) > maxEntries {
 				return title, entries, fmt.Errorf("115 share contains more than %d top-level entries", maxEntries)
 			}
+		}
+		if len(raw.Data.List) > 0 && len(entries) == before {
+			return title, entries, fmt.Errorf("115 share snapshot pagination made no progress")
 		}
 		total := raw.Data.Count
 		if total == 0 {
@@ -801,6 +840,62 @@ func (s *DriveService) snapshotShareEntries(ctx context.Context, account *domain
 			break
 		}
 		offset += len(raw.Data.List)
+	}
+	return title, entries, nil
+}
+
+// snapshotShareTreeEntries walks a 115 share depth-first, retaining the
+// directory ancestry on every entry. It deliberately uses the same paged
+// snapshot endpoint and request pacing as the legacy top-level operation.
+func (s *DriveService) snapshotShareTreeEntries(ctx context.Context, account *domain.DriveAccount, shareCode, receiveCode string) (string, []ShareEntry, error) {
+	const maxEntries = 10000
+	const maxDepth = 20
+	title := ""
+	entries := make([]ShareEntry, 0)
+	seenDirectories := make(map[string]struct{})
+	seenEntries := make(map[string]struct{})
+	var walk func(string, int, []string) error
+	walk = func(cid string, depth int, ancestors []string) error {
+		if depth > maxDepth {
+			return fmt.Errorf("115 share directory depth exceeds %d", maxDepth)
+		}
+		if cid == "" {
+			cid = "0"
+		}
+		if _, seen := seenDirectories[cid]; seen {
+			return fmt.Errorf("115 share directory %s was repeated", cid)
+		}
+		seenDirectories[cid] = struct{}{}
+		pageTitle, direct, err := s.snapshotShareEntries(ctx, account, shareCode, receiveCode, cid)
+		if title == "" {
+			title = pageTitle
+		}
+		if err != nil {
+			entries = append(entries, direct...)
+			return err
+		}
+		for _, entry := range direct {
+			if _, duplicate := seenEntries[entry.ID]; duplicate {
+				return fmt.Errorf("115 share tree repeated object %s", entry.ID)
+			}
+			seenEntries[entry.ID] = struct{}{}
+			entry.Ancestors = append([]string(nil), ancestors...)
+			entry.ParentID = cid
+			entries = append(entries, entry)
+			if len(entries) > maxEntries {
+				return fmt.Errorf("115 share tree contains more than %d entries", maxEntries)
+			}
+			if entry.IsDir {
+				childAncestors := append(append([]string(nil), ancestors...), entry.Name)
+				if err := walk(entry.ID, depth+1, childAncestors); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk("0", 0, nil); err != nil {
+		return title, entries, err
 	}
 	return title, entries, nil
 }

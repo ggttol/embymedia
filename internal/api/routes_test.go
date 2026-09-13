@@ -32,12 +32,14 @@ func TestAPIRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
+	var forwardedDiskType string
 	resourceServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		switch request.URL.Path {
 		case "/api/v1/home/summary":
 			_, _ = response.Write([]byte(`{"summary":{"links":1}}`))
 		case "/search":
+			forwardedDiskType = request.URL.Query().Get("disk_type")
 			if request.URL.Query().Get("q") == "error" {
 				_, _ = response.Write([]byte(`{"code":503,"message":"index unavailable"}`))
 			} else {
@@ -117,6 +119,24 @@ func TestAPIRoutes(t *testing.T) {
 	e.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected resource error envelope to return 502, got %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&provider=quark", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || forwardedDiskType != "quark" {
+		t.Fatalf("provider-neutral search did not forward quark filter: status=%d disk_type=%q", rec.Code, forwardedDiskType)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&provider=quark&disk_type=115", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("contradictory provider filters returned %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&provider=dropbox", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported search provider returned %d", rec.Code)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
@@ -337,5 +357,27 @@ func TestBrowserUserCanApproveExactPendingDeletion(t *testing.T) {
 	}
 	if _, err := db.ClaimDestructiveApproval("approval", "drive.115.delete", time.Now()); err != nil {
 		t.Fatalf("approved request was not claimable: %v", err)
+	}
+}
+
+func TestQuarkImportRejectsArbitraryDestination(t *testing.T) {
+	e := echo.New()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	drive := service.NewDriveService(db, "", "")
+	emby := service.NewEmbyService(db)
+	queue := service.NewTaskQueueService(db, drive, emby)
+	server := NewServer(e, db, drive, emby, service.NewCloudDriveService(db), queue, service.NewCronManager(db, queue), service.NewSettingsService(db), security.NewAgentAuthorizer(db))
+	defer server.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/quark/share-imports", strings.NewReader(`{"quark_account_id":"q","quark_target_id":"folder","share_url":"https://pan.quark.cn/s/share","destination_cid":"attacker-controlled"}`))
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	request.Header.Set("Remote-User", "operator")
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("arbitrary destination was accepted: %d %s", response.Code, response.Body.String())
 	}
 }

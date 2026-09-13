@@ -4,9 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Bookmark, Clock, Download, FolderInput, Loader2, Radio, ShieldCheck } from 'lucide-vue-next'
 import CopyButton from '@/components/CopyButton.vue'
 import { useFavorites } from '@/stores/favorites'
+import { getDiskColor, getDiskLabel, getHealthLabel, normalizeResourceProvider } from '@/utils/resourceMeta'
 import { resourceReturnTo } from '@/stores/resourceSearch'
 import { saveResource, useTransferTarget } from '@/stores/transferTarget'
-import { getDiskColor, getDiskLabel, getHealthLabel } from '@/utils/resourceMeta'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,6 +15,7 @@ const target = useTransferTarget()
 const linkId = route.params.id as string
 const loading = ref(true)
 const resource = ref<any>(null)
+const resourceProvider = ref<'115' | 'quark'>(normalizeResourceProvider(route.query.provider) === 'quark' ? 'quark' : '115')
 const importing = ref(false)
 const importResult = ref<{ text: string; ok: boolean } | null>(null)
 const loadError = ref('')
@@ -25,7 +26,6 @@ function returnToResources() {
   if (router.options.history.state.back === returnTo) router.back()
   else router.replace(returnTo)
 }
-
 async function fetchDetail() {
   loading.value = true
   loadError.value = ''
@@ -35,6 +35,7 @@ async function fetchDetail() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || data.message || `HTTP ${response.status}`)
     resource.value = data.data
+    resourceProvider.value = resource.value?.disk_type === 'quark' ? 'quark' : '115'
   } catch (cause) {
     loadError.value = '暂时无法读取这条资源。'
     loadTechnical.value = cause instanceof Error ? cause.message : String(cause)
@@ -44,8 +45,13 @@ async function fetchDetail() {
 }
 
 async function triggerSave() {
+  if (!resource.value) return
+  if (resourceProvider.value === 'quark') {
+    await router.push({ path: '/files', query: { resource_id: String(resource.value.id) } })
+    return
+  }
   const destination = target.destination()
-  if (!resource.value || !destination) return
+  if (!destination) return
   importing.value = true
   importResult.value = null
   try {
@@ -142,36 +148,49 @@ onMounted(() => {
           </div>
 
           <div class="pt-5 border-t border-border/60">
-            <label class="text-sm font-medium flex items-center gap-2 text-text" for="detail-target">
-              <FolderInput class="w-4 h-4 text-accent" />
-              <span>转存目标目录</span>
-            </label>
-            <div class="mt-2 flex flex-col sm:flex-row sm:items-center gap-3">
-              <select
-                id="detail-target"
-                v-model="target.targetCid.value"
-                :disabled="target.loading.value"
-                class="w-full sm:w-auto min-w-[260px] min-h-11 px-3.5 border border-border/80 bg-surface rounded-xl text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all"
-              >
-                <option value="0">根目录（CID: 0）</option>
-                <option v-for="option in target.options.value" :key="option.cid" :value="option.cid">{{ option.name }}（CID: {{ option.cid }}）</option>
-              </select>
+            <template v-if="resourceProvider === 'quark'">
+              <p class="text-sm text-text-muted">夸克资源将在文件管理页预加载分享信息，确认夸克保存目录后发送到 115 的固定整理目录。</p>
               <button
-                :disabled="importing || !target.ready.value"
-                class="min-h-11 px-6 bg-accent text-accent-contrast rounded-xl text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent-strong disabled:opacity-50 shadow-xs transition-colors cursor-pointer"
+                :disabled="importing"
+                class="mt-3 min-h-11 px-6 bg-accent text-accent-contrast rounded-xl text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent-strong disabled:opacity-50 shadow-xs transition-colors cursor-pointer"
                 @click="triggerSave"
               >
-                <Loader2 v-if="importing" class="w-4 h-4 animate-spin" />
-                <Download v-else class="w-4 h-4" />
-                <span>转存至 {{ target.targetLabel.value }}</span>
+                <Download class="w-4 h-4" />
+                <span>转存并发送到 115</span>
               </button>
-            </div>
+            </template>
+            <template v-else>
+              <label class="text-sm font-medium flex items-center gap-2 text-text" for="detail-target">
+                <FolderInput class="w-4 h-4 text-accent" />
+                <span>转存目标目录</span>
+              </label>
+              <div class="mt-2 flex flex-col sm:flex-row sm:items-center gap-3">
+                <select
+                  id="detail-target"
+                  v-model="target.targetCid.value"
+                  :disabled="target.loading.value"
+                  class="w-full sm:w-auto min-w-[260px] min-h-11 px-3.5 border border-border/80 bg-surface rounded-xl text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all"
+                >
+                  <option value="0">根目录（CID: 0）</option>
+                  <option v-for="option in target.options.value" :key="option.cid" :value="option.cid">{{ option.name }}（CID: {{ option.cid }}）</option>
+                </select>
+                <button
+                  :disabled="importing || !target.ready.value"
+                  class="min-h-11 px-6 bg-accent text-accent-contrast rounded-xl text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent-strong disabled:opacity-50 shadow-xs transition-colors cursor-pointer"
+                  @click="triggerSave"
+                >
+                  <Loader2 v-if="importing" class="w-4 h-4 animate-spin" />
+                  <Download v-else class="w-4 h-4" />
+                  <span>转存至 {{ target.targetLabel.value }}</span>
+                </button>
+              </div>
 
-            <p v-if="target.error.value" class="mt-2.5 text-sm text-danger flex items-center gap-1">
-              <span>无法读取目录配置。转存已停用，避免误存到根目录。</span>
-              <button class="underline hover:text-danger/80" @click="target.loadTargets">重试</button>
-            </p>
-            <p v-else-if="!target.available.value" class="mt-2.5 text-sm text-danger">已保存的目标 {{ target.targetLabel.value }} 当前不可用，请重新选择。</p>
+              <p v-if="target.error.value" class="mt-2.5 text-sm text-danger flex items-center gap-1">
+                <span>无法读取目录配置。转存已停用，避免误存到根目录。</span>
+                <button class="underline hover:text-danger/80" @click="target.loadTargets">重试</button>
+              </p>
+              <p v-else-if="!target.available.value" class="mt-2.5 text-sm text-danger">已保存的目标 {{ target.targetLabel.value }} 当前不可用，请重新选择。</p>
+            </template>
             <p v-if="importResult" class="mt-3 text-sm font-medium p-3 rounded-lg border" :class="importResult.ok ? 'border-ok/30 bg-ok/5 text-ok' : 'border-danger/30 bg-danger/5 text-danger'">{{ importResult.text }}</p>
           </div>
         </section>

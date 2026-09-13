@@ -191,8 +191,9 @@ func (s *TaskQueueService) stageCompletedPack(ctx context.Context, library domai
 	}
 	var inspectionErrors []error
 	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+		provider := strings.ToLower(strings.TrimSpace(candidate.Provider))
+		if provider != "" && provider != "115" {
+			continue
 		}
 		shareCode, receiveCode, err := ParseShareCode(candidate.URL, candidate.Password)
 		if err != nil {

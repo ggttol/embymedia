@@ -3,23 +3,32 @@ package domain
 import "time"
 
 type CrossDriveImport struct {
-	TaskID          string    `json:"task_id"`
-	PriorTaskID     string    `json:"prior_task_id,omitempty"`
-	Phase           string    `json:"phase"`
-	QuarkAccountID  string    `json:"quark_account_id"`
-	SavedRootIDs    []string  `json:"-"`
-	QuarkTargetID   string    `json:"quark_target_id"`
-	C115AccountID   string    `json:"c115_account_id"`
-	DestinationCID  string    `json:"destination_cid,omitempty"`
-	TotalFiles      int       `json:"total_files"`
-	CompletedFiles  int       `json:"completed_files"`
-	TotalBytes      int64     `json:"total_bytes"`
-	CompletedBytes  int64     `json:"completed_bytes"`
-	CurrentFile     string    `json:"current_file,omitempty"`
-	CancelRequested bool      `json:"cancel_requested"`
-	Error           string    `json:"error,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	TaskID               string    `json:"task_id"`
+	PriorTaskID          string    `json:"prior_task_id,omitempty"`
+	Phase                string    `json:"phase"`
+	QuarkAccountID       string    `json:"quark_account_id"`
+	SavedRootIDs         []string  `json:"-"`
+	QuarkTargetID        string    `json:"quark_target_id"`
+	C115AccountID        string    `json:"c115_account_id"`
+	SelectedSourceIDs    []string  `json:"-"`
+	AutofillLibraryName  string    `json:"-"`
+	AutofillLibraryID    string    `json:"-"`
+	AutofillLibraryCID   string    `json:"-"`
+	AutofillSeriesID     string    `json:"-"`
+	AutofillTMDBID       string    `json:"-"`
+	AutofillSeriesFolder string    `json:"-"`
+	ExpectedEpisodes     []string  `json:"-"`
+	DestinationCID       string    `json:"destination_cid,omitempty"`
+	DestinationPath      string    `json:"destination_path,omitempty"`
+	TotalFiles           int       `json:"total_files"`
+	CompletedFiles       int       `json:"completed_files"`
+	TotalBytes           int64     `json:"total_bytes"`
+	CompletedBytes       int64     `json:"completed_bytes"`
+	CurrentFile          string    `json:"current_file,omitempty"`
+	CancelRequested      bool      `json:"cancel_requested"`
+	Error                string    `json:"error,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type CrossDriveItem struct {

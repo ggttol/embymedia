@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlertCircle, Bookmark, Calendar, Download, ExternalLink, FolderInput, Loader2, Radio, Search } from 'lucide-vue-next'
 import CopyButton from '@/components/CopyButton.vue'
 import { useFavorites } from '@/stores/favorites'
-import { getDiskColor, getDiskLabel, getHealthLabel } from '@/utils/resourceMeta'
+import { getDiskColor, getDiskLabel, getHealthLabel, normalizeResourceProvider, RESOURCE_PROVIDER_OPTIONS, type ResourceProvider } from '@/utils/resourceMeta'
 import { getResourceSnapshot, resourceCanvas, resourceQueryKey, resourceReturnTo, restoreResourceScroll, setResourceSnapshot } from '@/stores/resourceSearch'
 import { saveResource, useTransferTarget } from '@/stores/transferTarget'
 
@@ -13,6 +13,7 @@ const router = useRouter()
 const { isFavorite, toggleFavorite } = useFavorites()
 const target = useTransferTarget()
 const keyword = ref(typeof route.query.q === 'string' ? route.query.q : '')
+const selectedProvider = ref<ResourceProvider>(normalizeResourceProvider(route.query.provider))
 const selectedChannel = ref(typeof route.query.channel === 'string' ? route.query.channel : '')
 const healthFilter = ref(typeof route.query.health === 'string' ? route.query.health : '')
 const offset = ref(0)
@@ -34,10 +35,12 @@ let activeKey = resourceQueryKey(route.query)
 function currentQuery() {
   return {
     ...(keyword.value ? { q: keyword.value } : {}),
+    provider: selectedProvider.value,
     ...(selectedChannel.value ? { channel: selectedChannel.value } : {}),
     ...(healthFilter.value ? { health: healthFilter.value } : {}),
   }
 }
+const filtersDirty = computed(() => resourceQueryKey(currentQuery()) !== resourceQueryKey(route.query))
 
 function preserveSnapshot() {
   if (!hasSuccessfulResult) return
@@ -63,7 +66,7 @@ async function doSearch(reset = true) {
   try {
     const params = new URLSearchParams()
     if (keyword.value) params.set('q', keyword.value)
-    params.set('disk_type', '115')
+    if (selectedProvider.value !== 'all') params.set('disk_type', selectedProvider.value)
     if (selectedChannel.value) params.set('channel', selectedChannel.value)
     if (healthFilter.value) params.set('health_status', healthFilter.value)
     params.set('offset', String(requestedOffset))
@@ -97,12 +100,35 @@ async function handleSearchSubmit() {
   if (nextKey === resourceQueryKey(route.query)) await doSearch(true)
   else await router.push({ path: '/resources', query })
 }
+function linkResourceId(link: any): string {
+  return String(link.resource_id ?? link.id ?? '').trim()
+}
+
+function isQuarkResource(link: any): boolean {
+  return (link.disk_type || '').toLowerCase() === 'quark'
+}
+
+function actionDisabledReason(link: any): string {
+  if (isQuarkResource(link)) return linkResourceId(link) ? '' : '该夸克资源缺少可用 ID，无法安全打开导入窗口。'
+  return target.ready.value ? '' : target.error.value ? '115 目录配置不可用，转存已停用。' : '115 目标目录仍在加载或不可用。'
+}
+
+async function openQuarkImport(link: any) {
+  const resourceId = linkResourceId(link)
+  await router.push({ path: '/files', query: { resource_id: resourceId } })
+}
+
 
 async function loadMore() {
+  if (filtersDirty.value) return
   await doSearch(false)
 }
 
 async function triggerSave(link: any) {
+  if (isQuarkResource(link)) {
+    await openQuarkImport(link)
+    return
+  }
   const destination = target.destination()
   if (!destination) return
   importingId.value = link.id
@@ -116,6 +142,14 @@ async function triggerSave(link: any) {
     importingId.value = null
   }
 }
+
+watch(() => [route.query.q, route.query.provider, route.query.channel, route.query.health], ([q, providerValue, channel, health]) => {
+  keyword.value = typeof q === 'string' ? q : ''
+  selectedProvider.value = normalizeResourceProvider(providerValue)
+  selectedChannel.value = typeof channel === 'string' ? channel : ''
+  healthFilter.value = typeof health === 'string' ? health : ''
+  void doSearch(true)
+})
 
 onMounted(async () => {
   target.loadTargets()
@@ -136,22 +170,22 @@ onBeforeUnmount(() => {
   searchGeneration++
 })
 
-function detailTo(id: number) {
-  return { path: `/resources/${id}`, query: { returnTo: resourceReturnTo(route.fullPath) } }
+function detailTo(id: number, link?: any) {
+  return { path: `/resources/${id}`, query: { returnTo: resourceReturnTo(route.fullPath), ...(isQuarkResource(link) ? { provider: 'quark' } : {}) } }
 }
-</script>
 
+</script>
 <template>
   <div class="space-y-7">
     <header class="pb-6 border-b border-border/70">
-      <h1 class="font-serif text-3xl sm:text-4xl font-normal text-text tracking-tight">115 资源检索</h1>
-      <p class="mt-2 text-sm text-text-muted leading-relaxed">筛选公开分享资源，一键转存至云端指定目录或本地挂载媒体源。</p>
-    </header>
+      <h1 class="font-serif text-3xl sm:text-4xl font-normal text-text tracking-tight">资源检索</h1>
+      <p class="mt-2 text-sm text-text-muted leading-relaxed">筛选公开分享资源，一键转存 115 分享，或将夸克分享发送到 115 的固定整理目录。</p>
+</header>
 
     <section class="p-6 sm:p-7 rounded-2xl border border-border/80 bg-surface shadow-xs" aria-labelledby="resource-search-heading">
       <div class="flex items-center justify-between pb-3 mb-4 border-b border-border/60">
         <h2 id="resource-search-heading" class="font-serif text-lg font-medium text-text">检索条件</h2>
-        <span class="text-xs font-mono text-text-faint">DISK / 115 INDEX</span>
+        <span class="text-xs font-mono text-text-faint">RESOURCE INDEX</span>
       </div>
 
       <form @submit.prevent="handleSearchSubmit" class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -167,6 +201,13 @@ function detailTo(id: number) {
               placeholder="搜索电影、剧集名称、导演或演员…"
             />
           </span>
+        </label>
+
+        <label class="text-sm text-text">
+          <span class="block mb-2 text-xs font-medium text-text-secondary">资源来源</span>
+          <select v-model="selectedProvider" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all" aria-label="资源来源">
+            <option v-for="option in RESOURCE_PROVIDER_OPTIONS" :key="option.id" :value="option.id">{{ option.label }}</option>
+          </select>
         </label>
 
         <label class="text-sm text-text">
@@ -264,12 +305,12 @@ function detailTo(id: number) {
       <div class="space-y-4">
         <article
           v-for="item in results"
-          :key="item.id"
+          :key="`${item.disk_type || '115'}:${item.id ?? item.resource_id}`"
           class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs transition-all duration-300 hover:shadow-card hover:-translate-y-0.5 hover:border-border-strong group"
         >
           <div class="flex flex-col md:flex-row md:items-start justify-between gap-5">
             <div class="min-w-0 flex-1">
-              <RouterLink :to="detailTo(item.id)" class="font-serif text-lg font-medium text-text hover:text-accent break-words transition-colors leading-snug">
+              <RouterLink :to="detailTo(item.id, item)" class="font-serif text-lg font-medium text-text hover:text-accent break-words transition-colors leading-snug">
                 {{ item.title }}
               </RouterLink>
 
@@ -329,15 +370,18 @@ function detailTo(id: number) {
                 <span class="sr-only">{{ isFavorite(item.id) ? '取消收藏' : '收藏' }} {{ item.title }}</span>
               </button>
               <button
-                :disabled="importingId === item.id || !target.ready.value"
+                :disabled="importingId === item.id || !!actionDisabledReason(item)"
+                :title="actionDisabledReason(item)"
+                :aria-label="actionDisabledReason(item) || (isQuarkResource(item) ? `转存夸克资源「${item.title}」并发送到 115` : `转存「${item.title}」到 ${target.targetLabel.value}`)"
                 class="min-h-10 px-4 rounded-xl bg-accent text-accent-contrast text-xs font-medium flex items-center gap-2 hover:bg-accent-strong disabled:opacity-50 shadow-xs transition-colors cursor-pointer"
                 @click="triggerSave(item)"
               >
                 <Loader2 v-if="importingId === item.id" class="w-3.5 h-3.5 animate-spin" />
                 <Download v-else class="w-3.5 h-3.5" />
-                <span>转存至 {{ target.targetLabel.value }}</span>
+                <span>{{ isQuarkResource(item) ? '转存并发送到 115' : `转存至 ${target.targetLabel.value}` }}</span>
               </button>
-              <RouterLink :to="detailTo(item.id)" class="min-h-10 px-3 border border-border/80 bg-surface hover:bg-bg-muted rounded-xl flex items-center transition-colors">
+              <span v-if="actionDisabledReason(item)" class="basis-full text-xs text-text-muted md:basis-auto">{{ actionDisabledReason(item) }}</span>
+              <RouterLink :to="detailTo(item.id, item)" class="min-h-10 px-3 border border-border/80 bg-surface hover:bg-bg-muted rounded-xl flex items-center transition-colors">
                 <ExternalLink class="w-4 h-4 text-text-secondary" />
                 <span class="sr-only">查看 {{ item.title }} 详情</span>
               </RouterLink>
@@ -348,11 +392,11 @@ function detailTo(id: number) {
 
       <div class="pt-2 text-center" v-if="hasMore && !searchError">
         <button
-          :disabled="loading"
+          :disabled="loading || filtersDirty"
           class="min-h-11 px-7 border border-border/80 bg-surface hover:bg-bg-muted rounded-xl text-sm font-medium shadow-xs disabled:opacity-60 transition-all duration-200 cursor-pointer"
           @click="loadMore"
         >
-          {{ loading ? '加载中…' : '加载更多资源' }}
+          {{ loading ? '加载中…' : filtersDirty ? '请先应用筛选' : '加载更多资源' }}
         </button>
       </div>
     </section>

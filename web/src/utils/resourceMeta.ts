@@ -19,6 +19,17 @@ export const DISK_MAP: Record<string, DiskMeta> = {
 }
 
 export const DEFAULT_DISK_COLOR = "var(--disk-other)"
+export type ResourceProvider = 'all' | '115' | 'quark'
+
+export const RESOURCE_PROVIDER_OPTIONS: Array<{ id: ResourceProvider; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: '115', label: '115' },
+  { id: 'quark', label: '夸克' },
+]
+
+export function normalizeResourceProvider(value: unknown): ResourceProvider {
+  return value === '115' || value === 'quark' ? value : 'all'
+}
 
 export function getDiskLabel(diskType: string): string {
   return DISK_MAP[diskType]?.label ?? diskType

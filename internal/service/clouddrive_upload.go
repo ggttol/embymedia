@@ -92,8 +92,6 @@ func (s *TaskQueueService) uploadViaCloudDrive(ctx context.Context, _ string, it
 }
 
 func (s *TaskQueueService) uploadViaCloudDriveAt(ctx context.Context, item domain.CrossDriveItem, account *domain.DriveAccount, parentCID, spoolPath, mountRoot string) (UploadResult, error) {
-	provider := s.driveSvc.providers["115"].(*Provider115)
-	source := UploadSource{Path: spoolPath, Name: item.Name, Size: item.Size, SHA1: item.SHA1, PreSHA1: item.PreSHA1}
 	relativeDirectory := filepath.Dir(item.RelativePath)
 	if relativeDirectory == "." {
 		relativeDirectory = ""
@@ -102,7 +100,12 @@ func (s *TaskQueueService) uploadViaCloudDriveAt(ctx context.Context, item domai
 	if err != nil {
 		return UploadResult{}, err
 	}
-	destinationDirectory := filepath.Join(mountRoot, "_待整理", cleanRelative)
+	return s.uploadViaCloudDriveDirectory(ctx, item, account, parentCID, spoolPath, filepath.Join(mountRoot, "_待整理", cleanRelative))
+}
+
+func (s *TaskQueueService) uploadViaCloudDriveDirectory(ctx context.Context, item domain.CrossDriveItem, account *domain.DriveAccount, parentCID, spoolPath, destinationDirectory string) (UploadResult, error) {
+	provider := s.driveSvc.providers["115"].(*Provider115)
+	source := UploadSource{Path: spoolPath, Name: item.Name, Size: item.Size, SHA1: item.SHA1, PreSHA1: item.PreSHA1}
 	if err := waitForLocalDirectory(ctx, destinationDirectory); err != nil {
 		return UploadResult{}, err
 	}

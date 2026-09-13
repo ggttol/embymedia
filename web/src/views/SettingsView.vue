@@ -18,6 +18,7 @@ const emptySettings: Record<string, string> = {
   'resource_api_url': '',
   'resource_api_token': '',
   'dangerous_actions_enabled': 'false',
+  'quark_autofill_target_id': '',
 }
 const settings = ref({ ...emptySettings })
 type DriveProvider = '115' | 'quark'
@@ -311,6 +312,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
             <div><label for="webhook-delay" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">防抖秒数</label><input id="webhook-delay" v-model="settings['clouddrive_webhook_debounce_seconds']" type="number" min="1" max="300" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" /></div>
           </div>
         </div>
+        <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 border-t border-border/60 p-5 sm:p-7">
+          <div><div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg text-text">自动补集目标</h3></div><p class="mt-2 text-xs leading-5 text-text-faint">跨资源自动补集需要一个夸克保存目录；系统会在保存时校验目录 ID，空白表示不启用夸克候选。</p></div>
+          <div>
+            <label for="quark-autofill-target-id" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">夸克保存目录 ID</label>
+            <input id="quark-autofill-target-id" v-model="settings['quark_autofill_target_id']" type="text" inputmode="text" autocomplete="off" spellcheck="false" maxlength="200" aria-describedby="quark-autofill-target-help" placeholder="例如：abc123；留空则仅使用 115 资源" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" />
+            <p id="quark-autofill-target-help" class="mt-2 text-xs leading-5 text-text-faint">只填写夸克目录 ID，不填写分享链接或 Cookie；后端会拒绝无效或不存在的目录。</p>
+          </div>
+        </section>
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-t border-border/60">
         <div>
           <div class="flex items-center gap-2"><CircleAlert class="w-4 h-4 text-annotation" /><h3 class="font-serif font-semibold text-lg text-text">破坏性操作</h3></div>

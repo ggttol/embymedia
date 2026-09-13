@@ -173,6 +173,13 @@ func (m *MCPServer) registerTools() {
 		mcp.WithDescription("Search the configured resource index for 115 share links by keyword"),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Keyword to search for")),
 	), m.handleC115Search)
+	// Provider-neutral resource-index search. c115_search remains a
+	// compatibility tool with its historical 115-only contract.
+	m.server.AddTool(mcp.NewTool("search_resources",
+		mcp.WithDescription("Search indexed netdisk resources by keyword, optionally filtered by provider"),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Keyword to search for")),
+		mcp.WithString("provider", mcp.Description("Optional provider filter: 115 or quark")),
+	), m.handleResourceSearch)
 
 	// 3. c115_save_share: 转存分享链接到指定 CID
 	m.server.AddTool(mcp.NewTool("c115_save_share",
@@ -346,6 +353,28 @@ func (m *MCPServer) handleC115Search(ctx context.Context, req mcp.CallToolReques
 	return mcp.NewToolResultText(string(encoded)), nil
 }
 
+func (m *MCPServer) handleResourceSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError("query is required"), nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return mcp.NewToolResultError("query must not be empty"), nil
+	}
+	params := url.Values{"q": {query}}
+	if provider := strings.TrimSpace(req.GetString("provider", "")); provider != "" {
+		if provider != "115" && provider != "quark" {
+			return mcp.NewToolResultError("provider must be 115 or quark"), nil
+		}
+		params.Set("disk_type", provider)
+	}
+	result, err := m.drive.SearchResourcesCtx(ctx, params)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
+	return jsonToolResult(result), nil
+}
 func (m *MCPServer) handleC115SaveShare(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rawURL, err := req.RequireString("url")
 	if err != nil {
@@ -363,6 +392,11 @@ func (m *MCPServer) handleC115SaveShare(ctx context.Context, req mcp.CallToolReq
 }
 
 func (m *MCPServer) handleQuarkImportShare(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	for _, key := range []string{"destination_cid", "destination_path", "target_cid", "c115_target_cid"} {
+		if _, present := req.GetArguments()[key]; present {
+			return mcp.NewToolResultError(fmt.Sprintf("%s is not accepted; the destination is fixed to /emby/_待整理", key)), nil
+		}
+	}
 	quarkAccountID, err := req.RequireString("quark_account_id")
 	if err != nil {
 		return mcp.NewToolResultError("quark_account_id is required"), nil
@@ -531,7 +565,6 @@ func (m *MCPServer) handleTaskSubmit(ctx context.Context, req mcp.CallToolReques
 	encoded, _ := json.Marshal(map[string]any{"task_id": task.ID, "status": task.Status})
 	return mcp.NewToolResultText(string(encoded)), nil
 }
-
 func safeTask(task *domain.AsyncTask) *domain.AsyncTask {
 	if task == nil || task.Type != "quark_to_115_import" {
 		return task
@@ -539,11 +572,19 @@ func safeTask(task *domain.AsyncTask) *domain.AsyncTask {
 	copy := *task
 	copy.Payload = make(map[string]any, len(task.Payload))
 	for key, value := range task.Payload {
-		if key != "share_url" && key != "share_password" {
-			copy.Payload[key] = value
+		if publicTaskPayloadKey(key) {
+			continue
 		}
+		copy.Payload[key] = value
 	}
 	return &copy
+}
+
+func publicTaskPayloadKey(key string) bool {
+	if key == "share_url" || key == "share_password" || key == "expected_episodes" || key == "selected_source_ids" || key == "selected_source_manifest" || key == "parent_task_id" || key == "prior_import_task_id" {
+		return true
+	}
+	return strings.HasPrefix(key, "autofill_")
 }
 
 func (m *MCPServer) handleTaskQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -51,7 +51,8 @@ func TestShareSnapshotPacesPaginationDirectoriesAndCandidates(t *testing.T) {
 		}
 		query := request.URL.Query()
 		requests = append(requests, query.Get("share_code")+":"+query.Get("cid")+":"+query.Get("offset"))
-		entries := []map[string]any{{"fid": "episode", "n": "Show.S01E02.mkv"}}
+		entryID := "episode-" + query.Get("share_code") + "-" + query.Get("cid") + "-" + query.Get("offset")
+		entries := []map[string]any{{"fid": entryID, "n": "Show.S01E02.mkv"}}
 		count := 1
 		if query.Get("share_code") == "first" && query.Get("cid") == "0" {
 			count = 1001

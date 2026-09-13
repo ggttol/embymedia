@@ -22,7 +22,10 @@ type DriveProvider interface {
 	Move(context.Context, *domain.DriveAccount, []string, string) error
 	Delete(context.Context, *domain.DriveAccount, []string) error
 	SnapshotShare(context.Context, *domain.DriveAccount, string, string) (ShareSnapshot, error)
+	SnapshotShareTree(context.Context, *domain.DriveAccount, string, string) (ShareSnapshot, error)
 	SaveShare(context.Context, *domain.DriveAccount, string, string, string) (SavedShare, error)
+	SaveShareEntries(context.Context, *domain.DriveAccount, string, string, string, []string) (SavedShare, error)
+	SaveShareSelections(context.Context, *domain.DriveAccount, string, string, string, []ShareSelection) (SavedShare, error)
 	OpenDownload(context.Context, *domain.DriveAccount, string, int64) (io.ReadCloser, error)
 }
 
@@ -48,6 +51,78 @@ type SavedShare struct {
 	Title   string   `json:"title"`
 	RootIDs []string `json:"root_ids"`
 	Count   int      `json:"count"`
+}
+
+type ShareSelection struct {
+	ID       string `json:"id"`
+	Revision string `json:"revision,omitempty"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+}
+
+func selectShareSelections(entries []ShareEntry, selections []ShareSelection) ([]ShareEntry, error) {
+	ids := make([]string, len(selections))
+	for index := range selections {
+		ids[index] = selections[index].ID
+	}
+	selected, err := selectShareEntries(entries, ids)
+	if err != nil {
+		return nil, err
+	}
+	for index, entry := range selected {
+		expected := selections[index]
+		if expected.Name == "" || expected.Revision == "" || entry.Name != expected.Name || entry.Size != expected.Size || entry.Revision != expected.Revision {
+			return nil, fmt.Errorf("share selection identity changed for %s", expected.ID)
+		}
+	}
+	return selected, nil
+}
+
+// selectShareEntries validates an explicit leaf selection against a fresh
+// snapshot. The returned slice preserves the caller's requested order.
+func selectShareEntries(entries []ShareEntry, selectedIDs []string) ([]ShareEntry, error) {
+	if len(selectedIDs) == 0 {
+		return nil, fmt.Errorf("share selection must contain at least one file")
+	}
+	byID := make(map[string]ShareEntry, len(entries))
+	for _, entry := range entries {
+		if entry.ID == "" {
+			return nil, fmt.Errorf("share snapshot contains an entry without an ID")
+		}
+		if _, duplicate := byID[entry.ID]; duplicate {
+			return nil, fmt.Errorf("share snapshot contains duplicate entry ID %q", entry.ID)
+		}
+		byID[entry.ID] = entry
+	}
+	selected := make([]ShareEntry, 0, len(selectedIDs))
+	seenIDs := make(map[string]struct{}, len(selectedIDs))
+	seenNames := make(map[string]string, len(selectedIDs))
+	for _, id := range selectedIDs {
+		if strings.TrimSpace(id) == "" {
+			return nil, fmt.Errorf("share selection contains an empty ID")
+		}
+		if _, duplicate := seenIDs[id]; duplicate {
+			return nil, fmt.Errorf("share selection contains duplicate ID %q", id)
+		}
+		seenIDs[id] = struct{}{}
+		entry, present := byID[id]
+		if !present {
+			return nil, fmt.Errorf("share selection ID %q was not found in the fresh snapshot", id)
+		}
+		if entry.IsDir {
+			return nil, fmt.Errorf("share selection ID %q is a directory; select file leaves only", id)
+		}
+		nameKey := strings.ToLower(strings.TrimSpace(entry.Name))
+		if nameKey == "" {
+			return nil, fmt.Errorf("share selection ID %q has no output name", id)
+		}
+		if previous, duplicate := seenNames[nameKey]; duplicate {
+			return nil, fmt.Errorf("share selection contains duplicate output name %q (IDs %s and %s)", entry.Name, previous, id)
+		}
+		seenNames[nameKey] = id
+		selected = append(selected, entry)
+	}
+	return selected, nil
 }
 
 type Provider115 struct{ service *DriveService }
@@ -85,6 +160,17 @@ func (p *Provider115) SnapshotShare(ctx context.Context, account *domain.DriveAc
 	title, entries, err := p.service.snapshotShareEntries(ctx, account, code, receive, "0")
 	return ShareSnapshot{Title: title, Entries: entries}, err
 }
+
+// SnapshotShareTree returns every share entry, including descendants. IDs are
+// treated as opaque strings and share tokens remain internal to the provider.
+func (p *Provider115) SnapshotShareTree(ctx context.Context, account *domain.DriveAccount, rawURL, password string) (ShareSnapshot, error) {
+	code, receive, err := ParseShareCode(rawURL, password)
+	if err != nil {
+		return ShareSnapshot{}, err
+	}
+	title, entries, err := p.service.snapshotShareTreeEntries(ctx, account, code, receive)
+	return ShareSnapshot{Title: title, Entries: entries}, err
+}
 func (p *Provider115) SaveShare(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string) (SavedShare, error) {
 	code, receive, err := ParseShareCode(rawURL, password)
 	if err != nil {
@@ -103,6 +189,49 @@ func (p *Provider115) SaveShare(ctx context.Context, account *domain.DriveAccoun
 	}
 	count, title, err := p.service.receiveShareEntriesCtx(ctx, account, code, receive, ids, parent, title)
 	return SavedShare{Title: title, RootIDs: ids, Count: count}, err
+}
+
+// SaveShareEntries preserves the ID-only provider operation for explicit file-manager callers.
+func (p *Provider115) SaveShareEntries(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string, selectedIDs []string) (SavedShare, error) {
+	selections := make([]ShareSelection, len(selectedIDs))
+	for index, id := range selectedIDs {
+		selections[index] = ShareSelection{ID: id}
+	}
+	return p.saveShareSelections(ctx, account, rawURL, password, parent, selections, false)
+}
+
+func (p *Provider115) SaveShareSelections(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string, selections []ShareSelection) (SavedShare, error) {
+	return p.saveShareSelections(ctx, account, rawURL, password, parent, selections, true)
+}
+
+func (p *Provider115) saveShareSelections(ctx context.Context, account *domain.DriveAccount, rawURL, password, parent string, selections []ShareSelection, exact bool) (SavedShare, error) {
+	code, receive, err := ParseShareCode(rawURL, password)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	title, entries, err := p.service.snapshotShareTreeEntries(ctx, account, code, receive)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	var selected []ShareEntry
+	if exact {
+		selected, err = selectShareSelections(entries, selections)
+	} else {
+		ids := make([]string, len(selections))
+		for index := range selections {
+			ids[index] = selections[index].ID
+		}
+		selected, err = selectShareEntries(entries, ids)
+	}
+	if err != nil {
+		return SavedShare{}, err
+	}
+	ids := make([]string, len(selected))
+	for i := range selected {
+		ids[i] = selected[i].ID
+	}
+	count, title, err := p.service.receiveShareEntriesCtx(ctx, account, code, receive, ids, parent, title)
+	return SavedShare{Title: title, RootIDs: append([]string(nil), ids...), Count: count}, err
 }
 func (p *Provider115) OpenDownload(context.Context, *domain.DriveAccount, string, int64) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("115 ranged download is not exposed by this adapter")
@@ -240,6 +369,18 @@ func (s *DriveService) SnapshotProviderShare(ctx context.Context, provider, acco
 	}
 	return p.SnapshotShare(ctx, account, rawURL, password)
 }
+
+func (s *DriveService) SnapshotProviderShareTree(ctx context.Context, provider, accountID, rawURL, password string) (ShareSnapshot, error) {
+	account, err := s.getAccountForProvider(provider, accountID)
+	if err != nil {
+		return ShareSnapshot{}, err
+	}
+	p, err := s.provider(provider)
+	if err != nil {
+		return ShareSnapshot{}, err
+	}
+	return p.SnapshotShareTree(ctx, account, rawURL, password)
+}
 func (s *DriveService) SaveProviderShare(ctx context.Context, provider, accountID, rawURL, password, parent string) (SavedShare, error) {
 	account, err := s.getAccountForProvider(provider, accountID)
 	if err != nil {
@@ -250,6 +391,30 @@ func (s *DriveService) SaveProviderShare(ctx context.Context, provider, accountI
 		return SavedShare{}, err
 	}
 	return p.SaveShare(ctx, account, rawURL, password, parent)
+}
+
+func (s *DriveService) SaveProviderShareEntries(ctx context.Context, provider, accountID, rawURL, password, parent string, selectedIDs []string) (SavedShare, error) {
+	account, err := s.getAccountForProvider(provider, accountID)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	p, err := s.provider(provider)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	return p.SaveShareEntries(ctx, account, rawURL, password, parent, selectedIDs)
+}
+
+func (s *DriveService) SaveProviderShareSelections(ctx context.Context, provider, accountID, rawURL, password, parent string, selections []ShareSelection) (SavedShare, error) {
+	account, err := s.getAccountForProvider(provider, accountID)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	p, err := s.provider(provider)
+	if err != nil {
+		return SavedShare{}, err
+	}
+	return p.SaveShareSelections(ctx, account, rawURL, password, parent, selections)
 }
 
 func (s *DriveService) OpenProviderDownload(ctx context.Context, provider, accountID, fileID string, offset int64) (io.ReadCloser, error) {

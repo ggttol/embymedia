@@ -17,9 +17,11 @@ import {
 type SourceKey = 'summary' | 'trends' | 'accounts' | 'libraries' | 'tasks' | 'mounts'
 type LoadState = 'untested' | 'loading' | 'success' | 'error'
 interface Source { key: SourceKey; name: string; url: string; route: string; state: LoadState; error: string; checkedAt: string }
-interface Task { id: string; name: string; type: string; status: string; error?: string }
+interface Task { id: string; name: string; type: string; status: string; progress?: number; payload?: Record<string, unknown>; result?: string; attempts?: number; max_attempts?: number; error?: string }
 interface Account { id: string; name: string; status: string }
 interface Mount { name?: string; mount_path: string; status: string; error?: string }
+interface DashboardImportState { phase: string; destination_path?: string; total_files: number; completed_files: number; total_bytes: number; completed_bytes: number; current_file?: string; cancel_requested: boolean }
+interface DashboardImportDetail { import: DashboardImportState; items: Array<{ state: string }> }
 
 const sources = ref<Source[]>([
   { key: 'summary', name: '资源摘要', url: '/api/v1/home/summary', route: '/resources', state: 'untested', error: '', checkedAt: '' },
@@ -45,6 +47,8 @@ const trends = ref<string[]>([])
 const tasks = ref<Task[]>([])
 const accounts = ref<Account[]>([])
 const mounts = ref<Mount[]>([])
+const taskDetails = ref<Record<string, DashboardImportDetail | null>>({})
+const taskDetailErrors = ref<Record<string, string>>({})
 const loading = ref(false)
 const checkedAt = ref('')
 
@@ -73,9 +77,18 @@ const serviceExceptions = computed(() => [
   ...(source('mounts').state === 'success' ? mounts.value.filter((item) => item.status !== 'mounted').map((item) => ({ key: item.mount_path, name: item.name || item.mount_path, detail: item.error || '挂载尚未就绪，请检查 CloudDrive 配置。', route: '/settings' })) : []),
 ])
 
-const taskStatus = (status: string) => ({ running: '运行中', failed: '失败', pending: '等待中', completed: '已完成', paused: '已暂停', idle: '空闲', cancelled: '已取消' }[status] ?? '未知状态')
+const taskStatus = (status: string, task?: Task) => {
+  if (task?.type === 'quark_to_115_import') {
+    const phase = taskDetails.value[task.id]?.import.phase
+    if (status === 'completed' && phase !== 'verified') return '待核对'
+    if (status === 'completed' && phase === 'verified') return '已完成核对'
+    if (phase) return phase === 'verified' ? `${dashboardPhaseLabel(phase)} · 等待任务结束` : dashboardPhaseLabel(phase)
+  }
+  return ({ running: '运行中', failed: '失败', pending: '等待中', completed: '已完成', paused: '已暂停', idle: '空闲', cancelled: '已取消' }[status] ?? '未知状态')
+}
 
-const taskBadgeClass = (status: string) => {
+const taskBadgeClass = (status: string, task?: Task) => {
+  if (task?.type === 'quark_to_115_import' && status === 'completed' && taskDetails.value[task.id]?.import.phase !== 'verified') return 'bg-warn/10 text-warn border-warn/20'
   switch (status) {
     case 'running':
       return 'bg-accent-soft text-accent border-accent/20'
@@ -90,6 +103,7 @@ const taskBadgeClass = (status: string) => {
 
 const taskDefinition = (type: string) => ({
   series_auto_fill: ['自动补集', '检查追更库已播缺集，精确转存匹配集并在 Emby 扫描后复查。'],
+  quark_to_115_import: ['夸克分享发送到 115', '逐文件上传到经过验证的 115 目标，并核对每个文件。'],
   emby_refresh: ['同步媒体并刷新 Emby', '先生成和校验 STRM，再跟踪 Emby 全库扫描到完成。'],
   emby_missing_posters: ['检查并修复海报', '刷新缺少主海报的电影和剧集，并复查实际修复结果。'],
   emby_metadata_repair: ['检查并修复元数据', '为缺少 TMDB 身份的条目寻找候选，仅应用安全唯一匹配。'],
@@ -99,6 +113,37 @@ const taskDefinition = (type: string) => ({
   c115_save_share: ['转存 115 分享', '把 115 分享内容转存到指定网盘目录。'],
   c115_offline_download: ['提交 115 离线下载', '把下载地址提交到指定 115 网盘目录。'],
 }[type] ?? ['后台任务', '执行已提交的媒体运维工作。'])
+function dashboardPhaseLabel(phase?: string) {
+  return ({ saving_share: '正在转存分享', discovering: '正在读取文件清单', downloading: '正在下载', uploading: '正在上传 115', verifying: '正在核对文件', verified: '已完成核对' } as Record<string, string>)[phase || ''] || '等待检查点'
+}
+
+function dashboardFormatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '大小未知'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+}
+
+function dashboardQuarkSummary(task: Task) {
+  const detail = taskDetails.value[task.id]
+  if (!detail) return taskDetailErrors.value[task.id] ? '详细检查点暂时不可用；未重新提交任务。' : '正在读取详细检查点…'
+  const state = detail.import
+  const verified = Math.max(detail.items.filter((item) => item.state === 'verified').length, Number(state.completed_files || 0))
+  const total = Number(state.total_files || detail.items.length || 0)
+  const remaining = Math.max(0, total - verified)
+  const retry = task.attempts != null && task.max_attempts != null ? ` · 尝试 ${task.attempts}/${task.max_attempts}` : ''
+	const current = state.current_file ? ` · 当前：${state.current_file}` : ''
+	const destination = state.destination_path ? ` · 目标：${state.destination_path}` : ''
+	return `${dashboardPhaseLabel(state.phase)} · 文件 ${verified}/${total} · ${dashboardFormatBytes(Number(state.completed_bytes || 0))}/${dashboardFormatBytes(Number(state.total_bytes || 0))} · 剩余 ${remaining}${retry}${destination}${current}`
+}
+function dashboardQuarkProgress(task: Task) {
+  const taskProgress = Math.min(100, Math.max(0, Number(task.progress || 0)))
+  const state = taskDetails.value[task.id]?.import
+  if (!state || Number(state.total_bytes) <= 0) return taskProgress
+  const verifiedProgress = Math.min(100, Math.max(0, Number(state.completed_bytes || 0) / Number(state.total_bytes) * 100))
+  return Math.max(taskProgress, verifiedProgress)
+}
 
 const taskDetail = (task: Task) => {
   const [label, description] = taskDefinition(task.type)
@@ -118,6 +163,23 @@ const sourceLabel = (key: SourceKey) => {
 function collection<T>(data: Record<string, unknown>, key: string): T[] {
   if (!(key in data) || (data[key] !== null && !Array.isArray(data[key]))) throw new Error('服务返回的数据格式不完整')
   return (data[key] ?? []) as T[]
+}
+
+async function fetchDashboardQuarkDetails(taskList: Task[]) {
+  const quarkTasks = taskList.filter((task) => task.type === 'quark_to_115_import')
+  await Promise.all(quarkTasks.map(async (task) => {
+    try {
+      const response = await fetch(`/api/v1/quark/share-imports/${encodeURIComponent(task.id)}`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || '读取夸克导入进度失败')
+      if (data.detail) taskDetails.value = { ...taskDetails.value, [task.id]: data.detail as DashboardImportDetail }
+      const errors = { ...taskDetailErrors.value }
+      delete errors[task.id]
+      taskDetailErrors.value = errors
+    } catch (error) {
+      taskDetailErrors.value = { ...taskDetailErrors.value, [task.id]: error instanceof Error ? error.message : '读取夸克导入进度失败' }
+    }
+  }))
 }
 
 async function fetchHomeData() {
@@ -148,7 +210,12 @@ async function fetchHomeData() {
         }
         case 'accounts': accounts.value = collection<Account>(data, 'accounts'); stats.value.driveAccounts = accounts.value.length; break
         case 'libraries': stats.value.embyLibraries = collection(data, 'libraries').length; break
-        case 'tasks': tasks.value = collection<Task>(data, 'tasks'); stats.value.activeTasks = tasks.value.filter((task) => task.status === 'running').length; break
+        case 'tasks': {
+          tasks.value = collection<Task>(data, 'tasks')
+          stats.value.activeTasks = tasks.value.filter((task) => task.status === 'running').length
+          await fetchDashboardQuarkDetails(tasks.value)
+          break
+        }
         case 'mounts': mounts.value = collection<Mount>(data, 'mounts'); stats.value.totalMounts = mounts.value.length; stats.value.mountedMounts = mounts.value.filter((mount) => mount.status === 'mounted').length; break
       }
       item.state = 'success'
@@ -468,6 +535,10 @@ onMounted(fetchHomeData)
                 <p class="mt-1 text-xs text-text-secondary line-clamp-1 font-sans">
                   {{ taskDetail(task).description }}
                 </p>
+                <div v-if="task.type === 'quark_to_115_import'" class="mt-2 space-y-1.5">
+                  <p class="text-[11px] text-text-muted line-clamp-2">{{ dashboardQuarkSummary(task) }}</p>
+                  <div class="h-1.5 w-full overflow-hidden rounded-full border border-border/40 bg-bg-muted" role="progressbar" :aria-valuenow="Math.round(dashboardQuarkProgress(task))" aria-valuemin="0" aria-valuemax="100" aria-label="夸克发送到 115 进度"><div class="h-full rounded-full bg-accent transition-all" :style="{ width: `${dashboardQuarkProgress(task)}%` }"></div></div>
+                </div>
                 <p v-if="task.error" class="text-xs text-danger mt-1 font-mono">
                   失败详情：{{ task.error }}
                 </p>
@@ -476,9 +547,9 @@ onMounted(fetchHomeData)
               <div class="flex items-center gap-3 shrink-0">
                 <span
                   class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium tracking-wide border"
-                  :class="taskBadgeClass(task.status)"
+                  :class="taskBadgeClass(task.status, task)"
                 >
-                  {{ taskStatus(task.status) }}
+                  {{ taskStatus(task.status, task) }}
                 </span>
                 <ChevronRight class="w-4 h-4 text-text-faint group-hover:text-text-secondary transition-transform duration-200 ease-claude group-hover:translate-x-1" />
               </div>

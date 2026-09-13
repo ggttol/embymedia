@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
 	"github.com/embymedia/embymedia/internal/storage"
@@ -173,5 +174,86 @@ func TestCrossDriveRetryRefusesAmbiguousShareSave(t *testing.T) {
 	_, err = queue.run(context.Background(), *retry)
 	if err == nil || !strings.Contains(err.Error(), "refusing to resubmit") {
 		t.Fatalf("ambiguous retry result: %v", err)
+	}
+}
+
+func TestAutofillQuarkImportValidatesConfiguredDestinationBeforeProviderWrite(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SetSettings(map[string]string{
+		"quark_autofill_target_id": "quark-target",
+		"c115_cid_map":             `{"电视剧追更":"configured-library-cid"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range []*domain.DriveAccount{
+		{ID: "quark", Type: "quark", Name: "Quark", Cookie: "cookie", IsDefault: true},
+		{ID: "c115", Type: "115", Name: "115", Cookie: "cookie", IsDefault: true},
+	} {
+		if err := db.SaveAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var providerWrites int
+	drive := NewDriveService(db, "", "")
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		providerWrites++
+		return &http.Response{StatusCode: http.StatusInternalServerError, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
+	})
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+	parent := &domain.AsyncTask{ID: "parent", Type: "series_auto_fill", Payload: map[string]any{}, Status: "completed", MaxAttempts: 1, CreatedAt: time.Now()}
+	if err := db.CreateAsyncTask(parent); err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"quark_account_id": "quark", "quark_target_id": "quark-target", "share_url": "https://pan.quark.cn/s/share", "c115_account_id": "c115",
+		"selected_source_ids": []string{"episode"}, "selected_source_manifest": []ShareSelection{{ID: "episode", Revision: "rev", Name: "Show.S01E02.mkv", Size: 1024}}, "expected_episodes": []string{"S01E02"},
+		"parent_task_id":        parent.ID,
+		"autofill_library_name": "电视剧追更", "autofill_library_id": "library", "autofill_library_cid": "attacker-cid",
+		"autofill_series_id": "series", "autofill_tmdb_id": "42", "autofill_series_folder": "Show (2026)",
+	}
+	if err := ValidateTask("quark_to_115_import", payload); err == nil || !strings.Contains(err.Error(), "internal") {
+		t.Fatalf("public task validation accepted internal destination binding: %v", err)
+	}
+	task, err := queue.enqueueAutofillQuarkImport(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := db.BeginAsyncTask(task.ID); err != nil || !claimed {
+		t.Fatalf("claim: %v %t", err, claimed)
+	}
+	_, err = queue.run(context.Background(), *task)
+	if err == nil || !strings.Contains(err.Error(), "configured 115 library CID changed") {
+		t.Fatalf("untrusted destination was not rejected: %v", err)
+	}
+	if providerWrites != 0 {
+		t.Fatalf("provider was contacted before destination validation: writes=%d", providerWrites)
+	}
+	failedParent := &domain.AsyncTask{ID: "failed-parent", Type: "series_auto_fill", Payload: map[string]any{}, Status: "failed", MaxAttempts: 1, CreatedAt: time.Now()}
+	if err := db.CreateAsyncTask(failedParent); err != nil {
+		t.Fatal(err)
+	}
+	blockedPayload := make(map[string]any, len(payload))
+	for key, value := range payload {
+		blockedPayload[key] = value
+	}
+	blockedPayload["parent_task_id"] = failedParent.ID
+	blockedPayload["autofill_library_cid"] = "configured-library-cid"
+	blocked, err := queue.enqueueAutofillQuarkImport(blockedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := db.BeginAsyncTask(blocked.ID); err != nil || !claimed {
+		t.Fatalf("claim blocked child: %v %t", err, claimed)
+	}
+	_, err = queue.run(context.Background(), *blocked)
+	if err == nil || !strings.Contains(err.Error(), "parent task is failed") {
+		t.Fatalf("child with failed recovered parent was allowed: %v", err)
+	}
+	if providerWrites != 0 {
+		t.Fatalf("child contacted provider after parent failure: writes=%d", providerWrites)
 	}
 }

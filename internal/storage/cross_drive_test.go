@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -133,5 +134,18 @@ func TestMigrationRedactsPersistedQuarkSignedURLs(t *testing.T) {
 	}
 	if strings.Contains(task.Error, "secret") || strings.Contains(detail.Items[0].Error, "secret") {
 		t.Fatalf("signed URL remained persisted: task=%q item=%q", task.Error, detail.Items[0].Error)
+	}
+}
+
+func TestCrossDriveImportJSONHidesAutofillBinding(t *testing.T) {
+	state := domain.CrossDriveImport{SelectedSourceIDs: []string{"source"}, AutofillLibraryName: "电视剧追更", AutofillLibraryID: "library", AutofillLibraryCID: "library-cid", AutofillSeriesID: "series", AutofillTMDBID: "42", AutofillSeriesFolder: "Show", ExpectedEpisodes: []string{"S01E02"}}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"source", "电视剧追更", "library-cid", "series", "S01E02"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("public import detail exposed internal binding %q: %s", secret, encoded)
+		}
 	}
 }
