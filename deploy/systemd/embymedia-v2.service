@@ -11,6 +11,7 @@ User=embymedia
 Group=embymedia
 WorkingDirectory=/srv/embymedia/data
 EnvironmentFile=-/etc/embymedia/v2.env
+ExecStartPre=+/usr/bin/setfacl -m u:embymedia:rwx,d:u:embymedia:rwx /srv/embymedia/data/clouddrive/CloudNAS/CloudDrive/_待整理
 ExecStart=/opt/embymedia-v2/current/bin/embymedia -host 127.0.0.1 -port 3080 -mcp-host 127.0.0.1 -mcp-port 3081 -db /srv/embymedia/data/embymedia.db
 Restart=on-failure
 RestartSec=3
