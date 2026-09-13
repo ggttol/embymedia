@@ -176,7 +176,7 @@ func TestAPIRoutes(t *testing.T) {
 		t.Fatalf("blank explicit token bypassed authentication: %d", rec.Code)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/drive/accounts", strings.NewReader(`{"id":"created-account","type":"115","name":"Account","cookie":"UID=synthetic-secret"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/drive/accounts", strings.NewReader(`{"id":"created-account","type":"115","name":"Account","cookie":"UID=synthetic-secret","token":"token-secret"}`))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -184,8 +184,19 @@ func TestAPIRoutes(t *testing.T) {
 		t.Fatalf("account creation failed or exposed credentials: %d %s", rec.Code, rec.Body.String())
 	}
 	accounts, err := db.ListAccounts()
-	if err != nil || len(accounts) != 1 || accounts[0].Cookie != "UID=synthetic-secret" {
-		t.Fatal("account credential was not persisted")
+	if err != nil || len(accounts) != 1 || accounts[0].Cookie != "UID=synthetic-secret" || accounts[0].Token != "token-secret" {
+		t.Fatal("account credentials were not persisted")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/drive/accounts", strings.NewReader(`{"id":"created-account","type":"115","name":"Renamed","is_default":true}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("account update failed or exposed credentials: %d %s", rec.Code, rec.Body.String())
+	}
+	accounts, err = db.ListAccounts()
+	if err != nil || len(accounts) != 1 || accounts[0].Name != "Renamed" || accounts[0].Cookie != "UID=synthetic-secret" || accounts[0].Token != "token-secret" || !accounts[0].IsDefault {
+		t.Fatalf("account update did not preserve credentials: %+v, err=%v", accounts, err)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/tokens", nil)

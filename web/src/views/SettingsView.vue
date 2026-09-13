@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
-import { Check, CircleAlert, FileCode, HardDrive, Loader2, Radio, RefreshCw, Save, Tv } from 'lucide-vue-next'
+import { Check, CircleAlert, FileCode, HardDrive, Loader2, Radio, RefreshCw, Save, Tv, Users, ArrowRight, Plus } from 'lucide-vue-next'
 
 const emptySettings: Record<string, string> = {
-  '115_cookie': '',
   'emby_url': '',
   'emby_api_key': '',
   'clouddrive_url': '',
@@ -21,9 +20,14 @@ const emptySettings: Record<string, string> = {
   'dangerous_actions_enabled': 'false',
 }
 const settings = ref({ ...emptySettings })
-const configured = ref<Record<string, boolean>>({ c115: false, emby: false, clouddrive: false, resource: false })
+type DriveProvider = '115' | 'quark'
+type DriveAccount = { id: string; type: DriveProvider; name: string; is_default: boolean; status: string }
+const configured = ref<Record<string, boolean>>({ c115: false, quark: false, emby: false, clouddrive: false, resource: false })
 const health = ref<Record<string, { status: string; message: string; latency?: number; details?: string }>>({})
-const checking = ref<Record<string, boolean>>({ c115: false, emby: false, clouddrive: false, resource: false })
+const checking = ref<Record<string, boolean>>({ c115: false, quark: false, emby: false, clouddrive: false, resource: false })
+const driveAccounts = ref<Record<DriveProvider, DriveAccount[]>>({ '115': [], quark: [] })
+const driveAccountsLoading = ref(true)
+const driveAccountsError = ref('')
 const baseline = ref(JSON.stringify(settings.value))
 const loaded = ref(false)
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
@@ -32,29 +36,43 @@ const readError = ref('')
 const dirty = computed(() => loaded.value && JSON.stringify(settings.value) !== baseline.value)
 const configuredCount = computed(() => Object.values(configured.value).filter(Boolean).length)
 const integrationItems = [
-  {
-    key: 'c115',
-    label: '一一五网盘',
-  },
-  {
-    key: 'emby',
-    label: '媒体服务器',
-  },
-  {
-    key: 'clouddrive',
-    label: '挂载服务',
-  },
-  {
-    key: 'resource',
-    label: '资源索引',
-  },
+  { key: 'c115', label: '一一五网盘' },
+  { key: 'quark', label: '夸克网盘' },
+  { key: 'emby', label: '媒体服务器' },
+  { key: 'clouddrive', label: '挂载服务' },
+  { key: 'resource', label: '资源索引' },
 ]
-const c115Placeholder = '粘贴浏览器凭据'
+const driveProviders: Array<{ id: DriveProvider; label: string; configuredKey: string }> = [
+  { id: '115', label: '115', configuredKey: 'c115' },
+  { id: 'quark', label: '夸克', configuredKey: 'quark' },
+]
 const embyKeyPlaceholder = '输入接口密钥'
 const resourceTokenPlaceholder = '留空时保留现有值（如有）'
 
 function secretPlaceholder(key: string, fallback: string) {
   return configured.value[key] ? '已保存；留空不会替换现有凭据' : fallback
+}
+
+function providerAccounts(provider: DriveProvider) { return driveAccounts.value[provider] }
+function defaultProviderAccount(provider: DriveProvider) { return providerAccounts(provider).find(account => account.is_default) }
+function healthyProviderAccounts(provider: DriveProvider) { return providerAccounts(provider).filter(account => account.status === 'active').length }
+
+async function fetchDriveAccounts() {
+  driveAccountsLoading.value = true
+  driveAccountsError.value = ''
+  try {
+    const [c115Response, quarkResponse] = await Promise.all([
+      fetch('/api/v1/drive/accounts?provider=115'),
+      fetch('/api/v1/drive/accounts?provider=quark'),
+    ])
+    if (!c115Response.ok || !quarkResponse.ok) throw new Error('读取网盘账号失败')
+    const [c115Data, quarkData] = await Promise.all([c115Response.json(), quarkResponse.json()])
+    driveAccounts.value = { '115': c115Data.accounts ?? [], quark: quarkData.accounts ?? [] }
+  } catch (error) {
+    driveAccountsError.value = error instanceof Error ? error.message : '读取网盘账号失败'
+  } finally {
+    driveAccountsLoading.value = false
+  }
 }
 
 async function fetchSettings() {
@@ -136,7 +154,7 @@ function warnBeforeUnload(event: BeforeUnloadEvent) {
 onBeforeRouteLeave(() => !dirty.value || window.confirm('设置尚未保存，确认离开？'))
 onMounted(() => {
   window.addEventListener('beforeunload', warnBeforeUnload)
-  void fetchSettings()
+  void Promise.all([fetchSettings(), fetchDriveAccounts()])
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnload))
 </script>
@@ -147,11 +165,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
       <div class="max-w-2xl">
         <p class="text-[10px] font-mono font-bold tracking-[0.18em] text-annotation mb-2">CONFIGURATION / PERSISTED STATE</p>
         <h1 class="font-serif text-3xl font-bold text-text tracking-tight">系统设置</h1>
-        <p class="text-sm text-text-muted mt-2">管理服务地址与凭据。秘密值读取时始终保持隐藏。</p>
+        <p class="text-sm text-text-muted mt-2">统一管理多网盘账号与运行参数；账号凭据读取时始终保持隐藏。</p>
       </div>
       <div class="flex flex-wrap items-center justify-end gap-3 text-sm">
-        <span class="font-mono text-xs text-text-faint">{{ loaded ? `${configuredCount} / 4 已配置` : '配置状态未知' }}</span>
-        <span class="w-2 h-2 rounded-full" :class="loaded ? (configuredCount === 4 ? 'bg-ok' : 'bg-warn') : 'bg-text-faint'"></span>
+        <span class="font-mono text-xs text-text-faint">{{ loaded ? `${configuredCount} / 5 已配置` : '配置状态未知' }}</span>
+        <span class="w-2 h-2 rounded-full" :class="loaded ? (configuredCount === 5 ? 'bg-ok' : 'bg-warn') : 'bg-text-faint'"></span>
       </div>
     </header>
     <div v-if="readError" role="alert" class="rounded-xl border-l-4 border-danger bg-danger/5 p-4 text-sm text-danger shadow-xs">
@@ -161,7 +179,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
     </div>
     <div v-else-if="!loaded" role="status" class="flex items-center gap-2 rounded-xl border border-border/70 bg-surface p-4 text-sm text-text-muted shadow-xs"><Loader2 class="w-4 h-4 animate-spin text-accent" />正在读取系统设置…</div>
 
-    <div class="grid grid-cols-2 lg:grid-cols-4 border border-border/70 bg-surface rounded-2xl overflow-hidden shadow-xs">
+    <div class="grid grid-cols-2 lg:grid-cols-5 border border-border/70 bg-surface rounded-2xl overflow-hidden shadow-xs">
       <div v-for="item in integrationItems" :key="item.key" class="p-4 border-b border-r border-border/60 last:border-r-0 lg:border-b-0 flex flex-col justify-between">
         <div class="flex items-center justify-between">
           <span class="text-xs font-mono uppercase tracking-wider text-text-muted font-medium">{{ item.label }}</span>
@@ -202,19 +220,43 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnloa
       </div>
     </div>
 
+    <section aria-labelledby="drive-accounts-heading" class="rounded-2xl border border-border/70 bg-surface shadow-xs overflow-hidden">
+      <header class="flex flex-col gap-2 border-b border-border/60 bg-bg-muted/40 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+        <div>
+          <div class="flex items-center gap-2"><Users class="h-4 w-4 text-accent" aria-hidden="true" /><h2 id="drive-accounts-heading" class="font-serif text-xl font-semibold text-text">网盘账号</h2></div>
+          <p class="mt-1 text-sm text-text-muted">115 与夸克分别维护账号、Cookie 和默认账号；不再使用单例 Cookie 设置。</p>
+        </div>
+        <button type="button" :disabled="driveAccountsLoading" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-border/80 px-4 text-sm font-medium hover:bg-bg-muted disabled:opacity-50" @click="fetchDriveAccounts"><RefreshCw class="h-4 w-4" :class="{ 'animate-spin': driveAccountsLoading }" aria-hidden="true" />刷新账号</button>
+      </header>
+      <p v-if="driveAccountsError" role="alert" class="border-b border-border/60 px-5 py-3 text-sm text-danger sm:px-7">{{ driveAccountsError }}</p>
+      <div class="grid md:grid-cols-2">
+        <article v-for="(item, index) in driveProviders" :key="item.id" class="p-5 sm:p-7" :class="index === 0 ? 'border-b border-border/60 md:border-b-0 md:border-r' : ''">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <p class="text-xs font-mono uppercase tracking-wider text-text-muted">{{ item.label }} 账号</p>
+              <p class="mt-2 font-serif text-lg font-semibold text-text">{{ driveAccountsLoading ? '正在读取…' : providerAccounts(item.id).length ? `${providerAccounts(item.id).length} 个账号` : '尚未添加账号' }}</p>
+              <p v-if="providerAccounts(item.id).length" class="mt-1 text-sm text-text-muted">默认：{{ defaultProviderAccount(item.id)?.name || '未设置' }} · 可用 {{ healthyProviderAccounts(item.id) }} / {{ providerAccounts(item.id).length }}</p>
+              <p v-else class="mt-1 text-sm text-text-muted">添加后可在网盘文件页切换账号和管理目录。</p>
+            </div>
+            <span class="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" :class="configured[item.configuredKey] ? 'bg-ok' : 'bg-warn'" aria-hidden="true"></span>
+          </div>
+          <ul v-if="providerAccounts(item.id).length" class="mt-4 space-y-2">
+            <li v-for="account in providerAccounts(item.id)" :key="account.id" class="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-bg-muted/30 px-3 py-2 text-sm">
+              <span class="min-w-0 truncate font-medium text-text">{{ account.name }}<span v-if="account.is_default" class="ml-1 text-xs text-accent">默认</span></span>
+              <span class="shrink-0 text-xs" :class="account.status === 'active' ? 'text-ok' : 'text-danger'">{{ account.status === 'active' ? '可用' : '需检查' }}</span>
+            </li>
+          </ul>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <RouterLink :to="{ path: '/files', query: { provider: item.id } }" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-border/80 px-4 text-sm font-medium hover:bg-bg-muted">管理账号<ArrowRight class="h-4 w-4" aria-hidden="true" /></RouterLink>
+            <RouterLink :to="{ path: '/files', query: { provider: item.id, add_account: '1' } }" class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-accent/40 px-4 text-sm font-medium text-accent hover:bg-accent-soft"><Plus class="h-4 w-4" aria-hidden="true" />添加账号</RouterLink>
+          </div>
+        </article>
+      </div>
+    </section>
+
     <form id="settings-form" class="border border-border/70 bg-surface rounded-2xl shadow-xs overflow-hidden" @submit.prevent="saveSettings">
       <fieldset :disabled="!loaded || saveState === 'saving'">
-      <div class="border-b border-border/60 bg-bg-muted/40 px-5 py-4 sm:px-7"><h2 class="font-serif text-xl font-semibold text-text tracking-tight">服务连接</h2><p class="mt-1 text-sm text-text-muted">配置网盘、媒体服务器、挂载服务与资源索引的访问方式。</p></div>
-      <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border/60">
-        <div>
-          <div class="flex items-center gap-2"><HardDrive class="w-4 h-4 text-accent" /><h3 class="font-serif font-semibold text-lg text-text">115 网盘</h3></div>
-          <p class="mt-2 text-xs leading-5 text-text-faint">用于账号鉴权。保存后不会再次返回明文。</p>
-        </div>
-        <div>
-          <label for="c115-cookie" class="block text-xs font-mono uppercase tracking-wider text-text-muted mb-2 font-medium">账号浏览器凭据</label>
-          <input id="c115-cookie" v-model="settings['115_cookie']" type="password" autocomplete="new-password" :placeholder="secretPlaceholder('c115', c115Placeholder)" class="w-full min-h-11 px-3.5 rounded-xl border border-border/80 bg-bg text-sm font-mono focus:border-accent focus:outline-none transition-colors" />
-        </div>
-      </section>
+      <div class="border-b border-border/60 bg-bg-muted/40 px-5 py-4 sm:px-7"><h2 class="font-serif text-xl font-semibold text-text tracking-tight">服务连接</h2><p class="mt-1 text-sm text-text-muted">配置媒体服务器、挂载服务与资源索引；网盘凭据统一在上方账号管理中维护。</p></div>
 
       <section class="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-6 p-5 sm:p-7 border-b border-border/60">
         <div>

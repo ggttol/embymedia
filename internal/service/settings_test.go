@@ -61,6 +61,29 @@ func TestSettingsStateRedactsAndPreservesSecrets(t *testing.T) {
 	}
 }
 
+func TestSettingsConfiguredStateUsesProviderAccounts(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, account := range []*domain.DriveAccount{
+		{ID: "c115", Type: "115", Name: "115", Cookie: "cookie", IsDefault: true},
+		{ID: "quark", Type: "quark", Name: "Quark", Cookie: "cookie", IsDefault: true},
+	} {
+		if err := db.SaveAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, err := NewSettingsService(db).State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Configured["c115"] || !state.Configured["quark"] {
+		t.Fatalf("provider account state was not configured: %+v", state.Configured)
+	}
+}
+
 func TestSettingsStateOmitsUnknownPersistedKeys(t *testing.T) {
 	db, err := storage.Open(":memory:")
 	if err != nil {

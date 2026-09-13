@@ -235,11 +235,14 @@ func (s *SettingsService) State() (SettingsState, error) {
 	if listErr != nil {
 		return SettingsState{}, listErr
 	}
+	configured["c115"] = false
 	configured["quark"] = false
 	for _, account := range accounts {
-		if account.Type == "quark" {
+		switch account.Type {
+		case "115":
+			configured["c115"] = true
+		case "quark":
 			configured["quark"] = true
-			break
 		}
 	}
 	return SettingsState{

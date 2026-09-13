@@ -100,8 +100,8 @@ func openAPISchema() map[string]any {
 		"/api/v1/drive/share-snapshot": map[string]any{"post": apiOperation("snapshotDriveShare", "Inspect a provider share without saving", nil, schemaObject([]string{"provider", "url"}, map[string]any{"provider": provider, "account_id": accountID, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code")}))},
 		"/api/v1/drive/accounts": map[string]any{
 			"get": apiOperation("listDriveAccounts", "List provider accounts without credentials", []any{queryParameter("provider", "Drive provider", true)}, nil),
-			"post": apiOperation("createDriveAccount", "Create or update a provider account", nil, schemaObject([]string{"type", "name", "cookie"}, map[string]any{
-				"id": accountID, "type": provider, "name": stringSchema("Account display name"), "cookie": stringSchema("Browser cookie"), "token": stringSchema("Optional 115 Open Platform access token"), "is_default": map[string]any{"type": "boolean"},
+			"post": apiOperation("upsertDriveAccount", "Create or update a provider account", nil, schemaObject([]string{"type", "name"}, map[string]any{
+				"id": accountID, "type": provider, "name": stringSchema("Account display name"), "cookie": stringSchema("Browser cookie; required for create and omitted to preserve on update"), "token": stringSchema("Optional 115 Open Platform access token; omitted to preserve on update"), "is_default": map[string]any{"type": "boolean"},
 			})),
 		},
 		"/api/v1/drive/accounts/{id}": map[string]any{"delete": apiOperation("deleteDriveAccount", "Delete a managed provider account", []any{pathParameter("id", "Managed account ID")}, nil)},

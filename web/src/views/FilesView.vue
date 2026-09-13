@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Folder, File, HardDrive, FolderPlus, RefreshCw, Trash2, Edit2, Loader2, Users, FolderInput, UserMinus, UserPlus, Link2, ArrowRight, CircleStop, RotateCcw } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
 type Provider = '115' | 'quark'
 type DriveFile = { file_id?: string; cid?: string; parent_id?: string; name: string; is_folder: boolean; size?: number; updated_time?: string }
-type DriveAccount = { id: string; type: Provider; name: string; is_default: boolean }
+type DriveAccount = { id: string; type: Provider; name: string; is_default: boolean; status: string }
 type DriveCapabilities = { browse: boolean; mkdir: boolean; rename: boolean; move: boolean; delete: boolean; share_save: boolean; offline: boolean }
 type FileOperation = { kind: 'move' | 'delete' | 'rename'; ids: string[]; name: string }
 type AsyncTask = { id: string; status: string; progress: number; error?: string; result?: string }
 type ImportDetail = { import: { phase: string; destination_cid?: string; total_files: number; completed_files: number; total_bytes: number; completed_bytes: number; current_file?: string }; items: Array<{ relative_path: string; state: string; size: number; downloaded_bytes: number; error?: string }> }
 type ImportStatus = { task: AsyncTask; detail: ImportDetail | null }
 
+const route = useRoute()
+const router = useRouter()
 const provider = ref<Provider>('115')
 const currentCid = ref('0')
 const cidMap = ref<Record<string, string>>({})
@@ -37,6 +40,7 @@ const folderError = ref('')
 const folderBusy = ref(false)
 const showAccountModal = ref(false)
 const newAccount = ref({ name: '', cookie: '', token: '', is_default: false })
+const editingAccountId = ref('')
 const accountError = ref('')
 const accountBusy = ref(false)
 const showShareModal = ref(false)
@@ -105,6 +109,7 @@ function resetProviderState() {
   files.value = []
   selectedFiles.value = new Set()
   moveTargetCid.value = '0'
+  editingAccountId.value = ''
   operation.value = null
   showNewFolderModal.value = false
   showAccountModal.value = false
@@ -174,13 +179,18 @@ async function fetchFiles() {
   } finally { if (requestedGeneration === generation) loading.value = false }
 }
 
-async function switchProvider(next: Provider) {
+async function switchProvider(next: Provider, syncRoute = true) {
   if (next === provider.value) return
   resetProviderState()
   provider.value = next
+  if (syncRoute) await router.replace({ query: { ...route.query, provider: next, add_account: undefined } })
   await Promise.all([fetchAccounts(), fetchCidMap()])
   await fetchFiles()
 }
+
+watch(() => route.query.provider, (value) => {
+  if ((value === '115' || value === 'quark') && value !== provider.value) void switchProvider(value, false)
+})
 async function changeAccount() {
   currentCid.value = '0'
   breadcrumbs.value = [{ cid: '0', name: '根目录' }]
@@ -243,23 +253,32 @@ async function submitOperation() {
   } catch (error) { operationError.value = errorMessage(error) } finally { operationBusy.value = false }
 }
 
-async function createAccount() {
+function openAccountEditor(account?: DriveAccount) {
+  editingAccountId.value = account?.id || ''
+  newAccount.value = { name: account?.name || '', cookie: '', token: '', is_default: account?.is_default || false }
+  accountError.value = ''
+  showAccountModal.value = true
+}
+
+async function saveAccount() {
   if (accountBusy.value) return
   accountError.value = ''
   accountSuccess.value = ''
-  if (!newAccount.value.name.trim() || !newAccount.value.cookie.trim()) { accountError.value = '请输入账号名称和浏览器 Cookie。'; return }
+  if (!newAccount.value.name.trim() || (!editingAccountId.value && !newAccount.value.cookie.trim())) { accountError.value = editingAccountId.value ? '请输入账号名称。' : '请输入账号名称和浏览器 Cookie。'; return }
   accountBusy.value = true
   try {
-    const response = await fetch('/api/v1/drive/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...newAccount.value, type: provider.value }) })
-    await requireOk(response, '添加账号失败')
+    const response = await fetch('/api/v1/drive/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...newAccount.value, ...(editingAccountId.value ? { id: editingAccountId.value } : {}), type: provider.value }) })
+    await requireOk(response, editingAccountId.value ? '更新账号失败' : '添加账号失败')
     const data = await response.json()
-    accountSuccess.value = `已添加账号「${newAccount.value.name.trim()}」。`
+    accountSuccess.value = editingAccountId.value ? `已更新账号「${newAccount.value.name.trim()}」。` : `已添加账号「${newAccount.value.name.trim()}」。`
+    editingAccountId.value = ''
     newAccount.value = { name: '', cookie: '', token: '', is_default: false }
     showAccountModal.value = false
     await fetchAccounts(data.id)
     await changeAccount()
   } catch (error) { accountError.value = errorMessage(error) } finally { accountBusy.value = false }
 }
+
 async function deleteCurrentAccount() {
   if (!currentAccountId.value || busy.value || !confirm(`确认移除账号「${accountName.value}」？这只会移除本系统保存的账号，不会删除网盘文件。`)) return
   accountBusy.value = true
@@ -366,8 +385,14 @@ async function showCompletedDestination() {
 }
 
 onMounted(async () => {
+  const requestedProvider = route.query.provider
+  if (requestedProvider === '115' || requestedProvider === 'quark') provider.value = requestedProvider
   await Promise.all([fetchAccounts(), fetchCidMap()])
   await fetchFiles()
+  if (route.query.add_account === '1') {
+    openAccountEditor()
+    await router.replace({ query: { ...route.query, provider: provider.value, add_account: undefined } })
+  }
 })
 onUnmounted(() => {
   requestController.abort()
@@ -396,7 +421,8 @@ onUnmounted(() => {
             <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.name }}{{ account.is_default ? '（默认）' : '' }}</option>
           </select>
         </div>
-        <button type="button" :disabled="busy" class="file-button" @click="accountError = ''; showAccountModal = true"><UserPlus class="w-4 h-4" aria-hidden="true" />添加账号</button>
+        <button type="button" :disabled="busy" class="file-button" @click="openAccountEditor()"><UserPlus class="w-4 h-4" aria-hidden="true" />添加账号</button>
+        <button v-if="currentAccountId && !accountsError" type="button" :disabled="busy" class="file-button" @click="openAccountEditor(accounts.find(account => account.id === currentAccountId))"><Edit2 class="w-4 h-4" aria-hidden="true" />更新凭据</button>
         <button v-if="currentAccountId && !accountsError" type="button" :disabled="busy" class="file-button text-danger border-danger/30 hover:border-danger" @click="deleteCurrentAccount"><UserMinus class="w-4 h-4" aria-hidden="true" />移除账号</button>
         <button type="button" :disabled="busy || !capabilities.mkdir || !currentAccountId || !!accountsError || !!filesError" class="file-button" @click="folderError = ''; showNewFolderModal = true"><FolderPlus class="w-4 h-4" aria-hidden="true" />新建文件夹</button>
         <button v-if="capabilities.share_save" type="button" :disabled="busy || importActive || !currentAccountId || !!accountsError || !!filesError" class="file-button text-accent border-accent/40 hover:border-accent" @click="openShareTransfer"><Link2 class="w-4 h-4" aria-hidden="true" />{{ provider === 'quark' ? '转存并发送到 115' : '转存 115 分享' }}</button>
@@ -471,7 +497,7 @@ onUnmounted(() => {
       <div v-else-if="!currentAccountId" class="p-6 space-y-3">
         <h2 class="text-lg font-semibold">尚未添加{{ providerLabel }}账号</h2>
         <p class="text-sm text-text-muted">添加账号后即可浏览{{ providerLabel }}网盘目录。</p>
-        <button type="button" :disabled="busy" class="file-button" @click="accountError = ''; showAccountModal = true">添加账号</button>
+        <button type="button" :disabled="busy" class="file-button" @click="openAccountEditor()">添加账号</button>
       </div>
       <div v-else-if="loading" role="status" class="p-8 text-center text-sm text-text-muted"><Loader2 class="w-6 h-6 animate-spin text-accent mx-auto mb-2" aria-hidden="true" />正在加载目录列表…</div>
       <div v-else-if="filesError" class="p-6 space-y-3">
@@ -565,14 +591,15 @@ onUnmounted(() => {
       </form>
     </UiDialog>
 
-    <UiDialog v-if="showAccountModal" :title="`添加${providerLabel}账号`" :busy="accountBusy" @close="showAccountModal = false">
-      <form class="space-y-4" @submit.prevent="createAccount">
+    <UiDialog v-if="showAccountModal" :title="`${editingAccountId ? '更新' : '添加'}${providerLabel}账号`" :busy="accountBusy" @close="showAccountModal = false">
+      <form class="space-y-4" @submit.prevent="saveAccount">
         <div><label for="account-name" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">账号名称</label><input id="account-name" v-model="newAccount.name" :disabled="accountBusy" required autofocus class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" /></div>
-        <div><label for="account-cookie" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">浏览器 Cookie</label><input id="account-cookie" v-model="newAccount.cookie" :disabled="accountBusy" type="password" autocomplete="new-password" required class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" /></div>
-        <div v-if="provider === '115'"><label for="account-token" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">115 开放平台 Access Token（接收夸克文件时需要）</label><input id="account-token" v-model="newAccount.token" :disabled="accountBusy" type="password" autocomplete="new-password" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" /></div>
+        <div><label for="account-cookie" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">浏览器 Cookie{{ editingAccountId ? '（留空则保留）' : '' }}</label><input id="account-cookie" v-model="newAccount.cookie" :disabled="accountBusy" type="password" autocomplete="new-password" :required="!editingAccountId" :placeholder="editingAccountId ? '已保存；仅在需要更换时填写' : ''" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" /></div>
+        <div v-if="provider === '115'"><label for="account-token" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">115 开放平台 Access Token（可选）</label><input id="account-token" v-model="newAccount.token" :disabled="accountBusy" type="password" autocomplete="new-password" :placeholder="editingAccountId ? '已保存；留空则保留' : '配置后优先使用原生秒传与分片上传'" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" /></div>
         <label class="inline-flex min-h-11 items-center gap-3 text-sm text-text cursor-pointer"><input v-model="newAccount.is_default" :disabled="accountBusy" type="checkbox" class="accent-accent" />设为{{ providerLabel }}默认账号</label>
-        <p v-if="accountError" role="alert" class="text-sm text-danger break-words">添加账号失败：{{ accountError }}</p>
-        <div class="flex justify-end gap-2 pt-2"><button type="button" :disabled="accountBusy" class="file-button" @click="showAccountModal = false">取消</button><button type="submit" :disabled="accountBusy" class="file-button bg-accent text-accent-contrast hover:bg-accent-strong">{{ accountBusy ? '正在保存…' : '保存账号' }}</button></div>
+        <p v-if="editingAccountId" class="text-xs leading-5 text-text-muted">Cookie 和 Access Token 不会回显；留空会保留已保存值。</p>
+        <p v-if="accountError" role="alert" class="text-sm text-danger break-words">{{ editingAccountId ? '更新' : '添加' }}账号失败：{{ accountError }}</p>
+        <div class="flex justify-end gap-2 pt-2"><button type="button" :disabled="accountBusy" class="file-button" @click="showAccountModal = false">取消</button><button type="submit" :disabled="accountBusy" class="file-button bg-accent text-accent-contrast hover:bg-accent-strong">{{ accountBusy ? '正在保存…' : editingAccountId ? '保存账号修改' : '保存账号' }}</button></div>
       </form>
     </UiDialog>
 

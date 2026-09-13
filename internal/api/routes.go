@@ -352,22 +352,56 @@ func (s *Server) handleAddAccount(c echo.Context) error {
 	account.Token = strings.TrimSpace(request.Token)
 	account.Name = strings.TrimSpace(account.Name)
 	account.Type = strings.ToLower(strings.TrimSpace(account.Type))
-	if account.Name == "" || account.Cookie == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{"error": "type, name, and cookie are required"})
-	}
 	if account.Type != "115" && account.Type != "quark" {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": "type must be 115 or quark"})
 	}
-	if account.ID == "" {
-		account.ID = uuid.NewString()
+	if account.Name == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "name is required"})
 	}
-	if account.Status == "" {
+	status := http.StatusCreated
+	var existing *domain.DriveAccount
+	if account.ID != "" {
+		accounts, err := s.db.ListAccounts()
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		}
+		for index := range accounts {
+			if accounts[index].ID == account.ID {
+				existing = &accounts[index]
+				break
+			}
+		}
+	}
+	if existing == nil {
+		if account.Cookie == "" {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": "cookie is required for a new account"})
+		}
+		if account.ID == "" {
+			account.ID = uuid.NewString()
+		}
 		account.Status = "active"
+	} else {
+		if existing.Type != account.Type {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": "account provider cannot be changed"})
+		}
+		account.CreatedAt = existing.CreatedAt
+		account.Status = existing.Status
+		account.QuotaUsed = existing.QuotaUsed
+		account.QuotaTotal = existing.QuotaTotal
+		account.VIPLevel = existing.VIPLevel
+		account.VIPExpiresAt = existing.VIPExpiresAt
+		if account.Cookie == "" {
+			account.Cookie = existing.Cookie
+		}
+		if account.Token == "" {
+			account.Token = existing.Token
+		}
+		status = http.StatusOK
 	}
 	if err := s.db.SaveAccount(&account); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusCreated, publicAccount(account))
+	return c.JSON(status, publicAccount(account))
 }
 
 func (s *Server) handleDeleteAccount(c echo.Context) error {
