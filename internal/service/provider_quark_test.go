@@ -276,3 +276,38 @@ func TestSelectShareEntriesRejectsInvalidSelectionsBeforeMutation(t *testing.T) 
 		})
 	}
 }
+
+func TestQuarkSnapshotTreeAllowsNonZeroRootParentFID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/share/sharepage/token":
+			_, _ = io.WriteString(response, `{"status":200,"data":{"stoken":"secret-stoken","title":"Root Parent Pack"}}`)
+		case "/share/sharepage/detail":
+			parent := request.URL.Query().Get("pdir_fid")
+			if parent != "0" {
+				t.Errorf("unexpected share parent %q", parent)
+			}
+			// Simulate Quark returning the share folder's real FID instead of "0" for root items
+			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"ep1","pdir_fid":"pack-real-folder-fid","file_name":"ep1.mkv","file_size":"1024","dir":false,"revision":"rev1","share_fid_token":"token1"}]},"metadata":{"_total":1}}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	provider := NewProviderQuark(server.Client())
+	provider.baseURL = server.URL
+	provider.sleep = func(context.Context, time.Duration) error { return nil }
+	account := &domain.DriveAccount{ID: "quark", Type: "quark", Cookie: "cookie"}
+
+	snapshot, err := provider.SnapshotShareTree(context.Background(), account, "https://pan.quark.cn/s/share", "")
+	if err != nil {
+		t.Fatalf("snapshot tree with non-zero root pdir_fid failed: %v", err)
+	}
+	if len(snapshot.Entries) != 1 || snapshot.Entries[0].ID != "ep1" {
+		t.Fatalf("unexpected snapshot entries: %+v", snapshot.Entries)
+	}
+	if snapshot.Entries[0].ParentID != "0" {
+		t.Fatalf("expected root entry ParentID to be normalized to 0, got %q", snapshot.Entries[0].ParentID)
+	}
+}

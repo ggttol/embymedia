@@ -449,9 +449,12 @@ func (p *ProviderQuark) shareEntries(ctx context.Context, account *domain.DriveA
 		}
 		before := len(entries)
 		for _, item := range data.List {
-			file, err := parseQuarkFile(item, parent)
+			file, err := parseQuarkFile(item, "")
 			if err != nil {
 				return entries, err
+			}
+			if parent != "0" && file.ParentID != "" && file.ParentID != "0" && file.ParentID != parent {
+				return entries, fmt.Errorf("quark object %s belongs to parent %s, not %s", file.FileID, file.ParentID, parent)
 			}
 			if _, duplicate := seen[file.FileID]; duplicate {
 				return entries, fmt.Errorf("Quark share snapshot repeated object %s", file.FileID)
