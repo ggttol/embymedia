@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,5 +83,55 @@ func TestProviderDefaultsAreScopedByType(t *testing.T) {
 	}
 	if defaults["115"] != "115-b" || defaults["quark"] != "quark-a" || len(defaults) != 2 {
 		t.Fatalf("provider defaults: %+v", defaults)
+	}
+}
+
+func TestMigrationRedactsPersistedQuarkSignedURLs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "signed-url.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaked := `Get "https://dl-pc.example/file?OSSAccessKeyId=secret&callback-var=secret": timeout`
+	task := &domain.AsyncTask{ID: "leaked", Type: "quark_to_115_import", Payload: map[string]any{}, Status: "failed", Error: leaked, MaxAttempts: 1}
+	if err := db.CreateAsyncTask(task); err != nil {
+		t.Fatal(err)
+	}
+	state := &domain.CrossDriveImport{TaskID: task.ID, QuarkAccountID: "quark", QuarkTargetID: "0", C115AccountID: "115"}
+	if err := db.CreateCrossDriveImport(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClaimCrossDriveImport(task.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	item := &domain.CrossDriveItem{SourceFileID: "source", RelativePath: "file.txt", Name: "file.txt", Size: 1}
+	if err := db.UpsertCrossDriveItem(task.ID, "owner", item); err != nil {
+		t.Fatal(err)
+	}
+	items, err := db.ListCrossDriveItems(task.ID)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items: %+v %v", items, err)
+	}
+	if err := db.MarkCrossDriveItemFailed(items[0].ID, task.ID, "owner", leaked); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	task, err = db.GetAsyncTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := db.GetCrossDriveImportDetail(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(task.Error, "secret") || strings.Contains(detail.Items[0].Error, "secret") {
+		t.Fatalf("signed URL remained persisted: task=%q item=%q", task.Error, detail.Items[0].Error)
 	}
 }

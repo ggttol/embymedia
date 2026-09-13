@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +142,16 @@ func TestResolveQuarkSavedRootsUsesNewDestinationIdentity(t *testing.T) {
 	ids, err := resolveQuarkSavedRoots(entries, before, after, []string{"source"})
 	if err != nil || len(ids) != 1 || ids[0] != "destination" {
 		t.Fatalf("resolved roots = %v, err=%v", ids, err)
+	}
+}
+
+func TestSafeProviderRequestErrorDoesNotExposeSignedURL(t *testing.T) {
+	err := &url.Error{Op: "Get", URL: "https://download.example/file?OSSAccessKeyId=secret&Signature=secret", Err: context.DeadlineExceeded}
+	safe := safeProviderRequestError("open Quark download", err)
+	if strings.Contains(safe.Error(), "download.example") || strings.Contains(safe.Error(), "secret") {
+		t.Fatalf("provider error exposed signed URL: %v", safe)
+	}
+	if !strings.Contains(safe.Error(), "context deadline exceeded") {
+		t.Fatalf("provider error omitted transport cause: %v", safe)
 	}
 }

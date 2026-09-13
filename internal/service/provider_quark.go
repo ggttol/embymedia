@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -123,7 +124,7 @@ func (p *ProviderQuark) requestAt(ctx context.Context, baseURL string, account *
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("quark %s: %w", strings.TrimPrefix(path, "/"), err)
+			return safeProviderRequestError("quark "+strings.TrimPrefix(path, "/"), err)
 		}
 		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
 			response.Body.Close()
@@ -167,6 +168,14 @@ func (p *ProviderQuark) requestAt(ctx context.Context, baseURL string, account *
 		return nil
 	}
 	return fmt.Errorf("quark %s retry exhausted", strings.TrimPrefix(path, "/"))
+}
+
+func safeProviderRequestError(operation string, err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("%s: %v", operation, urlErr.Err)
+	}
+	return fmt.Errorf("%s request failed", operation)
 }
 
 func (p *ProviderQuark) CheckAccount(ctx context.Context, account *domain.DriveAccount) error {
@@ -653,9 +662,13 @@ func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveA
 		if offset > 0 {
 			request.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 		}
-		response, err := p.client.Do(request)
+		downloadClient := &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect}
+		response, err := downloadClient.Do(request)
 		if err != nil {
-			return nil, fmt.Errorf("open Quark download: %w", err)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, safeProviderRequestError("open Quark download", err)
 		}
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 			response.Body.Close()

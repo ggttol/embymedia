@@ -299,6 +299,23 @@ func (d *DB) migrate() error {
 	if _, err := d.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS drive_accounts_one_default_per_type_idx ON drive_accounts(type) WHERE is_default = 1`); err != nil {
 		return err
 	}
+	if _, err := d.db.Exec(`
+		UPDATE async_tasks
+		SET error = 'Quark download request failed; signed URL removed'
+		WHERE type = 'quark_to_115_import'
+		  AND (error LIKE '%dl-pc-%' OR error LIKE '%OSSAccessKeyId=%' OR error LIKE '%callback-var=%');
+		UPDATE cross_drive_items
+		SET error = 'Quark download request failed; signed URL removed'
+		WHERE error LIKE '%dl-pc-%' OR error LIKE '%OSSAccessKeyId=%' OR error LIKE '%callback-var=%';
+		UPDATE task_runs
+		SET error = 'Quark download request failed; signed URL removed',
+		    logs = '["Quark download request failed; signed URL removed"]'
+		WHERE task_id IN (SELECT id FROM async_tasks WHERE type = 'quark_to_115_import')
+		  AND (error LIKE '%dl-pc-%' OR error LIKE '%OSSAccessKeyId=%' OR error LIKE '%callback-var=%'
+		       OR logs LIKE '%dl-pc-%' OR logs LIKE '%OSSAccessKeyId=%' OR logs LIKE '%callback-var=%');
+	`); err != nil {
+		return err
+	}
 	return nil
 }
 
