@@ -26,7 +26,7 @@ type DriveProvider interface {
 	SaveShare(context.Context, *domain.DriveAccount, string, string, string) (SavedShare, error)
 	SaveShareEntries(context.Context, *domain.DriveAccount, string, string, string, []string) (SavedShare, error)
 	SaveShareSelections(context.Context, *domain.DriveAccount, string, string, string, []ShareSelection) (SavedShare, error)
-	OpenDownload(context.Context, *domain.DriveAccount, string, int64) (io.ReadCloser, error)
+	OpenDownload(context.Context, *domain.DriveAccount, string, int64, int64) (io.ReadCloser, error)
 }
 
 type DriveCapabilities struct {
@@ -233,7 +233,7 @@ func (p *Provider115) saveShareSelections(ctx context.Context, account *domain.D
 	count, title, err := p.service.receiveShareEntriesCtx(ctx, account, code, receive, ids, parent, title)
 	return SavedShare{Title: title, RootIDs: append([]string(nil), ids...), Count: count}, err
 }
-func (p *Provider115) OpenDownload(context.Context, *domain.DriveAccount, string, int64) (io.ReadCloser, error) {
+func (p *Provider115) OpenDownload(context.Context, *domain.DriveAccount, string, int64, int64) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("115 ranged download is not exposed by this adapter")
 }
 
@@ -417,7 +417,7 @@ func (s *DriveService) SaveProviderShareSelections(ctx context.Context, provider
 	return p.SaveShareSelections(ctx, account, rawURL, password, parent, selections)
 }
 
-func (s *DriveService) OpenProviderDownload(ctx context.Context, provider, accountID, fileID string, offset int64) (io.ReadCloser, error) {
+func (s *DriveService) OpenProviderDownload(ctx context.Context, provider, accountID, fileID string, offset, length int64) (io.ReadCloser, error) {
 	account, err := s.getAccountForProvider(provider, accountID)
 	if err != nil {
 		return nil, err
@@ -426,7 +426,7 @@ func (s *DriveService) OpenProviderDownload(ctx context.Context, provider, accou
 	if err != nil {
 		return nil, err
 	}
-	return p.OpenDownload(ctx, account, fileID, offset)
+	return p.OpenDownload(ctx, account, fileID, offset, length)
 }
 
 func (s *DriveService) ResolveProviderDeleteTargets(ctx context.Context, provider, accountID, parent string, fileIDs []string) (string, []domain.DestructiveTarget, error) {

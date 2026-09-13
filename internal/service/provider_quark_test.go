@@ -16,6 +16,7 @@ import (
 
 func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 	var signedRequests int
+	var downloadMetadataRequests int
 	savedVisible := false
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -61,18 +62,32 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 			savedVisible = true
 			_, _ = io.WriteString(response, `{"status":200,"data":{"status":2,"save_as":{"save_as_top_fids":["saved-root"]}}}`)
 		case "/file/download":
+			downloadMetadataRequests++
+			if request.Header.Get("User-Agent") != quarkDesktopUserAgent {
+				response.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(response, `{"status":400,"code":23018,"message":"download file size limit"}`)
+				return
+			}
 			_, _ = io.WriteString(response, `{"status":200,"data":[{"download_url":"`+server.URL+`/signed"}]}`)
 		case "/signed":
+			if request.Header.Get("User-Agent") != quarkDesktopUserAgent {
+				t.Fatalf("signed download did not preserve desktop user agent")
+			}
 			signedRequests++
-			if signedRequests == 1 {
+			rangeHeader := request.Header.Get("Range")
+			if rangeHeader == "bytes=2-6" && signedRequests == 1 {
 				response.WriteHeader(http.StatusForbidden)
 				return
 			}
-			if request.Header.Get("Range") != "bytes=2-" {
-				t.Fatalf("range header = %q", request.Header.Get("Range"))
-			}
 			response.WriteHeader(http.StatusPartialContent)
-			_, _ = io.WriteString(response, "ta")
+			switch rangeHeader {
+			case "bytes=2-6":
+				_, _ = io.WriteString(response, "ta")
+			case "bytes=0-3":
+				_, _ = io.WriteString(response, "data")
+			default:
+				t.Fatalf("range header = %q", rangeHeader)
+			}
 		default:
 			http.NotFound(response, request)
 		}
@@ -104,14 +119,24 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 	if err != nil || saved.Count != 1 || len(saved.RootIDs) != 1 || saved.RootIDs[0] != "saved-root" {
 		t.Fatalf("save: %+v %v", saved, err)
 	}
-	body, err := provider.OpenDownload(context.Background(), account, "file", 2)
+	body, err := provider.OpenDownload(context.Background(), account, "file", 2, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer body.Close()
 	content, err := io.ReadAll(body)
-	if err != nil || string(content) != "ta" || signedRequests != 2 {
-		t.Fatalf("download: %q requests=%d err=%v", content, signedRequests, err)
+	if err != nil || string(content) != "ta" || signedRequests != 2 || downloadMetadataRequests != 4 {
+		t.Fatalf("download: %q signed_requests=%d metadata_requests=%d err=%v", content, signedRequests, downloadMetadataRequests, err)
+	}
+	body.Close()
+	zeroBody, err := provider.OpenDownload(context.Background(), account, "file", 0, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroContent, err := io.ReadAll(zeroBody)
+	zeroBody.Close()
+	if err != nil || string(zeroContent) != "data" || signedRequests != 3 || downloadMetadataRequests != 6 {
+		t.Fatalf("zero-offset ranged download: %q signed_requests=%d metadata_requests=%d err=%v", zeroContent, signedRequests, downloadMetadataRequests, err)
 	}
 }
 
@@ -288,8 +313,7 @@ func TestQuarkSnapshotTreeAllowsNonZeroRootParentFID(t *testing.T) {
 			if parent != "0" {
 				t.Errorf("unexpected share parent %q", parent)
 			}
-			// Simulate Quark returning the share folder's real FID instead of "0" for root items
-			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"ep1","pdir_fid":"pack-real-folder-fid","file_name":"ep1.mkv","file_size":"1024","dir":false,"revision":"rev1","share_fid_token":"token1"}]},"metadata":{"_total":1}}`)
+			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[{"fid":"ep1","pdir_fid":"pack-real-folder-fid","file_name":"ep1.mkv","file_size":"1024","dir":false,"share_fid_token":"token1"}]},"metadata":{"_total":1}}`)
 		default:
 			http.NotFound(response, request)
 		}
@@ -309,5 +333,13 @@ func TestQuarkSnapshotTreeAllowsNonZeroRootParentFID(t *testing.T) {
 	}
 	if snapshot.Entries[0].ParentID != "0" {
 		t.Fatalf("expected root entry ParentID to be normalized to 0, got %q", snapshot.Entries[0].ParentID)
+	}
+	entry := snapshot.Entries[0]
+	if entry.Revision == "" {
+		t.Fatal("revisionless Quark response did not receive a stable source identity")
+	}
+	selection := ShareSelection{ID: entry.ID, Revision: entry.Revision, Name: entry.Name, Size: entry.Size}
+	if selected, err := selectShareSelections(snapshot.Entries, []ShareSelection{selection}); err != nil || len(selected) != 1 {
+		t.Fatalf("stable fallback identity was rejected: selected=%+v err=%v", selected, err)
 	}
 }

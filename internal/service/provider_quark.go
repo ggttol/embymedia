@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +21,11 @@ import (
 )
 
 const (
-	quarkDefaultBaseURL = "https://drive.quark.cn/1/clouddrive"
-	quarkMaxEntries     = 10_000
-	quarkMaxDepth       = 20
+	quarkDefaultBaseURL    = "https://drive.quark.cn/1/clouddrive"
+	quarkMaxEntries        = 10_000
+	quarkMaxDepth          = 20
+	quarkBrowserUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+	quarkDesktopUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 Electron/18.3.5.12-a038f7b798 Safari/537.36 Channel/pckk_other_ch"
 )
 
 type ProviderQuark struct {
@@ -99,6 +103,10 @@ func (p *ProviderQuark) requestAt(ctx context.Context, baseURL string, account *
 }
 
 func (p *ProviderQuark) requestWith(ctx context.Context, client *http.Client, baseURL string, account *domain.DriveAccount, method, path string, query url.Values, body any, target any) error {
+	return p.requestWithUserAgent(ctx, client, baseURL, account, method, path, query, body, target, quarkBrowserUserAgent)
+}
+
+func (p *ProviderQuark) requestWithUserAgent(ctx context.Context, client *http.Client, baseURL string, account *domain.DriveAccount, method, path string, query url.Values, body any, target any, userAgent string) error {
 	if strings.TrimSpace(account.Cookie) == "" {
 		return fmt.Errorf("quark account cookie is empty")
 	}
@@ -122,7 +130,7 @@ func (p *ProviderQuark) requestWith(ctx context.Context, client *http.Client, ba
 		request.Header.Set("Cookie", account.Cookie)
 		request.Header.Set("Origin", "https://pan.quark.cn")
 		request.Header.Set("Referer", "https://pan.quark.cn/")
-		request.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+		request.Header.Set("User-Agent", userAgent)
 		if body != nil {
 			request.Header.Set("Content-Type", "application/json")
 		}
@@ -241,6 +249,21 @@ func parseQuarkFile(item quarkFile, expectedParent string) (domain.DriveFile, er
 		updated = time.Unix(stamp, 0)
 	}
 	return domain.DriveFile{FileID: id, ParentID: parent, Name: name, Size: size, Sha1: strings.ToUpper(item.SHA1), IsFolder: isFolder, UpdatedTime: updated, Revision: quarkScalar(item.Revision)}, nil
+}
+
+func quarkShareRevision(file domain.DriveFile) string {
+	if revision := strings.TrimSpace(file.Revision); revision != "" {
+		return revision
+	}
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, file.FileID)
+	_, _ = io.WriteString(hash, "\x00")
+	_, _ = io.WriteString(hash, file.Name)
+	_, _ = io.WriteString(hash, "\x00")
+	_, _ = io.WriteString(hash, strconv.FormatInt(file.Size, 10))
+	_, _ = io.WriteString(hash, "\x00")
+	_, _ = io.WriteString(hash, strconv.FormatBool(file.IsFolder))
+	return "identity-v1:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func (p *ProviderQuark) ListFiles(ctx context.Context, account *domain.DriveAccount, parent string, offset, limit int) ([]domain.DriveFile, int64, error) {
@@ -456,6 +479,7 @@ func (p *ProviderQuark) shareEntries(ctx context.Context, account *domain.DriveA
 			if parent != "0" && file.ParentID != "" && file.ParentID != "0" && file.ParentID != parent {
 				return entries, fmt.Errorf("quark object %s belongs to parent %s, not %s", file.FileID, file.ParentID, parent)
 			}
+			file.Revision = quarkShareRevision(file)
 			if _, duplicate := seen[file.FileID]; duplicate {
 				return entries, fmt.Errorf("Quark share snapshot repeated object %s", file.FileID)
 			}
@@ -802,26 +826,34 @@ func (p *ProviderQuark) waitTask(ctx context.Context, account *domain.DriveAccou
 	return nil, fmt.Errorf("Quark share save task did not complete before timeout")
 }
 
-func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAccount, id string) (string, error) {
+func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAccount, id string) (string, string, error) {
 	var data []struct {
 		DownloadURL string `json:"download_url"`
 		URL         string `json:"url"`
 	}
-	// When a proxy is configured, the download-URL request must use the same
-	// egress as the CDN fetch: signed URLs are bound to the requesting IP.
 	requestClient := p.client
 	if p.proxyURL != nil && strings.TrimSpace(p.proxyURL()) != "" {
 		proxyClient, err := p.downloadHTTPClient()
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		requestClient = proxyClient
 	}
-	if err := p.requestWith(ctx, requestClient, p.downloadBaseURL, account, http.MethodPost, "/file/download", url.Values{"pr": {"ucpro"}, "fr": {"pc"}, "sys": {"win32"}, "ve": {"2.5.56"}, "ut": {""}, "guid": {""}}, map[string]any{"fids": []string{id}}, &data); err != nil {
-		return "", err
+	query := url.Values{"pr": {"ucpro"}, "fr": {"pc"}, "sys": {"win32"}, "ve": {"2.5.56"}, "ut": {""}, "guid": {""}}
+	body := map[string]any{"fids": []string{id}}
+	userAgent := quarkBrowserUserAgent
+	err := p.requestWithUserAgent(ctx, requestClient, p.downloadBaseURL, account, http.MethodPost, "/file/download", query, body, &data, userAgent)
+	var providerErr *ProviderHTTPError
+	if errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusBadRequest {
+		data = nil
+		userAgent = quarkDesktopUserAgent
+		err = p.requestWithUserAgent(ctx, requestClient, p.downloadBaseURL, account, http.MethodPost, "/file/download", query, body, &data, userAgent)
+	}
+	if err != nil {
+		return "", "", err
 	}
 	if len(data) != 1 {
-		return "", fmt.Errorf("Quark download response did not identify one file")
+		return "", "", fmt.Errorf("Quark download response did not identify one file")
 	}
 	signed := data[0].DownloadURL
 	if signed == "" {
@@ -829,9 +861,9 @@ func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAc
 	}
 	parsed, err := url.Parse(signed)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return "", fmt.Errorf("Quark download response contained an invalid signed URL")
+		return "", "", fmt.Errorf("Quark download response contained an invalid signed URL")
 	}
-	return signed, nil
+	return signed, userAgent, nil
 }
 
 func (p *ProviderQuark) downloadHTTPClient() (*http.Client, error) {
@@ -879,16 +911,16 @@ func proxyFromURL(parsed *url.URL) (func(ctx context.Context, network, addr stri
 	return contextDialer.DialContext, nil
 }
 
-func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveAccount, id string, offset int64) (io.ReadCloser, error) {
-	if strings.TrimSpace(id) == "" || offset < 0 {
-		return nil, fmt.Errorf("file ID and nonnegative offset are required")
+func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveAccount, id string, offset, length int64) (io.ReadCloser, error) {
+	if strings.TrimSpace(id) == "" || offset < 0 || length <= 0 {
+		return nil, fmt.Errorf("file ID, nonnegative offset, and positive length are required")
 	}
 	downloadClient, err := p.downloadHTTPClient()
 	if err != nil {
 		return nil, err
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		signed, err := p.downloadURL(ctx, account, id)
+		signed, userAgent, err := p.downloadURL(ctx, account, id)
 		if err != nil {
 			return nil, err
 		}
@@ -896,12 +928,10 @@ func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveA
 		if err != nil {
 			return nil, err
 		}
-		request.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+		request.Header.Set("User-Agent", userAgent)
 		request.Header.Set("Cookie", account.Cookie)
 		request.Header.Set("Referer", "https://pan.quark.cn/")
-		if offset > 0 {
-			request.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-		}
+		request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
 		response, err := downloadClient.Do(request)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -913,11 +943,7 @@ func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveA
 			response.Body.Close()
 			continue
 		}
-		want := http.StatusOK
-		if offset > 0 {
-			want = http.StatusPartialContent
-		}
-		if response.StatusCode != want {
+		if response.StatusCode != http.StatusPartialContent && !(offset == 0 && response.StatusCode == http.StatusOK) {
 			response.Body.Close()
 			return nil, &ProviderHTTPError{Operation: "Quark download", StatusCode: response.StatusCode}
 		}

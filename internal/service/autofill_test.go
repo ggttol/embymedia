@@ -548,3 +548,43 @@ func TestCancelQueuedAutoFillImportsStopsPendingChildren(t *testing.T) {
 		t.Fatalf("queued child was not cancelled with parent: task=%+v err=%v", stored, err)
 	}
 }
+
+func TestResolveAutoFillFolderRetriesTransientEmptyInventory(t *testing.T) {
+	var requests atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.URL.Path != "/files" {
+			http.NotFound(response, request)
+			return
+		}
+		if requests.Add(1) == 1 {
+			_, _ = io.WriteString(response, `{"state":true,"count":0,"data":[]}`)
+			return
+		}
+		_, _ = io.WriteString(response, `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"Show (2026) [tmdbid=42]","s":"0"}]}`)
+	}))
+	defer provider.Close()
+
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SaveAccount(&domain.DriveAccount{ID: "account", Type: "115", Name: "Primary", Cookie: "UID=42_A1; CID=test", IsDefault: true}); err != nil {
+		t.Fatal(err)
+	}
+	drive := NewDriveService(db, provider.URL, "")
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		providerURL, _ := url.Parse(provider.URL)
+		clone.URL.Scheme = providerURL.Scheme
+		clone.URL.Host = providerURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+
+	cid, err := queue.resolveAutoFillFolder(context.Background(), "library-cid", "Show (2026) [tmdbid=42]")
+	if err != nil || cid != "series-cid" || requests.Load() != 2 {
+		t.Fatalf("transient empty inventory was not retried: cid=%q requests=%d err=%v", cid, requests.Load(), err)
+	}
+}

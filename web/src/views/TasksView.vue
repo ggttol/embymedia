@@ -58,6 +58,14 @@ interface QuarkTaskDetailResponse {
   detail?: CrossDriveImportDetail | null
 }
 
+interface TransferRateSample {
+  path: string
+  bytes: number
+  measuredAt: number
+  bytesPerSecond: number
+  lastMovedAt: number
+}
+
 interface ScheduledTask {
   id: string
   name: string
@@ -167,6 +175,8 @@ const visibleExecutionLimit = ref(executionPageSize)
 const selectedDefinition = computed(() => taskDefinitions[scheduleForm.value.type])
 const quarkTaskDetails = ref<Record<string, QuarkTaskDetailResponse>>({})
 const quarkDetailErrors = ref<Record<string, string>>({})
+const quarkTransferRates = ref<Record<string, number>>({})
+const quarkTransferSamples = new Map<string, TransferRateSample>()
 const seriesActionBusy = ref<string | null>(null)
 const seriesActionErrors = ref<Record<string, string>>({})
 const seriesOverrides = ref<Record<string, string>>({})
@@ -270,6 +280,65 @@ function formatBytes(bytes: number) {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+}
+
+function quarkActiveDownload(task: AsyncTask): CrossDriveItem | null {
+  const current = quarkImportState(task)?.current_file
+  return quarkImportItems(task).find((item) => item.state === 'downloading' && (!current || item.relative_path === current)) ?? null
+}
+
+function quarkObservedBytes(task: AsyncTask) {
+  const state = quarkImportState(task)
+  const retained = quarkImportItems(task).reduce((bytes, item) => item.state === 'verified' ? bytes : bytes + Math.min(Number(item.downloaded_bytes || 0), Number(item.size || 0)), 0)
+  return Number(state?.completed_bytes || 0) + retained
+}
+
+function quarkDownloadProgress(task: AsyncTask) {
+  const item = quarkActiveDownload(task)
+  if (!item || Number(item.size) <= 0) return 0
+  return Math.min(100, Math.max(0, Number(item.downloaded_bytes || 0) / Number(item.size) * 100))
+}
+
+function quarkDownloadRate(task: AsyncTask) {
+  return Number(quarkTransferRates.value[task.id] || 0)
+}
+
+function formatRate(bytesPerSecond: number) {
+  return bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : '测速中'
+}
+
+function updateQuarkTransferRate(taskID: string, response: QuarkTaskDetailResponse) {
+  const current = response.detail?.import.current_file
+  const item = response.detail?.items.find((entry) => entry.state === 'downloading' && (!current || entry.relative_path === current))
+  if (!item) {
+    quarkTransferSamples.delete(taskID)
+    if (quarkTransferRates.value[taskID] !== undefined) {
+      const rates = { ...quarkTransferRates.value }
+      delete rates[taskID]
+      quarkTransferRates.value = rates
+    }
+    return
+  }
+  const now = Date.now()
+  const bytes = Number(item.downloaded_bytes || 0)
+  const previous = quarkTransferSamples.get(taskID)
+  let rate = previous?.bytesPerSecond || 0
+  let lastMovedAt = previous?.lastMovedAt || now
+  if (previous && previous.path === item.relative_path && bytes >= previous.bytes && now > previous.measuredAt) {
+    const delta = bytes - previous.bytes
+    if (delta > 0) {
+      const measured = delta * 1000 / (now - previous.measuredAt)
+      rate = rate > 0 ? rate * 0.6 + measured * 0.4 : measured
+      lastMovedAt = now
+    } else if (now - lastMovedAt > 5000) {
+      rate = 0
+    }
+  } else {
+    rate = 0
+    lastMovedAt = now
+  }
+  quarkTransferSamples.set(taskID, { path: item.relative_path, bytes, measuredAt: now, bytesPerSecond: rate, lastMovedAt })
+  quarkTransferRates.value = { ...quarkTransferRates.value, [taskID]: rate }
 }
 
 function quarkImportProgress(task: AsyncTask) {
@@ -583,7 +652,9 @@ async function fetchQuarkTaskDetail(taskID: string, generation: number) {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '读取夸克导入进度失败')
     if (generation !== executionsGeneration) return
-    quarkTaskDetails.value = { ...quarkTaskDetails.value, [taskID]: data as QuarkTaskDetailResponse }
+    const detailResponse = data as QuarkTaskDetailResponse
+    updateQuarkTransferRate(taskID, detailResponse)
+    quarkTaskDetails.value = { ...quarkTaskDetails.value, [taskID]: detailResponse }
     const detailTask = (data as QuarkTaskDetailResponse).task
     if (detailTask?.id) asyncTasks.value = asyncTasks.value.map((task) => task.id === detailTask.id ? { ...task, ...detailTask } : task)
     const errors = { ...quarkDetailErrors.value }
@@ -1133,11 +1204,16 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           </div>
           <dl class="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div><dt class="text-xs text-text-faint">文件</dt><dd class="mt-1 font-mono text-text">{{ Number(quarkImportState(task)?.completed_files || 0) }} / {{ Number(quarkImportState(task)?.total_files || quarkImportItems(task).length || 0) }} 已核对</dd></div>
-            <div><dt class="text-xs text-text-faint">字节</dt><dd class="mt-1 font-mono text-text">{{ formatBytes(Number(quarkImportState(task)?.completed_bytes || 0)) }} / {{ formatBytes(Number(quarkImportState(task)?.total_bytes || 0)) }}</dd></div>
+            <div><dt class="text-xs text-text-faint">传输字节</dt><dd class="mt-1 font-mono text-text">{{ formatBytes(quarkObservedBytes(task)) }} / {{ formatBytes(Number(quarkImportState(task)?.total_bytes || 0)) }}</dd></div>
             <div><dt class="text-xs text-text-faint">已确认检查点</dt><dd class="mt-1 font-mono text-ok">{{ quarkCheckpointCounts(task).verified }}</dd></div>
             <div><dt class="text-xs text-text-faint">待处理 / 失败</dt><dd class="mt-1 font-mono text-warn">{{ quarkCheckpointCounts(task).remaining }} / {{ quarkCheckpointCounts(task).failed }}</dd></div>
           </dl>
-          <p class="text-xs text-text-muted">当前文件：{{ quarkImportState(task)?.current_file || (quarkImportState(task)?.phase === 'verified' ? '全部文件已完成核对' : '等待 worker 更新') }}</p>
+          <div v-if="quarkActiveDownload(task)" class="rounded-lg border border-border/60 bg-surface/70 p-3 space-y-2">
+            <div class="flex flex-wrap items-center justify-between gap-2 text-xs"><span class="min-w-0 truncate text-text-muted">当前下载：{{ quarkActiveDownload(task)?.relative_path }}</span><strong class="font-mono text-accent">{{ formatRate(quarkDownloadRate(task)) }}</strong></div>
+            <div class="h-2 overflow-hidden rounded-full border border-border/40 bg-bg-muted/80" role="progressbar" aria-label="当前文件下载进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(quarkDownloadProgress(task))"><div class="h-full rounded-full bg-accent transition-[width] duration-300" :style="{ width: `${quarkDownloadProgress(task)}%` }"></div></div>
+            <p class="font-mono text-[11px] text-text-faint">{{ formatBytes(Number(quarkActiveDownload(task)?.downloaded_bytes || 0)) }} / {{ formatBytes(Number(quarkActiveDownload(task)?.size || 0)) }} · {{ quarkDownloadProgress(task).toFixed(1) }}%</p>
+          </div>
+          <p v-else class="text-xs text-text-muted">当前文件：{{ quarkImportState(task)?.current_file || (quarkImportState(task)?.phase === 'verified' ? '全部文件已完成核对' : '等待 worker 更新') }}</p>
           <p v-if="quarkImportState(task)?.destination_cid" class="text-xs text-text-faint">目标：{{ quarkImportState(task)?.destination_path || '/emby/_待整理' }} · CID {{ quarkImportState(task)?.destination_cid }}</p>
           <p v-if="quarkDetailErrors[task.id]" role="status" class="rounded-lg border border-warn/30 bg-warn/5 p-2.5 text-xs text-warn">详细检查点暂时读取失败，保留上次任务状态；不会重复提交：{{ quarkDetailErrors[task.id] }}</p>
           <p v-if="task.status === 'failed' || task.status === 'cancelled'" class="text-xs text-text-muted">本次没有声明全部文件已核对；点击“重新执行”后将沿用已协调的检查点。</p>

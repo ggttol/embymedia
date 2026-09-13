@@ -381,6 +381,45 @@ func (d *DB) SaveCrossDriveUploadPart(itemID int64, partNumber int, etag string,
 	_, err := d.db.Exec(`INSERT INTO cross_drive_upload_parts (item_id, part_number, etag, size) VALUES (?, ?, ?, ?) ON CONFLICT(item_id, part_number) DO UPDATE SET etag = excluded.etag, size = excluded.size`, itemID, partNumber, etag, size)
 	return err
 }
+
+// ListCrossDriveDownloadSegments returns the completed spool segments of one item.
+func (d *DB) ListCrossDriveDownloadSegments(itemID int64) (map[int]int64, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	rows, err := d.db.Query(`SELECT segment, bytes FROM cross_drive_download_segments WHERE item_id = ?`, itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	segments := map[int]int64{}
+	for rows.Next() {
+		var index int
+		var size int64
+		if err := rows.Scan(&index, &size); err != nil {
+			return nil, err
+		}
+		segments[index] = size
+	}
+	return segments, rows.Err()
+}
+
+// SaveCrossDriveDownloadSegment records a fully written spool segment for the owning run.
+func (d *DB) SaveCrossDriveDownloadSegment(itemID int64, taskID, owner string, segment int, size int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result, err := d.db.Exec(`INSERT INTO cross_drive_download_segments (item_id, segment, bytes)
+		SELECT ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM cross_drive_items i JOIN cross_drive_imports c ON c.task_id = i.task_id WHERE i.id = ? AND i.task_id = ? AND c.run_owner = ?)
+		ON CONFLICT(item_id, segment) DO UPDATE SET bytes = excluded.bytes`, itemID, segment, size, itemID, taskID, owner)
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed == 0 {
+		return fmt.Errorf("cross-drive item %d lost run ownership", itemID)
+	}
+	return nil
+}
 func (d *DB) MarkCrossDriveItemVerified(itemID int64, taskID, owner, parent, destination string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

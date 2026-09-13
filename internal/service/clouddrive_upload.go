@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
+	"golang.org/x/sys/unix"
 )
 
 const cloudDriveUploadWait = 2 * time.Minute
@@ -71,26 +72,6 @@ func (s *TaskQueueService) cloudDrive115Mount(ctx context.Context, accountID str
 	return "", fmt.Errorf("no writable mounted CloudDrive2 path is bound to /115open/emby")
 }
 
-func (s *TaskQueueService) uploadViaCloudDrive(ctx context.Context, _ string, item domain.CrossDriveItem, account *domain.DriveAccount, parentCID, spoolPath string) (UploadResult, error) {
-	provider := s.driveSvc.providers["115"].(*Provider115)
-	source := UploadSource{Path: spoolPath, Name: item.Name, Size: item.Size, SHA1: item.SHA1, PreSHA1: item.PreSHA1}
-	existing, err := provider.findDestinationFile(ctx, account, parentCID, item.Name)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	if existing != nil {
-		if err := verifyDestinationIdentity(existing, source, parentCID); err != nil {
-			return UploadResult{}, fmt.Errorf("same-name destination conflict: %w", err)
-		}
-		return UploadResult{FileID: existing.FileID, Rapid: true}, nil
-	}
-	mountRoot, err := s.cloudDrive115Mount(ctx, account.ID)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return s.uploadViaCloudDriveAt(ctx, item, account, parentCID, spoolPath, mountRoot)
-}
-
 func (s *TaskQueueService) uploadViaCloudDriveAt(ctx context.Context, item domain.CrossDriveItem, account *domain.DriveAccount, parentCID, spoolPath, mountRoot string) (UploadResult, error) {
 	relativeDirectory := filepath.Dir(item.RelativePath)
 	if relativeDirectory == "." {
@@ -103,9 +84,46 @@ func (s *TaskQueueService) uploadViaCloudDriveAt(ctx context.Context, item domai
 	return s.uploadViaCloudDriveDirectory(ctx, item, account, parentCID, spoolPath, filepath.Join(mountRoot, "_待整理", cleanRelative))
 }
 
+func (s *TaskQueueService) prepareCloudDriveRelativeDestination(ctx context.Context, account *domain.DriveAccount, baseCID, relativePath string) (string, string, error) {
+	mountRoot, err := s.cloudDrive115Mount(ctx, account.ID)
+	if err != nil {
+		return "", "", err
+	}
+	relativeDirectory := filepath.Dir(relativePath)
+	if relativeDirectory == "." {
+		relativeDirectory = ""
+	}
+	clean, err := cleanRelative(relativeDirectory, "CloudDrive2 upload directory")
+	if err != nil {
+		return "", "", err
+	}
+	destinationDirectory := filepath.Join(mountRoot, "_待整理", clean)
+	if err := os.MkdirAll(destinationDirectory, 0o700); err != nil {
+		return "", "", err
+	}
+	if err := unix.Access(destinationDirectory, unix.W_OK); err != nil {
+		return "", "", fmt.Errorf("CloudDrive2 destination directory is not writable: %w", err)
+	}
+	parentCID, err := s.waitForExistingRelativeDestination(ctx, account.ID, baseCID, relativeDirectory)
+	if err != nil {
+		return "", "", err
+	}
+	return parentCID, destinationDirectory, nil
+}
+
 func (s *TaskQueueService) uploadViaCloudDriveDirectory(ctx context.Context, item domain.CrossDriveItem, account *domain.DriveAccount, parentCID, spoolPath, destinationDirectory string) (UploadResult, error) {
 	provider := s.driveSvc.providers["115"].(*Provider115)
 	source := UploadSource{Path: spoolPath, Name: item.Name, Size: item.Size, SHA1: item.SHA1, PreSHA1: item.PreSHA1}
+	existing, err := provider.findDestinationFile(ctx, account, parentCID, item.Name)
+	if err != nil {
+		return UploadResult{}, err
+	}
+	if existing != nil {
+		if err := verifyDestinationIdentity(existing, source, parentCID); err != nil {
+			return UploadResult{}, fmt.Errorf("same-name destination conflict: %w", err)
+		}
+		return UploadResult{FileID: existing.FileID, Rapid: true}, nil
+	}
 	if err := waitForLocalDirectory(ctx, destinationDirectory); err != nil {
 		return UploadResult{}, err
 	}

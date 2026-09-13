@@ -289,20 +289,24 @@ func (p *Provider115) UploadFile(ctx context.Context, account *domain.DriveAccou
 }
 
 func (p *Provider115) waitForVerifiedDestination(ctx context.Context, account *domain.DriveAccount, parent string, source UploadSource, rapid bool, transferred int64) (UploadResult, error) {
+	var identityErr error
 	for attempt := 0; attempt < 30; attempt++ {
 		file, err := p.findDestinationFile(ctx, account, parent, source.Name)
 		if err == nil && file != nil {
-			if err := verifyDestinationIdentity(file, source, parent); err != nil {
-				return UploadResult{}, err
+			if verifyErr := verifyDestinationIdentity(file, source, parent); verifyErr == nil {
+				return UploadResult{FileID: file.FileID, Rapid: rapid, Transferred: transferred}, nil
+			} else {
+				identityErr = verifyErr
 			}
-			return UploadResult{FileID: file.FileID, Rapid: rapid, Transferred: transferred}, nil
-		}
-		if err != nil && ctx.Err() == nil {
+		} else if err != nil && ctx.Err() == nil {
 			return UploadResult{}, err
 		}
 		if err := sleepContext(ctx, time.Second); err != nil {
 			return UploadResult{}, err
 		}
+	}
+	if identityErr != nil {
+		return UploadResult{}, fmt.Errorf("115 destination identity did not stabilize for %s: %w", source.Name, identityErr)
 	}
 	return UploadResult{}, fmt.Errorf("115 destination verification timed out for %s", source.Name)
 }

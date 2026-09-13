@@ -175,6 +175,13 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS cross_drive_items_task_state_idx ON cross_drive_items(task_id, state, id);
 
+	CREATE TABLE IF NOT EXISTS cross_drive_download_segments (
+		item_id INTEGER NOT NULL REFERENCES cross_drive_items(id) ON DELETE CASCADE,
+		segment INTEGER NOT NULL,
+		bytes INTEGER NOT NULL,
+		PRIMARY KEY(item_id, segment)
+	);
+
 	CREATE TABLE IF NOT EXISTS cross_drive_upload_parts (
 		item_id INTEGER NOT NULL REFERENCES cross_drive_items(id) ON DELETE CASCADE,
 		part_number INTEGER NOT NULL,

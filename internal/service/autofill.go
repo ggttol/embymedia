@@ -32,9 +32,11 @@ var (
 )
 
 const (
-	autoFillShareEntryLimit = 10000
-	autoFillShareDepthLimit = 20
-	autoFillMountWait       = 2 * time.Minute
+	autoFillShareEntryLimit          = 10000
+	autoFillShareDepthLimit          = 20
+	autoFillMountWait                = 2 * time.Minute
+	autoFillFolderVisibilityAttempts = 30
+	autoFillFolderVisibilityInterval = time.Second
 )
 
 type seriesAutoFillSpec struct {
@@ -402,26 +404,36 @@ func (s *TaskQueueService) scanAutoFillShare(ctx context.Context, candidate auto
 }
 
 func (s *TaskQueueService) resolveAutoFillFolder(ctx context.Context, libraryCID, folderName string) (string, error) {
-	matches := make([]string, 0, 1)
-	for offset := 0; ; {
-		files, total, err := s.driveSvc.ListFilesPageCtx(ctx, "", libraryCID, offset, 1000)
-		if err != nil {
-			return "", err
-		}
-		for _, file := range files {
-			if file.IsFolder && file.Name == folderName {
-				matches = append(matches, file.FileID)
+	for attempt := 0; attempt < autoFillFolderVisibilityAttempts; attempt++ {
+		matches := make([]string, 0, 1)
+		for offset := 0; ; {
+			files, total, err := s.driveSvc.ListFilesPageCtx(ctx, "", libraryCID, offset, 1000)
+			if err != nil {
+				return "", err
+			}
+			for _, file := range files {
+				if file.IsFolder && file.Name == folderName {
+					matches = append(matches, file.FileID)
+				}
+			}
+			offset += len(files)
+			if len(files) == 0 || int64(offset) >= total {
+				break
 			}
 		}
-		offset += len(files)
-		if len(files) == 0 || int64(offset) >= total {
-			break
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) > 1 {
+			return "", fmt.Errorf("expected one 115 folder named %q under the library, found %d", folderName, len(matches))
+		}
+		if attempt+1 < autoFillFolderVisibilityAttempts {
+			if err := sleepContext(ctx, autoFillFolderVisibilityInterval); err != nil {
+				return "", err
+			}
 		}
 	}
-	if len(matches) != 1 {
-		return "", fmt.Errorf("expected one 115 folder named %q under the library, found %d", folderName, len(matches))
-	}
-	return matches[0], nil
+	return "", fmt.Errorf("expected one 115 folder named %q under the library, found 0 after waiting %s", folderName, time.Duration(autoFillFolderVisibilityAttempts-1)*autoFillFolderVisibilityInterval)
 }
 
 func waitForAutoFillFiles(ctx context.Context, paths []string) error {

@@ -54,6 +54,8 @@ func TestProvider115RapidUploadVerifiesDestination(t *testing.T) {
 			listCalls++
 			if listCalls == 1 {
 				body = `{"state":true,"count":0,"data":[]}`
+			} else if listCalls == 2 {
+				body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"0","n":"movie.mkv","s":"0","sha":""}]}`
 			} else {
 				body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"0","n":"movie.mkv","s":"7","sha":"` + source.SHA1 + `"}]}`
 			}

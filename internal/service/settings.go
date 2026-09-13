@@ -31,7 +31,7 @@ var allowedSettingKeys = map[string]struct{}{
 	"resource_api_url": {}, "resource_api_token": {},
 	"share_snapshot_interval_ms": {},
 	"transfer_temp_dir":          {}, "transfer_min_free_bytes": {},
-	"quark_download_proxy": {}, "quark_autofill_target_id": {},
+	"quark_download_proxy": {}, "quark_autofill_target_id": {}, "quark_download_connections": {},
 	"dangerous_actions_enabled": {},
 }
 
@@ -294,6 +294,12 @@ func (s *SettingsService) Update(values map[string]string) error {
 		}
 		if key == "quark_autofill_target_id" && (len(value) > 200 || strings.ContainsAny(value, "/\x00")) {
 			return fmt.Errorf("quark_autofill_target_id must be an opaque directory ID")
+		}
+		if key == "quark_download_connections" && value != "" {
+			connections, err := strconv.Atoi(value)
+			if err != nil || connections < 1 || connections > 8 {
+				return fmt.Errorf("quark_download_connections must be between 1 and 8")
+			}
 		}
 		if key == "transfer_min_free_bytes" && value != "" {
 			minimum, err := strconv.ParseInt(value, 10, 64)

@@ -20,6 +20,9 @@ import (
 )
 
 func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
+	previousSegmentSize := quarkDownloadSegmentSize
+	quarkDownloadSegmentSize = 1 << 20
+	defer func() { quarkDownloadSegmentSize = previousSegmentSize }()
 	content := bytes.Repeat([]byte{0x5a}, (16<<20)+31)
 	fullHash := sha1.Sum(content)
 	fullSHA := strings.ToUpper(hex.EncodeToString(fullHash[:]))
@@ -117,7 +120,7 @@ func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
 		case request.URL.Host == "drive-pc.quark.cn" && request.URL.Path == "/1/clouddrive/file/download":
 			body = `{"status":200,"data":[{"download_url":"https://signed.test/file"}]}`
 		case request.URL.Host == "signed.test":
-			if request.Header.Get("Range") != "bytes=16777216-" {
+			if request.Header.Get("Range") != "bytes=16777216-16777246" {
 				t.Fatalf("resume Range = %q", request.Header.Get("Range"))
 			}
 			rangeSeen = true
