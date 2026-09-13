@@ -29,7 +29,7 @@ Replace `RELEASE_ID` with a new non-existing release name. The installer verifie
 
 Release installation preserves the webhook enablement choice, browser login, generated STRM root, and rollback-tracked configuration. Caddy configuration changes use validated reloads rather than routine restarts; the systemd override prevents environment enumeration in logs. Artifact build, source cleanup, and CI do not perform deployment.
 
-Quark-to-115 imports save into the selected Quark directory, then spool one file at a time before verified upload to the default 115 account's exact `/emby/_待整理` directory. `transfer_temp_dir` defaults to `/srv/embymedia/data/transfers`; `transfer_min_free_bytes` defaults to 10 GiB and is required in addition to the current file size. Keep the spool on persistent private storage so interrupted downloads and multipart uploads can reconcile after restart.
+Quark-to-115 imports save into the selected Quark directory, then spool one file at a time before verified upload to the default 115 account's exact `/emby/_待整理` directory. `transfer_temp_dir` defaults to `/srv/embymedia/data/transfers`; `transfer_min_free_bytes` defaults to 10 GiB and is required in addition to the current file size. A configured 115 Open Platform token enables native rapid or multipart upload. Without that token, set `clouddrive_c115_account_id` to the matching managed account: the writable CloudDrive2 mount must expose `/115open/emby`, and the importer writes a task-owned staging file, publishes it after `fsync`, then verifies the final parent, name, size, and SHA-1 through 115 before deleting the spool. Keep the spool on persistent private storage so interrupted work can reconcile after restart.
 
 ## Access
 

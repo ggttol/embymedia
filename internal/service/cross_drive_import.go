@@ -152,7 +152,12 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 		uploadSource.OnPart = func(number int, etag string, size int64) error {
 			return s.db.SaveCrossDriveUploadPart(item.ID, number, etag, size)
 		}
-		upload, err := provider.UploadFile(ctx, account, parent, uploadSource)
+		var upload UploadResult
+		if strings.TrimSpace(account.Token) == "" {
+			upload, err = s.uploadViaCloudDrive(ctx, task.ID, *item, account, parent, spool)
+		} else {
+			upload, err = provider.UploadFile(ctx, account, parent, uploadSource)
+		}
 		if err != nil {
 			if ctx.Err() != nil && uploadSource.UploadID != "" {
 				abortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

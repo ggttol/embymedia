@@ -26,7 +26,7 @@ var allowedSettingKeys = map[string]struct{}{
 	"115_cookie": {}, "c115_cid_map": {},
 	"emby_url": {}, "emby_api_key": {},
 	"media_root": {}, "strm_root": {}, "emby_media_prefix": {}, "media_excluded_roots": {},
-	"clouddrive_url": {}, "clouddrive_api_token": {}, "clouddrive_mount_path": {}, "clouddrive_source_path": {},
+	"clouddrive_url": {}, "clouddrive_api_token": {}, "clouddrive_mount_path": {}, "clouddrive_source_path": {}, "clouddrive_c115_account_id": {},
 	"clouddrive_webhook_secret": {}, "clouddrive_webhook_debounce_seconds": {},
 	"resource_api_url": {}, "resource_api_token": {},
 	"share_snapshot_interval_ms": {},
