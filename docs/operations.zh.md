@@ -29,6 +29,8 @@ sudo deploy/scripts/install-release.sh "$PWD" RELEASE_ID
 
 release 安装保留 webhook 启用选择、浏览器登录、生成的 STRM 根目录与回滚跟踪配置。Caddy 配置变更使用验证后的 reload，而非例行重启；systemd override 阻止日志枚举环境变量。artifact 构建、源码清理与 CI 均不执行部署。
 
+夸克到 115 导入先保存到所选夸克目录，再逐文件写入中转区，并在默认 115 账号的固定 `/emby/_待整理` 目录完成验证上传。`transfer_temp_dir` 默认为 `/srv/embymedia/data/transfers`；`transfer_min_free_bytes` 默认为 10 GiB，且可用空间还必须容纳当前文件。中转区应位于持久且私有的存储上，使中断的下载与分片上传可在重启后协调恢复。
+
 ## 访问
 
 在 `/agent` 创建分别命名的 Agent token，安全保管仅返回一次的明文 secret。主机上的客户端携带 `Authorization: Bearer <token>` 或 `X-Agent-Token: <token>` 连接 `http://127.0.0.1:3080/mcp`。远程访问使用经过身份验证的部署端点与适当受保护的网络路径。明文 HTTP 不会加密传输中的密码或 token。

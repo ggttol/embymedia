@@ -143,7 +143,7 @@ func TestAPIRoutes(t *testing.T) {
 		t.Fatalf("expected one-time token secret, got %q", created.Token)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/drive/accounts?provider=115", nil)
 	req.Header.Set("X-Agent-Token", created.Token)
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -160,7 +160,7 @@ func TestAPIRoutes(t *testing.T) {
 		t.Fatalf("expected read-only Agent token to reject writes, got %d", rec.Code)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/drive/accounts?provider=115", nil)
 	req.Header.Set("X-Agent-Token", "invalid")
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -176,7 +176,7 @@ func TestAPIRoutes(t *testing.T) {
 		t.Fatalf("blank explicit token bypassed authentication: %d", rec.Code)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"id":"created-account","name":"Account","cookie":"UID=synthetic-secret"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/drive/accounts", strings.NewReader(`{"id":"created-account","type":"115","name":"Account","cookie":"UID=synthetic-secret"}`))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec = httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -258,7 +258,7 @@ func TestProxiedRESTRequiresAgentToken(t *testing.T) {
 	queue := service.NewTaskQueueService(db, drive, emby)
 	server := NewServer(e, db, drive, emby, service.NewCloudDriveService(db), queue, service.NewCronManager(db, queue), service.NewSettingsService(db), security.NewAgentAuthorizer(db))
 	defer server.Close()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/drive/accounts?provider=115", nil)
 	request.Header.Set("X-Forwarded-For", "203.0.113.10")
 	response := httptest.NewRecorder()
 	e.ServeHTTP(response, request)
@@ -286,7 +286,7 @@ func TestAgentCannotEnableOrBypassBrowserDeletionApproval(t *testing.T) {
 	}
 	for _, test := range []struct{ path, body string }{
 		{"/api/v1/settings", `{"dangerous_actions_enabled":"true"}`},
-		{"/api/v1/files/delete", `{"account_id":"default","file_ids":["file"]}`},
+		{"/api/v1/drive/files/delete", `{"provider":"115","account_id":"default","parent_id":"0","file_ids":["file"]}`},
 		{"/api/v1/destructive-approvals/approval/approve", `{}`},
 	} {
 		request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewBufferString(test.body))
@@ -313,7 +313,7 @@ func TestBrowserUserCanApproveExactPendingDeletion(t *testing.T) {
 	server := NewServer(e, db, drive, emby, service.NewCloudDriveService(db), queue, service.NewCronManager(db, queue), service.NewSettingsService(db), security.NewAgentAuthorizer(db))
 	defer server.Close()
 	now := time.Now()
-	approval := &domain.DestructiveApproval{ID: "approval", Action: "c115.delete", AccountID: "account", ParentCID: "0", Targets: []domain.DestructiveTarget{{FileID: "file", Name: "Movie.mkv"}}, Status: "pending", RequestedBy: "agent", ExpiresAt: now.Add(time.Minute), CreatedAt: now}
+	approval := &domain.DestructiveApproval{ID: "approval", Action: "drive.115.delete", AccountID: "account", ParentCID: "0", Targets: []domain.DestructiveTarget{{FileID: "file", Name: "Movie.mkv"}}, Status: "pending", RequestedBy: "agent", ExpiresAt: now.Add(time.Minute), CreatedAt: now}
 	if err := db.CreateDestructiveApproval(approval); err != nil {
 		t.Fatalf("create approval: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestBrowserUserCanApproveExactPendingDeletion(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("approve returned %d: %s", response.Code, response.Body.String())
 	}
-	if _, err := db.ClaimDestructiveApproval("approval", "c115.delete", time.Now()); err != nil {
+	if _, err := db.ClaimDestructiveApproval("approval", "drive.115.delete", time.Now()); err != nil {
 		t.Fatalf("approved request was not claimable: %v", err)
 	}
 }

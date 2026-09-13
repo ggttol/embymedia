@@ -20,6 +20,7 @@ const taskPollInterval = 500 * time.Millisecond
 var supportedTaskTypes = []string{
 	"c115_offline_download",
 	"c115_save_share",
+	"quark_to_115_import",
 	"emby_match",
 	"emby_refresh",
 	"emby_missing_posters",
@@ -202,6 +203,18 @@ func validateTask(taskType string, payload map[string]any) error {
 			}
 		}
 		return nil
+	case "quark_to_115_import":
+		for _, key := range []string{"quark_account_id", "quark_target_id", "share_url", "c115_account_id"} {
+			if _, err := stringPayload(payload, key, true); err != nil {
+				return err
+			}
+		}
+		for _, key := range []string{"share_password", "prior_import_task_id"} {
+			if _, err := stringPayload(payload, key, false); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "strm_sync", "strm_verify":
 		_, err := stringPayload(payload, "library", false)
 		return err
@@ -317,12 +330,14 @@ func (s *TaskQueueService) executeTask(parent context.Context, task domain.Async
 		}
 		return
 	}
-	if err := s.db.UpdateAsyncTaskProgress(task.ID, 10); err != nil {
-		message := "persist task progress: " + err.Error()
-		if finishErr := s.db.FinishAsyncTask(task.ID, "failed", 0, "", message, "failed: "+message); finishErr != nil {
-			log.Printf("finish task %s after progress failure: %v", task.ID, finishErr)
+	if task.Type != "quark_to_115_import" {
+		if err := s.db.UpdateAsyncTaskProgress(task.ID, 10); err != nil {
+			message := "persist task progress: " + err.Error()
+			if finishErr := s.db.FinishAsyncTask(task.ID, "failed", 0, "", message, "failed: "+message); finishErr != nil {
+				log.Printf("finish task %s after progress failure: %v", task.ID, finishErr)
+			}
+			return
 		}
-		return
 	}
 	result, err := s.run(ctx, task)
 	encoded := []byte(nil)
@@ -460,6 +475,8 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 			return nil, err
 		}
 		return map[string]any{"task_ids": ids, "target_cid": targetCID}, nil
+	case "quark_to_115_import":
+		return s.runQuarkTo115Import(ctx, task)
 	case "strm_sync":
 		result, err := s.runSTRMSync(ctx, task, 10, 99)
 		if err != nil {
@@ -497,6 +514,11 @@ func (s *TaskQueueService) Cancel(taskID string) (*domain.AsyncTask, error) {
 			return nil, fmt.Errorf("task %s changed state before cancellation", taskID)
 		}
 	case "running":
+		if task.Type == "quark_to_115_import" {
+			if err := s.db.RequestCrossDriveCancellation(taskID); err != nil {
+				return nil, err
+			}
+		}
 		s.mu.Lock()
 		cancel := s.running[taskID]
 		s.mu.Unlock()
@@ -519,5 +541,12 @@ func (s *TaskQueueService) Retry(taskID string) (*domain.AsyncTask, error) {
 	if task.Status != "failed" && task.Status != "cancelled" {
 		return nil, fmt.Errorf("task %s is %s, not failed or cancelled", taskID, task.Status)
 	}
-	return s.enqueue(task.Type, task.Payload, task.ScheduleID)
+	payload := make(map[string]any, len(task.Payload)+1)
+	for key, value := range task.Payload {
+		payload[key] = value
+	}
+	if task.Type == "quark_to_115_import" {
+		payload["prior_import_task_id"] = task.ID
+	}
+	return s.enqueue(task.Type, payload, task.ScheduleID)
 }

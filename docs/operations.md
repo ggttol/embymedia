@@ -29,6 +29,8 @@ Replace `RELEASE_ID` with a new non-existing release name. The installer verifie
 
 Release installation preserves the webhook enablement choice, browser login, generated STRM root, and rollback-tracked configuration. Caddy configuration changes use validated reloads rather than routine restarts; the systemd override prevents environment enumeration in logs. Artifact build, source cleanup, and CI do not perform deployment.
 
+Quark-to-115 imports save into the selected Quark directory, then spool one file at a time before verified upload to the default 115 account's exact `/emby/_待整理` directory. `transfer_temp_dir` defaults to `/srv/embymedia/data/transfers`; `transfer_min_free_bytes` defaults to 10 GiB and is required in addition to the current file size. Keep the spool on persistent private storage so interrupted downloads and multipart uploads can reconcile after restart.
+
 ## Access
 
 Create separately named Agent tokens in `/agent`; retain the one-time plaintext secret securely. Clients connect to `http://127.0.0.1:3080/mcp` from the host with `Authorization: Bearer <token>` or `X-Agent-Token: <token>`. For remote access, use the authenticated deployment endpoint and an appropriate protected network path. Plain HTTP does not encrypt passwords or tokens in transit.

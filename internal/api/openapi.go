@@ -71,12 +71,13 @@ func browserOperation(id, summary string, parameters []any) map[string]any {
 }
 
 func openAPISchema() map[string]any {
-	accountID := stringSchema("Managed 115 account ID; omit to use the default account")
-	targetCID := stringSchema("Destination 115 directory CID; omit or use 0 for root")
-	fileID := stringSchema("115 file or directory ID")
-	shareBody := schemaObject([]string{"url"}, map[string]any{
-		"url": stringSchema("115 share URL or code"), "password": stringSchema("Optional extraction code"),
-		"target_cid": targetCID, "account_id": accountID,
+	provider := map[string]any{"type": "string", "enum": []string{"115", "quark"}, "description": "Drive provider"}
+	accountID := stringSchema("Managed account ID for the selected provider")
+	targetID := stringSchema("Destination provider directory ID; root is 0")
+	fileID := stringSchema("Provider file or directory ID")
+	shareBody := schemaObject([]string{"provider", "url"}, map[string]any{
+		"provider": provider, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code"),
+		"target_cid": targetID, "account_id": accountID,
 	})
 	paths := map[string]any{
 		"/hooks/clouddrive2": map[string]any{"post": map[string]any{
@@ -93,29 +94,29 @@ func openAPISchema() map[string]any {
 			queryParameter("health_status", "Optional health status", false), integerQueryParameter("offset", "Result offset"), integerQueryParameter("limit", "Page size"),
 		}, nil)},
 		"/api/v1/links/{id}":           map[string]any{"get": apiOperation("getResourceLink", "Read one indexed resource link", []any{pathParameter("id", "Resource link ID")}, nil)},
-		"/api/v1/links/{id}/save":      map[string]any{"post": apiOperation("saveResourceLink", "Save one indexed link to 115", []any{pathParameter("id", "Resource link ID")}, schemaObject(nil, map[string]any{"target_cid": targetCID}))},
+		"/api/v1/links/{id}/save":      map[string]any{"post": apiOperation("saveResourceLink", "Save one indexed link to 115", []any{pathParameter("id", "Resource link ID")}, schemaObject(nil, map[string]any{"target_cid": targetID}))},
 		"/api/v1/cid-map":              map[string]any{"get": apiOperation("getCIDMap", "Read configured 115 category CIDs", nil, nil)},
-		"/api/v1/files/save_share":     map[string]any{"post": apiOperation("save115Share", "Save a 115 share", nil, shareBody)},
-		"/api/v1/files/share_snapshot": map[string]any{"post": apiOperation("snapshot115Share", "Inspect a 115 share without saving", nil, schemaObject([]string{"url"}, map[string]any{"url": stringSchema("115 share URL or code"), "password": stringSchema("Optional extraction code")}))},
-		"/api/v1/accounts": map[string]any{
-			"get": apiOperation("list115Accounts", "List managed 115 accounts without credentials", nil, nil),
-			"post": apiOperation("create115Account", "Create or update a managed 115 account", nil, schemaObject([]string{"name", "cookie"}, map[string]any{
-				"id": accountID, "name": stringSchema("Account display name"), "cookie": stringSchema("115 browser cookie"), "is_default": map[string]any{"type": "boolean"},
+		"/api/v1/drive/share-save":     map[string]any{"post": apiOperation("saveDriveShare", "Save a provider share", nil, shareBody)},
+		"/api/v1/drive/share-snapshot": map[string]any{"post": apiOperation("snapshotDriveShare", "Inspect a provider share without saving", nil, schemaObject([]string{"provider", "url"}, map[string]any{"provider": provider, "account_id": accountID, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code")}))},
+		"/api/v1/drive/accounts": map[string]any{
+			"get": apiOperation("listDriveAccounts", "List provider accounts without credentials", []any{queryParameter("provider", "Drive provider", true)}, nil),
+			"post": apiOperation("createDriveAccount", "Create or update a provider account", nil, schemaObject([]string{"type", "name", "cookie"}, map[string]any{
+				"id": accountID, "type": provider, "name": stringSchema("Account display name"), "cookie": stringSchema("Browser cookie"), "token": stringSchema("Optional 115 Open Platform access token"), "is_default": map[string]any{"type": "boolean"},
 			})),
 		},
-		"/api/v1/accounts/{id}":    map[string]any{"delete": apiOperation("delete115Account", "Delete a managed 115 account", []any{pathParameter("id", "Managed account ID")}, nil)},
-		"/api/v1/files":            map[string]any{"get": apiOperation("list115Files", "List files and directories in 115", []any{queryParameter("account_id", "Managed account ID", false), queryParameter("cid", "Directory CID", false)}, nil)},
-		"/api/v1/files/mkdir":      map[string]any{"post": apiOperation("create115Directory", "Create a directory in 115", nil, schemaObject([]string{"name"}, map[string]any{"account_id": accountID, "parent_cid": stringSchema("Parent CID"), "name": stringSchema("Directory name")}))},
-		"/api/v1/files/rename":     map[string]any{"post": apiOperation("rename115File", "Rename a 115 file or directory", nil, schemaObject([]string{"file_id", "new_name"}, map[string]any{"account_id": accountID, "file_id": fileID, "new_name": stringSchema("New name")}))},
-		"/api/v1/files/move":       map[string]any{"post": apiOperation("move115Files", "Move 115 files or directories", nil, schemaObject([]string{"file_ids", "target_cid"}, map[string]any{"account_id": accountID, "file_ids": stringArraySchema("File and directory IDs"), "target_cid": targetCID}))},
-		"/api/v1/files/delete":     map[string]any{"post": apiOperation("delete115Files", "Move 115 files or directories to the recycle bin", nil, schemaObject([]string{"file_ids"}, map[string]any{"account_id": accountID, "file_ids": stringArraySchema("File and directory IDs")}))},
-		"/api/v1/offline/download": map[string]any{"post": apiOperation("add115OfflineDownloads", "Submit 115 offline downloads", nil, schemaObject([]string{"urls"}, map[string]any{"account_id": accountID, "urls": stringArraySchema("Magnet, ed2k, or HTTP URLs"), "target_cid": targetCID}))},
-		"/api/v1/emby/libraries":   map[string]any{"get": apiOperation("listEmbyLibraries", "List Emby media libraries", nil, nil)},
-		"/api/v1/emby/refresh":     map[string]any{"post": apiOperation("refreshEmbyLibrary", "Refresh an Emby library or the entire server", []any{queryParameter("library_id", "Optional Emby library ID", false)}, nil)},
-		"/api/v1/emby/match":       map[string]any{"post": apiOperation("matchEmbyItem", "Apply TMDB metadata and images to an Emby item", nil, schemaObject([]string{"item_id", "tmdb_id"}, map[string]any{"item_id": stringSchema("Emby item ID"), "tmdb_id": stringSchema("TMDB ID")}))},
-		"/api/v1/emby/items/{id}":  map[string]any{"get": apiOperation("getEmbyItem", "Inspect one exact Emby item", []any{pathParameter("id", "Emby item ID")}, nil)},
-		"/api/v1/mounts":           map[string]any{"get": apiOperation("listCloudDriveMounts", "List and verify CloudDrive2 mounts", nil, nil)},
-		"/api/v1/mounts/remount":   map[string]any{"post": apiOperation("remountCloudDrive", "Remount CloudDrive2 only when Emby reports no active playback", nil, nil)},
+		"/api/v1/drive/accounts/{id}": map[string]any{"delete": apiOperation("deleteDriveAccount", "Delete a managed provider account", []any{pathParameter("id", "Managed account ID")}, nil)},
+		"/api/v1/drive/files":         map[string]any{"get": apiOperation("listDriveFiles", "List provider files and directories", []any{queryParameter("provider", "Drive provider", true), queryParameter("account_id", "Managed account ID", true), queryParameter("parent_id", "Directory ID", true)}, nil)},
+		"/api/v1/drive/files/mkdir":   map[string]any{"post": apiOperation("createDriveDirectory", "Create a provider directory", nil, schemaObject([]string{"provider", "account_id", "parent_id", "name"}, map[string]any{"provider": provider, "account_id": accountID, "parent_id": targetID, "name": stringSchema("Directory name")}))},
+		"/api/v1/drive/files/rename":  map[string]any{"post": apiOperation("renameDriveFile", "Rename a provider file or directory", nil, schemaObject([]string{"provider", "account_id", "file_id", "new_name"}, map[string]any{"provider": provider, "account_id": accountID, "file_id": fileID, "new_name": stringSchema("New name")}))},
+		"/api/v1/drive/files/move":    map[string]any{"post": apiOperation("moveDriveFiles", "Move provider files or directories", nil, schemaObject([]string{"provider", "account_id", "file_ids", "target_id"}, map[string]any{"provider": provider, "account_id": accountID, "file_ids": stringArraySchema("File and directory IDs"), "target_id": targetID}))},
+		"/api/v1/drive/files/delete":  map[string]any{"post": apiOperation("deleteDriveFiles", "Move provider objects to the recycle bin", nil, schemaObject([]string{"provider", "account_id", "parent_id", "file_ids"}, map[string]any{"provider": provider, "account_id": accountID, "parent_id": targetID, "file_ids": stringArraySchema("File and directory IDs")}))},
+		"/api/v1/offline/download":    map[string]any{"post": apiOperation("add115OfflineDownloads", "Submit 115 offline downloads", nil, schemaObject([]string{"urls"}, map[string]any{"account_id": accountID, "urls": stringArraySchema("Magnet, ed2k, or HTTP URLs"), "target_cid": targetID}))},
+		"/api/v1/emby/libraries":      map[string]any{"get": apiOperation("listEmbyLibraries", "List Emby media libraries", nil, nil)},
+		"/api/v1/emby/refresh":        map[string]any{"post": apiOperation("refreshEmbyLibrary", "Refresh an Emby library or the entire server", []any{queryParameter("library_id", "Optional Emby library ID", false)}, nil)},
+		"/api/v1/emby/match":          map[string]any{"post": apiOperation("matchEmbyItem", "Apply TMDB metadata and images to an Emby item", nil, schemaObject([]string{"item_id", "tmdb_id"}, map[string]any{"item_id": stringSchema("Emby item ID"), "tmdb_id": stringSchema("TMDB ID")}))},
+		"/api/v1/emby/items/{id}":     map[string]any{"get": apiOperation("getEmbyItem", "Inspect one exact Emby item", []any{pathParameter("id", "Emby item ID")}, nil)},
+		"/api/v1/mounts":              map[string]any{"get": apiOperation("listCloudDriveMounts", "List and verify CloudDrive2 mounts", nil, nil)},
+		"/api/v1/mounts/remount":      map[string]any{"post": apiOperation("remountCloudDrive", "Remount CloudDrive2 only when Emby reports no active playback", nil, nil)},
 		"/api/v1/tasks": map[string]any{
 			"get": apiOperation("listSchedules", "List scheduled tasks", nil, nil),
 			"post": apiOperation("createSchedule", "Create or update a scheduled real operation", nil, schemaObject([]string{"type", "name", "enabled"}, map[string]any{
@@ -132,11 +133,15 @@ func openAPISchema() map[string]any {
 		"/api/v1/async-tasks/{id}/cancel": map[string]any{"post": apiOperation("cancelAsyncTask", "Cancel pending or running work", []any{pathParameter("id", "Task ID")}, nil)},
 		"/api/v1/async-tasks/{id}/retry":  map[string]any{"post": apiOperation("retryAsyncTask", "Create a reviewed retry from failed or cancelled work", []any{pathParameter("id", "Task ID")}, nil)},
 		"/api/v1/async-tasks/{id}/runs":   map[string]any{"get": apiOperation("listTaskRuns", "List durable attempts with start time, end time, progress, errors and logs", []any{pathParameter("id", "Task ID")}, nil)},
+		"/api/v1/quark/share-imports": map[string]any{"post": apiOperation("importQuarkShareTo115", "Save a Quark share and transfer verified files to /emby/_待整理 in 115", nil, schemaObject([]string{"quark_account_id", "quark_target_id", "share_url"}, map[string]any{
+			"quark_account_id": accountID, "quark_target_id": stringSchema("Quark directory ID"), "share_url": stringSchema("Quark share URL"), "share_password": stringSchema("Optional share password"), "c115_account_id": stringSchema("Optional 115 account; default is used when omitted"),
+		}))},
+		"/api/v1/quark/share-imports/{task_id}": map[string]any{"get": apiOperation("getQuarkShareImport", "Read structured Quark-to-115 import progress", []any{pathParameter("task_id", "Import task ID")}, nil)},
 		"/api/v1/settings": map[string]any{
 			"get":  apiOperation("getSettings", "Read redacted settings and live dependency health", nil, nil),
 			"post": apiOperation("updateSettings", "Atomically update validated settings", nil, map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}),
 		},
-		"/api/v1/settings/check": map[string]any{"post": apiOperation("checkSettings", "Check one configured dependency", nil, schemaObject(nil, map[string]any{"component": map[string]any{"type": "string", "enum": []string{"c115", "emby", "clouddrive", "resource"}}}))},
+		"/api/v1/settings/check": map[string]any{"post": apiOperation("checkSettings", "Check one configured dependency", nil, schemaObject(nil, map[string]any{"component": map[string]any{"type": "string", "enum": []string{"c115", "quark", "emby", "clouddrive", "resource"}}}))},
 		"/api/v1/tokens": map[string]any{
 			"get": apiOperation("listAgentTokens", "List Agent tokens without secret values", nil, nil),
 			"post": apiOperation("createAgentToken", "Create an Agent token and return its secret once", nil, schemaObject([]string{"name", "permissions"}, map[string]any{
@@ -150,10 +155,10 @@ func openAPISchema() map[string]any {
 		"/api/v1/destructive-approvals/{id}/approve": map[string]any{"post": browserOperation("approveDestructiveApproval", "Approve one exact deletion request", []any{pathParameter("id", "Approval ID")})},
 		"/api/v1/destructive-approvals/{id}/reject":  map[string]any{"post": browserOperation("rejectDestructiveApproval", "Reject one exact deletion request", []any{pathParameter("id", "Approval ID")})},
 	}
-	paths["/api/v1/files/delete"].(map[string]any)["post"].(map[string]any)["security"] = []any{map[string]any{"BrowserSession": []any{}}}
+	paths["/api/v1/drive/files/delete"].(map[string]any)["post"].(map[string]any)["security"] = []any{map[string]any{"BrowserSession": []any{}}}
 	return map[string]any{
 		"openapi": "3.1.0",
-		"info":    map[string]any{"title": "EmbyMedia V2 API", "version": product.Version, "description": "Standalone 115, Emby, CloudDrive2, task, settings and Agent operations", "license": map[string]any{"name": "MIT", "identifier": "MIT"}},
+		"info":    map[string]any{"title": "EmbyMedia V2 API", "version": product.Version, "description": "Standalone drive, Emby, CloudDrive2, task, settings and Agent operations", "license": map[string]any{"name": "MIT", "identifier": "MIT"}},
 		"servers": []any{map[string]any{"url": "/", "description": "Current EmbyMedia server"}},
 		"components": map[string]any{"securitySchemes": map[string]any{
 			"AgentToken":     map[string]any{"type": "apiKey", "in": "header", "name": "X-Agent-Token", "description": "Agent token issued by the administrator"},

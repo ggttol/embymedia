@@ -35,7 +35,7 @@ const baseNavItems = [
   { name: '概览', desktopName: '仪表盘', path: '/', icon: LayoutDashboard },
   { name: '检索', desktopName: '资源检索', path: '/resources', icon: Search },
   { name: '收藏', desktopName: '我的收藏', path: '/favorites', icon: Bookmark, badge: () => favoritesCount.value },
-  { name: '文件', desktopName: '115 文件', path: '/files', icon: FolderTree },
+  { name: '文件', desktopName: '网盘文件', path: '/files', icon: FolderTree },
   { name: '任务', desktopName: '任务中心', path: '/tasks', icon: ListTodo },
   { name: '智能体', desktopName: '智能体接入', path: '/agent', icon: Bot },
   { name: '设置', desktopName: '系统设置', path: '/settings', icon: Settings },

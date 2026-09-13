@@ -30,7 +30,8 @@ var allowedSettingKeys = map[string]struct{}{
 	"clouddrive_webhook_secret": {}, "clouddrive_webhook_debounce_seconds": {},
 	"resource_api_url": {}, "resource_api_token": {},
 	"share_snapshot_interval_ms": {},
-	"dangerous_actions_enabled":  {},
+	"transfer_temp_dir":          {}, "transfer_min_free_bytes": {},
+	"dangerous_actions_enabled": {},
 }
 
 type monitoredComponent struct {
@@ -182,6 +183,25 @@ func (s *SettingsService) CheckAvailability(component string) ServiceHealth {
 			return ServiceHealth{Status: "error", Message: "所有 115 账号均不可用", Latency: latency}
 		}
 		return ServiceHealth{Status: "ok", Message: fmt.Sprintf("115 账号可用 %d / %d", healthy, len(accounts)), Latency: latency}
+	case "quark":
+		accounts, err := NewDriveService(s.db, "", "").CheckAccounts(context.Background(), "quark")
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			return ServiceHealth{Status: "error", Message: "夸克账号检查失败: " + err.Error(), Latency: latency}
+		}
+		if len(accounts) == 0 {
+			return ServiceHealth{Status: "unconfigured", Message: "未配置夸克账号", Latency: latency}
+		}
+		healthy := 0
+		for _, account := range accounts {
+			if account.Status == "active" {
+				healthy++
+			}
+		}
+		if healthy == 0 {
+			return ServiceHealth{Status: "error", Message: "所有夸克账号均不可用", Latency: latency}
+		}
+		return ServiceHealth{Status: "ok", Message: fmt.Sprintf("夸克账号可用 %d / %d", healthy, len(accounts)), Latency: latency}
 
 	default:
 		return ServiceHealth{Status: "error", Message: "未知组件"}
@@ -190,7 +210,7 @@ func (s *SettingsService) CheckAvailability(component string) ServiceHealth {
 
 func (s *SettingsService) CheckAll() map[string]ServiceHealth {
 	results := make(map[string]ServiceHealth)
-	for _, c := range []string{"c115", "emby", "clouddrive", "resource"} {
+	for _, c := range []string{"c115", "quark", "emby", "clouddrive", "resource"} {
 		results[c] = s.CheckAvailability(c)
 	}
 	return results
@@ -209,6 +229,17 @@ func (s *SettingsService) State() (SettingsState, error) {
 	configured := make(map[string]bool, len(monitoredComponents))
 	for _, c := range monitoredComponents {
 		configured[c.id] = c.isConfigured(stored)
+	}
+	accounts, listErr := s.db.ListAccounts()
+	if listErr != nil {
+		return SettingsState{}, listErr
+	}
+	configured["quark"] = false
+	for _, account := range accounts {
+		if account.Type == "quark" {
+			configured["quark"] = true
+			break
+		}
 	}
 	return SettingsState{
 		Values:     RedactSecrets(stored),
@@ -246,7 +277,7 @@ func (s *SettingsService) Update(values map[string]string) error {
 				return fmt.Errorf("%s must be an HTTP or HTTPS URL", key)
 			}
 		}
-		if (key == "clouddrive_mount_path" || key == "media_root" || key == "strm_root" || key == "emby_media_prefix") && value != "" && !filepath.IsAbs(value) {
+		if (key == "clouddrive_mount_path" || key == "media_root" || key == "strm_root" || key == "emby_media_prefix" || key == "transfer_temp_dir") && value != "" && !filepath.IsAbs(value) {
 			return fmt.Errorf("%s must be an absolute path", key)
 		}
 		if key == "dangerous_actions_enabled" && value != "true" && value != "false" {
@@ -255,6 +286,12 @@ func (s *SettingsService) Update(values map[string]string) error {
 		if key == "share_snapshot_interval_ms" {
 			if _, err := parseShareSnapshotInterval(value); err != nil {
 				return err
+			}
+		}
+		if key == "transfer_min_free_bytes" && value != "" {
+			minimum, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || minimum < 0 {
+				return fmt.Errorf("transfer_min_free_bytes must be a nonnegative integer")
 			}
 		}
 		if key == "clouddrive_webhook_debounce_seconds" && value != "" {

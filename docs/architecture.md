@@ -24,7 +24,7 @@ The deployment runs the application on loopback behind Caddy. The Python HTTP lo
 
 ## Persistent work
 
-The queue persists pending work and attempt outcomes; schedules create linked executions. Interrupted effectful work fails for explicit review rather than automatically replaying provider mutations. A provider may have accepted an operation before the process recorded completion, so a local failure is not proof that no side effect occurred.
+The queue persists pending work and attempt outcomes; schedules create linked executions. Interrupted effectful work normally fails for explicit review rather than replaying provider mutations. Quark-to-115 imports are the narrow exception: durable source identities, spool offsets, multipart parts, and verified destination identities let startup reconcile and resume without resaving the share or duplicating bytes. Ambiguous provider state still fails for review.
 
 A full Emby refresh synchronizes and verifies STRM output before requesting a scan and waits for provider completion. STRM reconciliation preserves original media paths, rejects ambiguous canonical destinations, and requires a readable mount canary before stale generated output is removed. Generated directories retain shared Emby access through filesystem ACLs.
 

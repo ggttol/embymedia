@@ -9,11 +9,11 @@ import (
 
 const redacted = "[redacted]"
 
-var credentialText = regexp.MustCompile(`(?i)\b(authorization|cookie|password|secret|token|api[_-]?key|receive_code)\b\s*[:=]\s*([^\s,;"}]+)`)
+var credentialText = regexp.MustCompile(`(?i)\b(authorization|cookie|password|secret|token|stoken|api[_-]?key|receive_code|download_url|callback(?:_var)?)\b\s*[:=]\s*([^\s,;"}]+)`)
 
 func secretKey(key string) bool {
 	key = strings.ToLower(key)
-	for _, marker := range []string{"authorization", "cookie", "password", "secret", "token", "api_key", "apikey", "receive_code"} {
+	for _, marker := range []string{"authorization", "cookie", "password", "secret", "token", "stoken", "api_key", "apikey", "receive_code", "download_url", "signed_url", "callback"} {
 		if strings.Contains(key, marker) {
 			return true
 		}

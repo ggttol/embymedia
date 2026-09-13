@@ -3,6 +3,8 @@ module github.com/embymedia/embymedia
 go 1.26
 
 require (
+	github.com/OpenListTeam/115-sdk-go v0.2.4
+	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/mark3labs/mcp-go v1.0.0
@@ -29,8 +31,10 @@ require (
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250324211829-b45e905df463 // indirect
 	modernc.org/libc v1.75.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
+	resty.dev/v3 v3.0.0-beta.1 // indirect
 )

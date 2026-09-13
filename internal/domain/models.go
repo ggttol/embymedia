@@ -29,6 +29,7 @@ type DriveFile struct {
 	Size        int64     `json:"size"`
 	PickCode    string    `json:"pick_code,omitempty"`
 	Sha1        string    `json:"sha1,omitempty"`
+	Revision    string    `json:"revision,omitempty"`
 	IsFolder    bool      `json:"is_folder"`
 	UpdatedTime time.Time `json:"updated_time"`
 }

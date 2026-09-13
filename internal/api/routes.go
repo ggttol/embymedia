@@ -88,18 +88,17 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/hooks/clouddrive2", s.handleCloudDriveWebhook)
 	v1.POST("/links/:id/save", s.handleSaveLink)
 	v1.GET("/cid-map", s.handleCidMap)
-	v1.POST("/files/save_share", s.handleSaveShare)
-	v1.POST("/files/share_snapshot", s.handleSnapshotShare)
-
-	// 115 Accounts & Cloud Drive
-	v1.GET("/accounts", s.handleListAccounts)
-	v1.POST("/accounts", s.handleAddAccount)
-	v1.DELETE("/accounts/:id", s.handleDeleteAccount)
-	v1.GET("/files", s.handleListFiles)
-	v1.POST("/files/mkdir", s.handleMkdir)
-	v1.POST("/files/rename", s.handleRename)
-	v1.POST("/files/move", s.handleMove)
-	v1.POST("/files/delete", s.handleDelete)
+	// Provider-neutral drive management. Every request identifies its provider.
+	v1.GET("/drive/accounts", s.handleListAccounts)
+	v1.POST("/drive/accounts", s.handleAddAccount)
+	v1.DELETE("/drive/accounts/:id", s.handleDeleteAccount)
+	v1.GET("/drive/files", s.handleListFiles)
+	v1.POST("/drive/files/mkdir", s.handleMkdir)
+	v1.POST("/drive/files/rename", s.handleRename)
+	v1.POST("/drive/files/move", s.handleMove)
+	v1.POST("/drive/files/delete", s.handleDelete)
+	v1.POST("/drive/share-snapshot", s.handleSnapshotShare)
+	v1.POST("/drive/share-save", s.handleSaveShare)
 	v1.POST("/offline/download", s.handleAddOffline)
 
 	// Emby & Media
@@ -122,6 +121,8 @@ func (s *Server) registerRoutes() {
 	v1.POST("/async-tasks/:id/cancel", s.handleCancelAsyncTask)
 	v1.POST("/async-tasks/:id/retry", s.handleRetryAsyncTask)
 	v1.GET("/async-tasks/:id/runs", s.handleListTaskRuns)
+	v1.POST("/quark/share-imports", s.handleCreateQuarkShareImport)
+	v1.GET("/quark/share-imports/:task_id", s.handleGetQuarkShareImport)
 
 	// Settings & Agent Tokens
 	v1.GET("/settings", s.handleGetSettings)
@@ -219,6 +220,7 @@ func (s *Server) handleCidMap(c echo.Context) error {
 
 func (s *Server) handleSaveShare(c echo.Context) error {
 	var req struct {
+		Provider  string `json:"provider"`
 		URL       string `json:"url"`
 		Password  string `json:"password"`
 		TargetCID string `json:"target_cid"`
@@ -227,29 +229,34 @@ func (s *Server) handleSaveShare(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	if req.URL == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{"error": "url is required"})
+	if req.Provider == "" || strings.TrimSpace(req.URL) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider and url are required"})
 	}
-	count, title, err := s.drive.SaveShare(req.AccountID, req.URL, req.Password, req.TargetCID)
+	saved, err := s.drive.SaveProviderShare(c.Request().Context(), req.Provider, req.AccountID, req.URL, req.Password, req.TargetCID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"success": true, "count": count, "title": title, "target_cid": req.TargetCID})
+	return c.JSON(http.StatusOK, map[string]any{"success": true, "count": saved.Count, "title": saved.Title, "root_ids": saved.RootIDs, "target_cid": req.TargetCID})
 }
 
 func (s *Server) handleSnapshotShare(c echo.Context) error {
 	var req struct {
-		URL      string `json:"url"`
-		Password string `json:"password"`
+		Provider  string `json:"provider"`
+		AccountID string `json:"account_id"`
+		URL       string `json:"url"`
+		Password  string `json:"password"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	title, files, err := s.drive.SnapshotShare("", req.URL, req.Password)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	if req.Provider == "" || strings.TrimSpace(req.URL) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider and url are required"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"title": title, "files": files})
+	snapshot, err := s.drive.SnapshotProviderShare(c.Request().Context(), req.Provider, req.AccountID, req.URL, req.Password)
+	if err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, snapshot)
 }
 
 func (s *Server) handleSaveLink(c echo.Context) error {
@@ -298,51 +305,61 @@ func publicAccount(account domain.DriveAccount) map[string]any {
 }
 
 func (s *Server) handleListAccounts(c echo.Context) error {
+	provider := strings.TrimSpace(c.QueryParam("provider"))
+	if provider != "115" && provider != "quark" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider must be 115 or quark"})
+	}
 	var accounts []domain.DriveAccount
 	var err error
 	if c.QueryParam("refresh") == "true" {
-		accounts, err = s.drive.CheckAccounts(c.Request().Context())
+		accounts, err = s.drive.CheckAccounts(c.Request().Context(), provider)
 	} else {
-		accounts, err = s.db.ListAccounts()
+		all, listErr := s.db.ListAccounts()
+		err = listErr
+		for _, account := range all {
+			if account.Type == provider {
+				accounts = append(accounts, account)
+			}
+		}
 	}
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 	}
 	if len(accounts) == 0 {
-		if fallback, err := s.drive.GetDefaultAccount(); err == nil && fallback != nil {
-			accounts = []domain.DriveAccount{*fallback}
+		if fallback, fallbackErr := s.drive.GetDefaultAccount(provider); fallbackErr == nil {
+			accounts = append(accounts, *fallback)
 		}
 	}
 	result := make([]map[string]any, 0, len(accounts))
 	for _, account := range accounts {
 		result = append(result, publicAccount(account))
 	}
-	return c.JSON(http.StatusOK, map[string]any{"accounts": result})
+	capabilities, _ := s.drive.ProviderCapabilities(provider)
+	return c.JSON(http.StatusOK, map[string]any{"accounts": result, "capabilities": capabilities})
 }
 
 func (s *Server) handleAddAccount(c echo.Context) error {
 	var request struct {
 		domain.DriveAccount
 		Cookie string `json:"cookie"`
+		Token  string `json:"token"`
 	}
 	if err := c.Bind(&request); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
 	account := request.DriveAccount
-	account.Cookie = request.Cookie
+	account.Cookie = strings.TrimSpace(request.Cookie)
+	account.Token = strings.TrimSpace(request.Token)
 	account.Name = strings.TrimSpace(account.Name)
-	account.Cookie = strings.TrimSpace(account.Cookie)
+	account.Type = strings.ToLower(strings.TrimSpace(account.Type))
 	if account.Name == "" || account.Cookie == "" {
-		return c.JSON(http.StatusBadRequest, map[string]any{"error": "name and cookie are required"})
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "type, name, and cookie are required"})
+	}
+	if account.Type != "115" && account.Type != "quark" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "type must be 115 or quark"})
 	}
 	if account.ID == "" {
 		account.ID = uuid.NewString()
-	}
-	if account.Type == "" {
-		account.Type = "115"
-	}
-	if account.Type != "115" {
-		return c.JSON(http.StatusBadRequest, map[string]any{"error": "only 115 accounts are supported"})
 	}
 	if account.Status == "" {
 		account.Status = "active"
@@ -361,33 +378,42 @@ func (s *Server) handleDeleteAccount(c echo.Context) error {
 }
 
 func (s *Server) handleListFiles(c echo.Context) error {
-	cid := c.QueryParam("cid")
-	accountID := c.QueryParam("account_id")
-	files, err := s.drive.ListFilesCtx(c.Request().Context(), accountID, cid)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	provider := c.QueryParam("provider")
+	if provider == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider is required"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"files": files})
+	offset, _ := strconv.Atoi(c.QueryParam("offset"))
+	limit, _ := strconv.Atoi(c.QueryParam("limit"))
+	if limit == 0 {
+		limit = 200
+	}
+	files, total, err := s.drive.ListProviderFiles(c.Request().Context(), provider, c.QueryParam("account_id"), c.QueryParam("parent_id"), offset, limit)
+	if err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"files": files, "total": total, "offset": offset, "limit": limit})
 }
 
 func (s *Server) handleMkdir(c echo.Context) error {
 	var req struct {
+		Provider  string `json:"provider"`
 		AccountID string `json:"account_id"`
-		ParentCID string `json:"parent_cid"`
+		ParentID  string `json:"parent_id"`
 		Name      string `json:"name"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	cid, err := s.drive.MkdirCtx(c.Request().Context(), req.AccountID, req.ParentCID, req.Name)
+	id, err := s.drive.MkdirProvider(c.Request().Context(), req.Provider, req.AccountID, req.ParentID, req.Name)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"cid": cid, "name": req.Name})
+	return c.JSON(http.StatusOK, map[string]any{"id": id, "name": req.Name})
 }
 
 func (s *Server) handleRename(c echo.Context) error {
 	var req struct {
+		Provider  string `json:"provider"`
 		AccountID string `json:"account_id"`
 		FileID    string `json:"file_id"`
 		NewName   string `json:"new_name"`
@@ -395,23 +421,24 @@ func (s *Server) handleRename(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	if err := s.drive.RenameCtx(c.Request().Context(), req.AccountID, req.FileID, req.NewName); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	if err := s.drive.RenameProvider(c.Request().Context(), req.Provider, req.AccountID, req.FileID, req.NewName); err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
 }
 
 func (s *Server) handleMove(c echo.Context) error {
 	var req struct {
+		Provider  string   `json:"provider"`
 		AccountID string   `json:"account_id"`
 		FileIDs   []string `json:"file_ids"`
-		TargetCID string   `json:"target_cid"`
+		TargetID  string   `json:"target_id"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	if err := s.drive.MoveCtx(c.Request().Context(), req.AccountID, req.FileIDs, req.TargetCID); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	if err := s.drive.MoveProvider(c.Request().Context(), req.Provider, req.AccountID, req.FileIDs, req.TargetID); err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
 }
@@ -432,19 +459,36 @@ func (s *Server) handleDelete(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, map[string]any{"error": "destructive actions are disabled in system settings"})
 	}
 	var req struct {
+		Provider  string   `json:"provider"`
 		AccountID string   `json:"account_id"`
+		ParentID  string   `json:"parent_id"`
 		FileIDs   []string `json:"file_ids"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	if len(req.FileIDs) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]any{"error": "file_ids is required"})
+	if len(req.FileIDs) == 0 || req.Provider == "" || req.ParentID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider, parent_id, and file_ids are required"})
 	}
-	if err := s.drive.DeleteCtx(c.Request().Context(), req.AccountID, req.FileIDs); err != nil {
+	if err := s.drive.DeleteProvider(c.Request().Context(), req.Provider, req.AccountID, req.FileIDs); err != nil {
 		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
+}
+
+func publicAsyncTask(task domain.AsyncTask) domain.AsyncTask {
+	if task.Type != "quark_to_115_import" {
+		return task
+	}
+	payload := make(map[string]any, len(task.Payload))
+	for key, value := range task.Payload {
+		if key == "share_password" || key == "share_url" {
+			continue
+		}
+		payload[key] = value
+	}
+	task.Payload = payload
+	return task
 }
 
 func (s *Server) handleListAsyncTasks(c echo.Context) error {
@@ -455,6 +499,9 @@ func (s *Server) handleListAsyncTasks(c echo.Context) error {
 	}
 	if tasks == nil {
 		tasks = []domain.AsyncTask{}
+	}
+	for index := range tasks {
+		tasks[index] = publicAsyncTask(tasks[index])
 	}
 	return c.JSON(http.StatusOK, map[string]any{"tasks": tasks})
 }
@@ -588,13 +635,12 @@ func (s *Server) handleBatchTasks(c echo.Context) error {
 	}
 	return c.JSON(http.StatusAccepted, map[string]any{"async_task_ids": ids, "status": "pending"})
 }
-
 func (s *Server) handleGetAsyncTask(c echo.Context) error {
 	task, err := s.db.GetAsyncTask(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]any{"error": "async task not found"})
 	}
-	return c.JSON(http.StatusOK, task)
+	return c.JSON(http.StatusOK, publicAsyncTask(*task))
 }
 
 func (s *Server) handleCancelAsyncTask(c echo.Context) error {
@@ -602,7 +648,7 @@ func (s *Server) handleCancelAsyncTask(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusConflict, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusAccepted, task)
+	return c.JSON(http.StatusAccepted, publicAsyncTask(*task))
 }
 
 func (s *Server) handleRetryAsyncTask(c echo.Context) error {
@@ -610,7 +656,57 @@ func (s *Server) handleRetryAsyncTask(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusConflict, map[string]any{"error": err.Error()})
 	}
-	return c.JSON(http.StatusAccepted, task)
+	return c.JSON(http.StatusAccepted, publicAsyncTask(*task))
+}
+func (s *Server) handleCreateQuarkShareImport(c echo.Context) error {
+	var request struct {
+		QuarkAccountID string `json:"quark_account_id"`
+		QuarkTargetID  string `json:"quark_target_id"`
+		ShareURL       string `json:"share_url"`
+		SharePassword  string `json:"share_password"`
+		C115AccountID  string `json:"c115_account_id"`
+	}
+	if err := c.Bind(&request); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	if strings.TrimSpace(request.QuarkAccountID) == "" || strings.TrimSpace(request.QuarkTargetID) == "" || strings.TrimSpace(request.ShareURL) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "quark_account_id, quark_target_id, and share_url are required"})
+	}
+	if _, err := s.drive.GetAccount("quark", request.QuarkAccountID); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	if request.C115AccountID == "" {
+		account, err := s.drive.GetDefaultAccount("115")
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+		}
+		request.C115AccountID = account.ID
+	} else if _, err := s.drive.GetAccount("115", request.C115AccountID); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+	}
+	task, err := s.taskQueue.Enqueue("quark_to_115_import", map[string]any{
+		"quark_account_id": request.QuarkAccountID,
+		"quark_target_id":  request.QuarkTargetID,
+		"share_url":        strings.TrimSpace(request.ShareURL),
+		"share_password":   strings.TrimSpace(request.SharePassword),
+		"c115_account_id":  request.C115AccountID,
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	}
+	return c.JSON(http.StatusAccepted, map[string]any{"task_id": task.ID, "status": task.Status})
+}
+
+func (s *Server) handleGetQuarkShareImport(c echo.Context) error {
+	task, err := s.db.GetAsyncTask(c.Param("task_id"))
+	if err != nil || task.Type != "quark_to_115_import" {
+		return c.JSON(http.StatusNotFound, map[string]any{"error": "Quark share import not found"})
+	}
+	detail, detailErr := s.db.GetCrossDriveImportDetail(task.ID)
+	if detailErr != nil && !errors.Is(detailErr, sql.ErrNoRows) {
+		return c.JSON(http.StatusInternalServerError, map[string]any{"error": detailErr.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"task": publicAsyncTask(*task), "detail": detail})
 }
 
 func (s *Server) handleListTaskRuns(c echo.Context) error {

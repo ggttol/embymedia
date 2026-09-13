@@ -38,7 +38,7 @@ func TestAllMCPToolsRegistered(t *testing.T) {
 		"cd2_mount_status", "cd2_remount", "emby_refresh_library", "emby_get_libraries", "emby_inspect_item",
 		"task_submit", "task_query", "task_cancel", "task_get_logs", "system_get_config", "system_health",
 		"c115_list_accounts", "c115_search_files", "c115_snapshot_share", "c115_list_offline", "emby_search_items", "emby_list_sessions", "emby_missing_posters",
-		"task_list", "task_retry", "schedule_list", "schedule_upsert", "schedule_run", "schedule_delete", "c115_request_delete", "c115_execute_delete", "system_update_config",
+		"task_list", "task_retry", "schedule_list", "schedule_upsert", "schedule_run", "schedule_delete", "c115_request_delete", "c115_execute_delete", "quark_import_share_to_115", "system_update_config",
 	}
 	if len(registered) != len(expected) {
 		t.Fatalf("expected %d tools, got %d", len(expected), len(registered))

@@ -121,6 +121,60 @@ func (d *DB) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS task_runs_task_id_idx ON task_runs(task_id, id);
 
+	CREATE TABLE IF NOT EXISTS cross_drive_imports (
+		task_id TEXT PRIMARY KEY REFERENCES async_tasks(id) ON DELETE CASCADE,
+		prior_task_id TEXT,
+		phase TEXT NOT NULL DEFAULT 'saving_share',
+		quark_account_id TEXT NOT NULL,
+		quark_target_id TEXT NOT NULL,
+		c115_account_id TEXT NOT NULL,
+		saved_root_ids TEXT NOT NULL DEFAULT '[]',
+		destination_cid TEXT,
+		total_files INTEGER NOT NULL DEFAULT 0,
+		completed_files INTEGER NOT NULL DEFAULT 0,
+		total_bytes INTEGER NOT NULL DEFAULT 0,
+		completed_bytes INTEGER NOT NULL DEFAULT 0,
+		current_file TEXT,
+		cancel_requested INTEGER NOT NULL DEFAULT 0,
+		run_owner TEXT,
+		error TEXT,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS cross_drive_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		task_id TEXT NOT NULL REFERENCES cross_drive_imports(task_id) ON DELETE CASCADE,
+		source_file_id TEXT NOT NULL,
+		source_revision TEXT,
+		relative_path TEXT NOT NULL,
+		name TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		sha1 TEXT,
+		pre_sha1 TEXT,
+		state TEXT NOT NULL DEFAULT 'discovered',
+		spool_path TEXT,
+		downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+		destination_parent TEXT,
+		destination_id TEXT,
+		upload_id TEXT,
+		upload_bucket TEXT,
+		upload_object TEXT,
+		error TEXT,
+		updated_at DATETIME NOT NULL,
+		UNIQUE(task_id, source_file_id),
+		UNIQUE(task_id, relative_path)
+	);
+	CREATE INDEX IF NOT EXISTS cross_drive_items_task_state_idx ON cross_drive_items(task_id, state, id);
+
+	CREATE TABLE IF NOT EXISTS cross_drive_upload_parts (
+		item_id INTEGER NOT NULL REFERENCES cross_drive_items(id) ON DELETE CASCADE,
+		part_number INTEGER NOT NULL,
+		etag TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		PRIMARY KEY(item_id, part_number)
+	);
+
 	CREATE TABLE IF NOT EXISTS agent_tokens (
 		id TEXT PRIMARY KEY,
 		token TEXT NOT NULL UNIQUE,
@@ -228,6 +282,23 @@ func (d *DB) migrate() error {
 	`); err != nil {
 		return err
 	}
+	if _, err := d.db.Exec(`
+		WITH ranked AS (
+			SELECT id, ROW_NUMBER() OVER (
+				PARTITION BY type
+				ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
+			) AS position
+			FROM drive_accounts
+			WHERE is_default = 1
+		)
+		UPDATE drive_accounts SET is_default = 0
+		WHERE id IN (SELECT id FROM ranked WHERE position > 1)
+	`); err != nil {
+		return err
+	}
+	if _, err := d.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS drive_accounts_one_default_per_type_idx ON drive_accounts(type) WHERE is_default = 1`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -312,7 +383,7 @@ func (d *DB) SaveAccount(account *domain.DriveAccount) error {
 	}
 	defer tx.Rollback()
 	if account.IsDefault {
-		if _, err := tx.Exec(`UPDATE drive_accounts SET is_default = 0 WHERE id != ?`, account.ID); err != nil {
+		if _, err := tx.Exec(`UPDATE drive_accounts SET is_default = 0 WHERE type = ? AND id != ?`, account.Type, account.ID); err != nil {
 			return err
 		}
 	}
@@ -626,7 +697,7 @@ func (d *DB) BeginAsyncTask(id string) (*domain.TaskRun, bool, error) {
 	now := time.Now()
 	result, err := tx.Exec(`
 		UPDATE async_tasks
-		SET status = 'running', progress = 0, result = '', error = '', attempts = attempts + 1, updated_at = ?
+		SET status = 'running', progress = CASE WHEN type = 'quark_to_115_import' THEN progress ELSE 0 END, result = '', error = '', attempts = attempts + 1, updated_at = ?
 		WHERE id = ? AND status = 'pending' AND attempts < max_attempts
 	`, now, id)
 	if err != nil {
@@ -637,13 +708,14 @@ func (d *DB) BeginAsyncTask(id string) (*domain.TaskRun, bool, error) {
 		return nil, false, err
 	}
 	var attempt int
-	if err := tx.QueryRow(`SELECT attempts FROM async_tasks WHERE id = ?`, id).Scan(&attempt); err != nil {
+	var progress float64
+	if err := tx.QueryRow(`SELECT attempts, progress FROM async_tasks WHERE id = ?`, id).Scan(&attempt, &progress); err != nil {
 		return nil, false, err
 	}
 	runResult, err := tx.Exec(`
 		INSERT INTO task_runs (task_id, attempt, status, progress, logs, started_at)
-		VALUES (?, ?, 'running', 0, '[]', ?)
-	`, id, attempt, now)
+		VALUES (?, ?, 'running', ?, '[]', ?)
+	`, id, attempt, progress, now)
 	if err != nil {
 		return nil, false, err
 	}
@@ -654,7 +726,7 @@ func (d *DB) BeginAsyncTask(id string) (*domain.TaskRun, bool, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
-	return &domain.TaskRun{ID: runID, TaskID: id, Attempt: attempt, Status: "running", Logs: []string{}, StartedAt: now}, true, nil
+	return &domain.TaskRun{ID: runID, TaskID: id, Attempt: attempt, Status: "running", Progress: progress, Logs: []string{}, StartedAt: now}, true, nil
 }
 
 // UpdateAsyncTaskProgress persists progress for the task and its active run.
@@ -666,10 +738,10 @@ func (d *DB) UpdateAsyncTaskProgress(id string, progress float64) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE async_tasks SET progress = ?, updated_at = ? WHERE id = ? AND status = 'running'`, progress, time.Now(), id); err != nil {
+	if _, err := tx.Exec(`UPDATE async_tasks SET progress = MAX(progress, ?), updated_at = ? WHERE id = ? AND status = 'running'`, progress, time.Now(), id); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE task_runs SET progress = ? WHERE id = (SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1)`, progress, id); err != nil {
+	if _, err := tx.Exec(`UPDATE task_runs SET progress = MAX(progress, ?) WHERE id = (SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1)`, progress, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -760,7 +832,8 @@ func (d *DB) CancelPendingAsyncTask(id string) (bool, error) {
 	return changed > 0, err
 }
 
-// RecoverInterruptedAsyncTasks fails running work without replaying possibly effectful operations.
+// RecoverInterruptedAsyncTasks preserves the checkpoints of restart-safe imports.
+// Other effectful work still fails for explicit operator review.
 func (d *DB) RecoverInterruptedAsyncTasks() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -771,7 +844,14 @@ func (d *DB) RecoverInterruptedAsyncTasks() error {
 	defer tx.Rollback()
 	now := time.Now()
 	message := "service restarted while task was running; verify upstream state before retrying"
-	if _, err := tx.Exec(`UPDATE async_tasks SET status = 'failed', error = ?, updated_at = ? WHERE status = 'running'`, message, now); err != nil {
+	if _, err := tx.Exec(`UPDATE async_tasks SET status = 'failed', error = ?, updated_at = ? WHERE status = 'running' AND type != 'quark_to_115_import'`, message, now); err != nil {
+		return err
+	}
+	reconcile := "service restarted; reconciling durable cross-drive checkpoints"
+	if _, err := tx.Exec(`UPDATE async_tasks SET status = 'pending', error = ?, max_attempts = MAX(max_attempts, attempts + 1), updated_at = ? WHERE status = 'running' AND type = 'quark_to_115_import'`, reconcile, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE cross_drive_imports SET run_owner = NULL, error = ?, updated_at = ? WHERE task_id IN (SELECT id FROM async_tasks WHERE type = 'quark_to_115_import' AND status = 'pending')`, reconcile, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE task_runs SET status = 'failed', error = ?, completed_at = ? WHERE status = 'running'`, message, now); err != nil {

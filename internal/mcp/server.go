@@ -56,7 +56,7 @@ func (m *MCPServer) Server() *server.MCPServer {
 
 func toolRequiresWrite(name string) bool {
 	switch name {
-	case "c115_save_share", "c115_move", "c115_rename", "c115_mkdir", "c115_get_share_link", "c115_request_delete", "c115_execute_delete", "cd2_remount", "emby_refresh_library", "task_submit", "task_cancel", "task_retry", "schedule_upsert", "schedule_run", "schedule_delete", "system_update_config":
+	case "c115_save_share", "c115_move", "c115_rename", "c115_mkdir", "c115_get_share_link", "c115_request_delete", "c115_execute_delete", "quark_import_share_to_115", "cd2_remount", "emby_refresh_library", "task_submit", "task_cancel", "task_retry", "schedule_upsert", "schedule_run", "schedule_delete", "system_update_config":
 		return true
 	default:
 		return false
@@ -292,6 +292,14 @@ func (m *MCPServer) registerTools() {
 	m.server.AddTool(mcp.NewTool("c115_request_delete", mcp.WithDescription("Request browser confirmation to recycle exact 115 objects"), mcp.WithString("account_id"), mcp.WithString("parent_cid", mcp.Required()), mcp.WithArray("file_ids", mcp.Required(), mcp.WithStringItems())), m.handleC115RequestDelete)
 	m.server.AddTool(mcp.NewTool("c115_execute_delete", mcp.WithDescription("Execute one unexpired target-bound deletion after browser approval"), mcp.WithString("approval_id", mcp.Required())), m.handleC115ExecuteDelete)
 	m.server.AddTool(mcp.NewTool("system_update_config", mcp.WithDescription("Update validated system settings; cannot change the browser deletion switch"), mcp.WithObject("settings", mcp.Required())), m.handleSystemUpdateConfig)
+	m.server.AddTool(mcp.NewTool("quark_import_share_to_115",
+		mcp.WithDescription("Save a Quark share into a selected Quark directory, then transfer and verify it under /emby/_待整理 in the default 115 account"),
+		mcp.WithString("quark_account_id", mcp.Required()),
+		mcp.WithString("quark_target_id", mcp.Required()),
+		mcp.WithString("share_url", mcp.Required()),
+		mcp.WithString("share_password"),
+		mcp.WithString("c115_account_id"),
+	), m.handleQuarkImportShare)
 }
 
 // Tool handlers share the same provider and persistence services as REST.
@@ -352,6 +360,45 @@ func (m *MCPServer) handleC115SaveShare(ctx context.Context, req mcp.CallToolReq
 	}
 	encoded, _ := json.Marshal(map[string]any{"count": count, "title": title, "target_cid": targetCID})
 	return mcp.NewToolResultText(string(encoded)), nil
+}
+
+func (m *MCPServer) handleQuarkImportShare(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	quarkAccountID, err := req.RequireString("quark_account_id")
+	if err != nil {
+		return mcp.NewToolResultError("quark_account_id is required"), nil
+	}
+	quarkTargetID, err := req.RequireString("quark_target_id")
+	if err != nil {
+		return mcp.NewToolResultError("quark_target_id is required"), nil
+	}
+	shareURL, err := req.RequireString("share_url")
+	if err != nil {
+		return mcp.NewToolResultError("share_url is required"), nil
+	}
+	if _, err := m.drive.GetAccount("quark", quarkAccountID); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	c115AccountID := strings.TrimSpace(req.GetString("c115_account_id", ""))
+	if c115AccountID == "" {
+		account, err := m.drive.GetDefaultAccount("115")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		c115AccountID = account.ID
+	} else if _, err := m.drive.GetAccount("115", c115AccountID); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	task, err := m.taskQueue.Enqueue("quark_to_115_import", map[string]any{
+		"quark_account_id": quarkAccountID,
+		"quark_target_id":  quarkTargetID,
+		"share_url":        strings.TrimSpace(shareURL),
+		"share_password":   strings.TrimSpace(req.GetString("share_password", "")),
+		"c115_account_id":  c115AccountID,
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("submit Quark import: %v", err)), nil
+	}
+	return jsonToolResult(map[string]any{"task_id": task.ID, "status": task.Status, "destination_path": "/emby/_待整理"}), nil
 }
 
 func (m *MCPServer) handleC115Move(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -485,6 +532,20 @@ func (m *MCPServer) handleTaskSubmit(ctx context.Context, req mcp.CallToolReques
 	return mcp.NewToolResultText(string(encoded)), nil
 }
 
+func safeTask(task *domain.AsyncTask) *domain.AsyncTask {
+	if task == nil || task.Type != "quark_to_115_import" {
+		return task
+	}
+	copy := *task
+	copy.Payload = make(map[string]any, len(task.Payload))
+	for key, value := range task.Payload {
+		if key != "share_url" && key != "share_password" {
+			copy.Payload[key] = value
+		}
+	}
+	return &copy
+}
+
 func (m *MCPServer) handleTaskQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	taskID, err := req.RequireString("task_id")
 	if err != nil {
@@ -494,7 +555,7 @@ func (m *MCPServer) handleTaskQuery(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("task not found: %v", err)), nil
 	}
-	b, _ := json.MarshalIndent(task, "", "  ")
+	b, _ := json.MarshalIndent(safeTask(task), "", "  ")
 	return mcp.NewToolResultText(string(b)), nil
 }
 
@@ -507,7 +568,7 @@ func (m *MCPServer) handleTaskCancel(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("cancel task failed: %v", err)), nil
 	}
-	encoded, _ := json.MarshalIndent(task, "", "  ")
+	encoded, _ := json.MarshalIndent(safeTask(task), "", "  ")
 	return mcp.NewToolResultText(string(encoded)), nil
 }
 
@@ -524,7 +585,7 @@ func (m *MCPServer) handleTaskGetLogs(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read task logs failed: %v", err)), nil
 	}
-	encoded, _ := json.MarshalIndent(map[string]any{"task": task, "runs": runs}, "", "  ")
+	encoded, _ := json.MarshalIndent(map[string]any{"task": safeTask(task), "runs": runs}, "", "  ")
 	return mcp.NewToolResultText(string(encoded)), nil
 }
 
@@ -594,6 +655,9 @@ func (m *MCPServer) handleTaskList(_ context.Context, req mcp.CallToolRequest) (
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("list tasks failed: %v", err)), nil
 	}
+	for index := range tasks {
+		tasks[index] = *safeTask(&tasks[index])
+	}
 	return jsonToolResult(tasks), nil
 }
 
@@ -606,7 +670,7 @@ func (m *MCPServer) handleTaskRetry(_ context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("retry task failed: %v", err)), nil
 	}
-	return jsonToolResult(task), nil
+	return jsonToolResult(safeTask(task)), nil
 }
 
 func (m *MCPServer) handleScheduleList(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -695,7 +759,7 @@ func (m *MCPServer) handleC115RequestDelete(ctx context.Context, req mcp.CallToo
 		return mcp.NewToolResultError(fmt.Sprintf("resolve delete targets failed: %v", err)), nil
 	}
 	now := time.Now()
-	approval := &domain.DestructiveApproval{ID: uuid.NewString(), Action: "c115.delete", AccountID: accountID, ParentCID: parentCID, Targets: targets, Status: "pending", RequestedBy: requesterFromContext(ctx), ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now}
+	approval := &domain.DestructiveApproval{ID: uuid.NewString(), Action: "drive.115.delete", AccountID: accountID, ParentCID: parentCID, Targets: targets, Status: "pending", RequestedBy: requesterFromContext(ctx), ExpiresAt: now.Add(15 * time.Minute), CreatedAt: now}
 	if err := m.db.CreateDestructiveApproval(approval); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("request delete approval failed: %v", err)), nil
 	}
@@ -708,7 +772,7 @@ func (m *MCPServer) handleC115ExecuteDelete(ctx context.Context, req mcp.CallToo
 		return mcp.NewToolResultError("approval_id is required"), nil
 	}
 	now := time.Now()
-	approval, err := m.db.ClaimDestructiveApproval(id, "c115.delete", now)
+	approval, err := m.db.ClaimDestructiveApproval(id, "drive.115.delete", now)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("delete approval rejected: %v", err)), nil
 	}
@@ -716,7 +780,7 @@ func (m *MCPServer) handleC115ExecuteDelete(ctx context.Context, req mcp.CallToo
 	for index, target := range approval.Targets {
 		fileIDs[index] = target.FileID
 	}
-	if err := m.drive.DeleteCtx(ctx, approval.AccountID, fileIDs); err != nil {
+	if err := m.drive.DeleteProvider(ctx, "115", approval.AccountID, fileIDs); err != nil {
 		_ = m.db.FinishDestructiveApproval(id, "failed", err.Error(), time.Now())
 		return mcp.NewToolResultError(fmt.Sprintf("delete failed after approval: %v", err)), nil
 	}

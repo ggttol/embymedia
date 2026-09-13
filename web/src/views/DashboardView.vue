@@ -23,7 +23,7 @@ interface Mount { name?: string; mount_path: string; status: string; error?: str
 
 const sources = ref<Source[]>([
   { key: 'summary', name: '资源摘要', url: '/api/v1/home/summary', route: '/resources', state: 'untested', error: '', checkedAt: '' },
-  { key: 'accounts', name: '115 账号', url: '/api/v1/accounts', route: '/settings', state: 'untested', error: '', checkedAt: '' },
+  { key: 'accounts', name: '网盘账号', url: '/api/v1/drive/accounts?provider=115', route: '/files', state: 'untested', error: '', checkedAt: '' },
   { key: 'libraries', name: 'Emby 媒体库', url: '/api/v1/emby/libraries', route: '/settings', state: 'untested', error: '', checkedAt: '' },
   { key: 'tasks', name: '后台任务', url: '/api/v1/async-tasks', route: '/tasks', state: 'untested', error: '', checkedAt: '' },
   { key: 'mounts', name: 'CloudDrive 挂载', url: '/api/v1/mounts', route: '/settings', state: 'untested', error: '', checkedAt: '' },

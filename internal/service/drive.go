@@ -25,13 +25,15 @@ type DriveService struct {
 	resourceToken          string
 	shareSnapshotRequests  chan struct{}
 	shareSnapshotCompleted time.Time
+	providers              map[string]DriveProvider
+	quark                  *ProviderQuark
 }
 
 func NewDriveService(db *storage.DB, resourceURL, resourceToken string) *DriveService {
 	if resourceURL == "" {
 		resourceURL = "http://127.0.0.1:8100"
 	}
-	return &DriveService{
+	service := &DriveService{
 		db:                    db,
 		resourceURL:           resourceURL,
 		resourceToken:         resourceToken,
@@ -40,6 +42,12 @@ func NewDriveService(db *storage.DB, resourceURL, resourceToken string) *DriveSe
 			Timeout: 30 * time.Second,
 		},
 	}
+	service.quark = NewProviderQuark(service.client)
+	service.providers = map[string]DriveProvider{
+		"115":   &Provider115{service: service},
+		"quark": service.quark,
+	}
+	return service
 }
 
 // ProviderHTTPError reports an unsuccessful HTTP response without interpreting its body.
@@ -62,108 +70,156 @@ func decodeProviderJSON(response *http.Response, operation string, target any) e
 	return nil
 }
 
-// GetDefaultAccount returns the default 115 account or first available
-func (s *DriveService) GetDefaultAccount() (*domain.DriveAccount, error) {
+// GetDefaultAccount returns the default active account for one provider.
+// The optional form keeps internal 115-only callers explicit by default.
+func (s *DriveService) GetDefaultAccount(providerName ...string) (*domain.DriveAccount, error) {
+	provider := "115"
+	if len(providerName) > 0 {
+		var err error
+		provider, err = normalizeProvider(providerName[0])
+		if err != nil {
+			return nil, err
+		}
+	}
 	accounts, err := s.db.ListAccounts()
 	if err != nil {
 		return nil, err
 	}
-	if len(accounts) == 0 {
-		cookie, _ := s.db.GetSetting("115_cookie")
-		if cookie == "" {
-			return nil, errors.New("no drive accounts configured")
-		}
-		now := time.Now()
-		fallback := domain.DriveAccount{ID: "default", Type: "115", Name: "默认账号", Cookie: cookie, Status: "active", IsDefault: true, CreatedAt: now, UpdatedAt: now}
-		if err := s.db.SaveAccount(&fallback); err != nil {
-			return nil, err
-		}
-		return &fallback, nil
-	}
+	hasProviderAccount := false
 	for index := range accounts {
+		if accounts[index].Type != provider {
+			continue
+		}
+		hasProviderAccount = true
 		if accounts[index].IsDefault && accounts[index].Status == "active" {
 			return &accounts[index], nil
 		}
 	}
 	for index := range accounts {
-		if accounts[index].Status == "active" {
+		if accounts[index].Type == provider && accounts[index].Status == "active" {
 			return &accounts[index], nil
 		}
 	}
 	for index := range accounts {
-		if accounts[index].IsDefault {
+		if accounts[index].Type == provider && accounts[index].IsDefault {
 			return &accounts[index], nil
 		}
 	}
-	return &accounts[0], nil
+	for index := range accounts {
+		if accounts[index].Type == provider {
+			return &accounts[index], nil
+		}
+	}
+	if provider == "115" && !hasProviderAccount {
+		cookie, _ := s.db.GetSetting("115_cookie")
+		if cookie != "" {
+			now := time.Now()
+			fallback := domain.DriveAccount{ID: "default", Type: "115", Name: "默认账号", Cookie: cookie, Status: "active", IsDefault: true, CreatedAt: now, UpdatedAt: now}
+			if err := s.db.SaveAccount(&fallback); err != nil {
+				return nil, err
+			}
+			return &fallback, nil
+		}
+	}
+	return nil, fmt.Errorf("no %s drive accounts configured", provider)
 }
 
-// CheckAccounts refreshes credential, VIP, and storage state for every managed 115 account.
-func (s *DriveService) CheckAccounts(ctx context.Context) ([]domain.DriveAccount, error) {
+// CheckAccounts refreshes health for every managed account of one provider.
+func (s *DriveService) CheckAccounts(ctx context.Context, providerName ...string) ([]domain.DriveAccount, error) {
+	provider := "115"
+	if len(providerName) > 0 {
+		var err error
+		provider, err = normalizeProvider(providerName[0])
+		if err != nil {
+			return nil, err
+		}
+	}
 	accounts, err := s.db.ListAccounts()
 	if err != nil {
 		return nil, err
 	}
-	if len(accounts) == 0 {
+	filtered := make([]domain.DriveAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Type == provider {
+			filtered = append(filtered, account)
+		}
+	}
+	if len(filtered) == 0 && provider == "115" {
 		if cookie, _ := s.db.GetSetting("115_cookie"); cookie != "" {
-			account, err := s.GetDefaultAccount()
+			account, err := s.GetDefaultAccount("115")
 			if err != nil {
 				return nil, err
 			}
-			accounts = []domain.DriveAccount{*account}
+			filtered = append(filtered, *account)
 		}
 	}
-	for index := range accounts {
-		account := &accounts[index]
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://webapi.115.com/files/index_info", nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Cookie", account.Cookie)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
-		resp, requestErr := s.client.Do(req)
-		if requestErr != nil {
-			account.Status = "error"
-		} else {
-			var raw struct {
-				State bool   `json:"state"`
-				Error string `json:"error"`
-				Data  struct {
-					VIP       int   `json:"vip"`
-					Expire    int64 `json:"expire"`
-					SpaceInfo struct {
-						Total struct {
-							Size int64 `json:"size"`
-						} `json:"all_total"`
-						Used struct {
-							Size int64 `json:"size"`
-						} `json:"all_use"`
-					} `json:"space_info"`
-				} `json:"data"`
-			}
-			decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&raw)
-			resp.Body.Close()
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 || decodeErr != nil || !raw.State {
+	adapter, err := s.provider(provider)
+	if err != nil {
+		return nil, err
+	}
+	for index := range filtered {
+		account := &filtered[index]
+		if err := adapter.CheckAccount(ctx, account); err != nil {
+			if account.Status != "expired" {
 				account.Status = "error"
-			} else {
-				account.Status = "active"
-				account.VIPLevel = raw.Data.VIP
-				account.QuotaTotal = raw.Data.SpaceInfo.Total.Size
-				account.QuotaUsed = raw.Data.SpaceInfo.Used.Size
-				if raw.Data.Expire > 0 {
-					expires := time.Unix(raw.Data.Expire, 0)
-					account.VIPExpiresAt = &expires
-					if expires.Before(time.Now()) {
-						account.Status = "expired"
-					}
-				}
 			}
+		} else {
+			account.Status = "active"
 		}
 		if err := s.db.SaveAccount(account); err != nil {
 			return nil, err
 		}
 	}
-	return accounts, nil
+	return filtered, nil
+}
+
+func (s *DriveService) check115Account(ctx context.Context, account *domain.DriveAccount) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://webapi.115.com/files/index_info", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Cookie", account.Cookie)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124 Safari/537.36")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var raw struct {
+		State bool   `json:"state"`
+		Error string `json:"error"`
+		Data  struct {
+			VIP       int   `json:"vip"`
+			Expire    int64 `json:"expire"`
+			SpaceInfo struct {
+				Total struct {
+					Size int64 `json:"size"`
+				} `json:"all_total"`
+				Used struct {
+					Size int64 `json:"size"`
+				} `json:"all_use"`
+			} `json:"space_info"`
+		} `json:"data"`
+	}
+	if err := decodeProviderJSON(resp, "115 account check", &raw); err != nil {
+		return err
+	}
+	if !raw.State {
+		return fmt.Errorf("115 account check rejected: %s", raw.Error)
+	}
+	account.VIPLevel = raw.Data.VIP
+	account.QuotaTotal = raw.Data.SpaceInfo.Total.Size
+	account.QuotaUsed = raw.Data.SpaceInfo.Used.Size
+	account.VIPExpiresAt = nil
+	if raw.Data.Expire > 0 {
+		expires := time.Unix(raw.Data.Expire, 0)
+		account.VIPExpiresAt = &expires
+		if expires.Before(time.Now()) {
+			account.Status = "expired"
+			return fmt.Errorf("115 account VIP has expired")
+		}
+	}
+	return nil
 }
 
 func (s *DriveService) resourceConfig() (string, string) {
@@ -576,10 +632,12 @@ func (e *PartialBatchError) Unwrap() error { return e.Err }
 
 // ShareEntry is one entry inside a share snapshot.
 type ShareEntry struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Size  int64  `json:"size,omitempty"`
-	IsDir bool   `json:"is_dir"`
+	ID       string `json:"id"`
+	ParentID string `json:"parent_id,omitempty"`
+	Revision string `json:"revision,omitempty"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size,omitempty"`
+	IsDir    bool   `json:"is_dir"`
 }
 
 var shareURLPattern = regexp.MustCompile(`115(?:cdn)?\.com/s/([A-Za-z0-9]+)`)

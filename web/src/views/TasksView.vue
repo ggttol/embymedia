@@ -153,6 +153,7 @@ let pollTimer: number | undefined
 let schedulesGeneration = 0
 let executionsGeneration = 0
 function taskDefinition(type: string): TaskDefinition {
+  if (type === 'quark_to_115_import') return { label: '夸克分享发送到 115', description: '把分享保存到指定夸克目录，再逐文件传输并核对默认 115 账号的 /emby/_待整理。', defaultName: '夸克分享发送到 115' }
   return taskDefinitions[type as TaskType] ?? { label: '未知任务', description: '该任务类型不受当前页面支持。', defaultName: '未知任务' }
 }
 
@@ -250,6 +251,7 @@ function resultSummary(task: AsyncTask) {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
       return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}${Number(strm.removed || 0) > 0 || Number(strm.removed_directories || 0) > 0 ? ` · 已清理 ${Number(strm.removed || 0)} 个旧 STRM 和 ${Number(strm.removed_directories || 0)} 个空目录` : ''}` : 'STRM 操作已完成。'
     }
+    case 'quark_to_115_import': return `已核对 ${Number(result.files_completed || 0)} 个文件、${Number(result.bytes_completed || 0)} 字节，目标目录 /emby/_待整理。`
     default: return '任务已保存执行结果。'
   }
 }
@@ -309,6 +311,7 @@ function taskSummary(type: string, payload: Record<string, unknown> = {}) {
     case 'strm_verify': return payload.library ? `检查目录：${payload.library}` : '范围：全部 STRM 文件'
     case 'c115_save_share': return `分享链接：${payload.url || '未填写'}${payload.target_cid ? ` · 保存到 CID ${payload.target_cid}` : ''}`
     case 'c115_offline_download': return `${Array.isArray(payload.urls) ? payload.urls.length : 0} 个下载地址${payload.target_cid ? ` · 保存到 CID ${payload.target_cid}` : ''}`
+    case 'quark_to_115_import': return `夸克目录：${String(payload.quark_target_id || '未知')} · 115 固定目标：/emby/_待整理`
     default: return '没有可显示的任务信息'
   }
 }
