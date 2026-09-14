@@ -3,6 +3,8 @@ name: embymedia
 services:
   clouddrive2:
     image: ${CLOUDDRIVE_IMAGE:?set digest-pinned CLOUDDRIVE_IMAGE}
+    # CloudDrive does not reap health-check children when it runs as PID 1.
+    init: true
     environment:
       CLOUDDRIVE_HOME: /Config
     restart: unless-stopped
