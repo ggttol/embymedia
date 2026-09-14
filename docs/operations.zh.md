@@ -9,6 +9,7 @@
 ## 目录
 
 - [部署](#部署)
+- [NAS 传输 Worker](#nas-传输-worker)
 - [访问](#访问)
 - [备份与隔离还原](#备份与隔离还原)
 - [媒体与挂载安全](#媒体与挂载安全)
@@ -19,7 +20,7 @@
 
 首次 secret 初始化在主机准备完成后以 root 运行，参数为 artifact 目录；其中的 `manifest.json` 必须包含 `imageIds.clouddrive2` 与 `imageIds.emby`。提供 Docker 可用的不可变 `repository@sha256:<digest>` 镜像引用；`init-secrets.sh` 读取该清单但不拉取镜像。已有 V2 的升级使用现有 stack 配置，无须重新执行首次 secret 初始化。
 
-备份并检查 release 后，在源码检出中运行 `make install-web` 与 `make build-linux`。将 release 源码、`bin/embymedia-linux-amd64` 及 `bin/embymedia-linux-amd64.sha256` 传至已准备好的 Debian 主机。在该 release 源码目录中，授权运维人员可以使用唯一 release ID 安装：
+备份并检查 release 后，在源码检出中运行 `make install-web` 与 `make build-linux`。将 release 源码以及 `bin/` 中两个 Linux 二进制与各自的 `.sha256` 文件传至已准备好的 Debian 主机。在该 release 源码目录中，授权运维人员可以使用唯一 release ID 安装：
 
 ```sh
 sudo deploy/scripts/install-release.sh "$PWD" RELEASE_ID
@@ -30,6 +31,26 @@ sudo deploy/scripts/install-release.sh "$PWD" RELEASE_ID
 release 安装保留 webhook 启用选择、浏览器登录、生成的 STRM 根目录与回滚跟踪配置。共享的 `/etc/caddy/Caddyfile` 及其他应用的路由片段由主机管理；EmbyMedia release 只更新 `/etc/caddy/snippets/embymedia.caddy`、`/etc/caddy/routes/embymedia.caddy` 与 `/etc/caddy/sites/embymedia.caddy`，验证完整配置后再 reload Caddy。systemd override 阻止日志枚举环境变量。artifact 构建、源码清理与 CI 均不执行部署。
 
 夸克到 115 导入先保存到所选夸克目录，再逐文件写入中转区，并在默认 115 账号的固定 `/emby/_待整理` 目录完成验证上传。`transfer_temp_dir` 默认为 `/srv/embymedia/data/transfers`；`transfer_min_free_bytes` 默认为 10 GiB，且可用空间还必须容纳当前文件。`quark_download_connections` 设置单文件的并行范围连接数（默认 4，允许 1-8）；实测 4 条约等于单条流的 3.4 倍，而 8 条低于 4 条。配置 115 开放平台 token 时使用原生秒传或分片上传；没有 token 时，将 `clouddrive_c115_account_id` 设为对应托管账号，且可写 CloudDrive2 挂载必须映射 `/115open/emby`。导入器先写任务拥有的暂存文件，`fsync` 后发布，再通过 115 核对最终父目录、名称、大小与 SHA-1，确认后才删除中转文件。CloudDrive2 FUSE 挂载把目录报告为 root 所有，且不会传播默认 ACL，因此 `ensure-transfer-access.sh` 为服务账号授予 `_待整理`、`电视剧追更` 与 `综艺追更` 的访问权限；`embymedia-v2` 单元在启动前执行它，CloudDrive 监控每分钟重跑一次，使之后创建的目录无需重启即可写入。普通导入直接平铺发布到 `_待整理`，不再镜像夸克分享自身的目录名，因为通过 provider API 创建的子目录对服务永不可写。中转区应位于持久且私有的存储上，使中断工作可在重启后协调恢复。
+
+## NAS 传输 Worker
+
+可选的 NAS Worker 保持 Debian 是唯一生产数据库与任务所有者，同时把夸克下载字节及由 CloudDrive2 支撑的 115 写入移到可直连的 NAS。每个实例使用独立的 CloudDrive2 `/Config`、挂载根、缓存与管理端口；NAS 挂载把同一托管 115 账号的 `/115open/emby` 目录映射到 `/CloudNAS/CloudDrive`。Worker 要求共享的 `.embymedia-health-canary`、可由 CloudDrive2 与 115 API 同时看到且身份准确的 `_待整理/.embymedia-nas-worker-health-canary`、可写目标目录、持久私有中转区，并保留配置的最低空闲空间及当前文件大小。它绝不会回退到 HTTP 或 SOCKS 代理。
+
+在 Debian 上提供预先验证的 OpenSSH `known_hosts` 条目，不要在部署时信任网络扫描结果。控制端配置会创建由 `embymedia` 拥有的专用 Ed25519 密钥，记录严格主机密钥检查，并把四个 `EMBYMEDIA_NAS_WORKER_SSH_*` 变量加入 `/etc/embymedia/v2.env`：
+
+```sh
+sudo deploy/scripts/configure-nas-worker-controller.sh gaotao@NAS_HOST 5022 VERIFIED_KNOWN_HOSTS
+```
+
+向 NAS 传输 Worker 二进制、校验和、部署文件与生成的公钥，不传输任何私有凭据。先由获授权的 NAS 管理员一次性安装归 root 所有且限制路径的访问助手，再以受限 NAS 账号运行 Worker 安装器，随后启动固定 digest 的 CloudDrive2 Compose 栈，并通过回环地址或受保护局域网 Web UI 配置其 115 挂载：
+
+```sh
+sudo deploy/scripts/install-nas-worker-root.sh RELEASE_TREE /volume1/docker/clouddrive2/CloudNAS/CloudDrive gaotao 1026 100
+deploy/scripts/install-nas-worker.sh RELEASE_TREE CONTROLLER_PUBLIC_KEY
+CLOUDDRIVE_IMAGE=repository@sha256:digest docker compose -f /volume1/homes/gaotao/embymedia-transfer/clouddrive-compose.yml up -d --wait
+```
+
+安装器只替换 `~/.ssh/authorized_keys` 中的 `embymedia-nas-worker` 条目；该密钥不能分配 PTY、转发端口、使用 agent 或执行任意命令。它唯一的提权能力是一个不带命令参数的准确免密助手：Worker 通过 stdin 传入已验证的相对目标，归 root 所有的助手把所有权修改限制在已配置挂载下一个已存在目录。夸克凭据只在下载操作中经过加密 stdin，不进入参数、NAS 配置、进度输出或日志。传输在 NAS 保存范围检查点与中转文件，发布前计算完整文件 hash，通过 NAS CloudDrive2 挂载写入绑定源身份的 `.uploading` 名称，并等待 Debian 验证准确的 115 父目录、名称、大小与 SHA-1，之后才由独立 commit 请求删除中转文件。SSH 丢失、取消、挂载失败、已有外来同名目标或 provider 状态有歧义都会明确失败并保留可恢复证据。
 
 ## 访问
 

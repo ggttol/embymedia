@@ -17,7 +17,9 @@ build: build-web
 build-linux: build-web
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/embymedia-linux-amd64 ./cmd/server
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/embymedia-transfer-worker-linux-amd64 ./cmd/transfer-worker
 	cd bin && shasum -a 256 embymedia-linux-amd64 > embymedia-linux-amd64.sha256
+	cd bin && shasum -a 256 embymedia-transfer-worker-linux-amd64 > embymedia-transfer-worker-linux-amd64.sha256
 
 test: build-web
 	go test -race ./...

@@ -97,6 +97,9 @@ func main() {
 	embyService := service.NewEmbyService(db)
 	cloudDriveService := service.NewCloudDriveService(db)
 	taskQueue := service.NewTaskQueueService(db, driveService, embyService)
+	if err := taskQueue.ConfigureNASWorkerFromEnvironment(); err != nil {
+		log.Fatalf("configure NAS transfer worker: %v", err)
+	}
 	if err := taskQueue.Start(ctx); err != nil {
 		log.Fatalf("start task queue: %v", err)
 	}

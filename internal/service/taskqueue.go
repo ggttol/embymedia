@@ -37,10 +37,11 @@ func SupportedTaskTypes() []string {
 
 // TaskQueueService executes persisted provider operations and owns their cancellation contexts.
 type TaskQueueService struct {
-	db       *storage.DB
-	driveSvc *DriveService
-	embySvc  *EmbyService
-	mediaSvc *MediaService
+	db        *storage.DB
+	driveSvc  *DriveService
+	embySvc   *EmbyService
+	mediaSvc  *MediaService
+	nasWorker transferWorker
 
 	mediaMu sync.Mutex
 
@@ -53,6 +54,16 @@ type TaskQueueService struct {
 // NewTaskQueueService creates a stopped persistent task queue.
 func NewTaskQueueService(db *storage.DB, driveSvc *DriveService, embySvc *EmbyService) *TaskQueueService {
 	return &TaskQueueService{db: db, driveSvc: driveSvc, embySvc: embySvc, mediaSvc: NewMediaService(db), running: make(map[string]context.CancelFunc)}
+}
+
+// ConfigureNASWorkerFromEnvironment enables the optional SSH transfer data plane.
+func (s *TaskQueueService) ConfigureNASWorkerFromEnvironment() error {
+	worker, err := NASWorkerFromEnvironment()
+	if err != nil {
+		return err
+	}
+	s.nasWorker = worker
+	return nil
 }
 
 // ErrMediaMutationBusy means a worker or another deletion owns media mutation.

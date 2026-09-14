@@ -9,6 +9,7 @@ Operate the standalone Debian media service while preserving its database, brows
 ## Table of Contents
 
 - [Deployment](#deployment)
+- [NAS transfer worker](#nas-transfer-worker)
 - [Access](#access)
 - [Backup and isolated restore](#backup-and-isolated-restore)
 - [Media and mount safety](#media-and-mount-safety)
@@ -19,7 +20,7 @@ The supported release layout is `/opt/embymedia-v2/current/bin/embymedia` with i
 
 Initial secret setup runs as root after provisioning and takes an artifact directory whose `manifest.json` contains `imageIds.clouddrive2` and `imageIds.emby`. Supply immutable `repository@sha256:<digest>` image references available to Docker; `init-secrets.sh` reads this manifest but does not fetch images. Existing V2 upgrades use the configured stack and do not require rerunning initial secret setup.
 
-After a backup and release review, build on the source checkout with `make install-web` and `make build-linux`. Transfer the release source plus `bin/embymedia-linux-amd64` and `bin/embymedia-linux-amd64.sha256` to the provisioned Debian host. From that release source directory, an authorized operator can install a unique release ID:
+After a backup and release review, build on the source checkout with `make install-web` and `make build-linux`. Transfer the release source plus both Linux binaries and their `.sha256` files from `bin/` to the provisioned Debian host. From that release source directory, an authorized operator can install a unique release ID:
 
 ```sh
 sudo deploy/scripts/install-release.sh "$PWD" RELEASE_ID
@@ -30,6 +31,26 @@ Replace `RELEASE_ID` with a new non-existing release name. The installer verifie
 Release installation preserves the webhook enablement choice, browser login, generated STRM root, and rollback-tracked configuration. The shared `/etc/caddy/Caddyfile` and other applications' route fragments are host-owned; EmbyMedia releases update only `/etc/caddy/snippets/embymedia.caddy`, `/etc/caddy/routes/embymedia.caddy`, and `/etc/caddy/sites/embymedia.caddy`, validate the complete configuration, then reload Caddy. The systemd override prevents environment enumeration in logs. Artifact build, source cleanup, and CI do not perform deployment.
 
 Quark-to-115 imports save into the selected Quark directory, then spool one file at a time before verified upload to the default 115 account's exact `/emby/_待整理` directory. `transfer_temp_dir` defaults to `/srv/embymedia/data/transfers`; `transfer_min_free_bytes` defaults to 10 GiB and is required in addition to the current file size. `quark_download_connections` sets the parallel ranged connections per file (default 4, allowed 1-8); four measured about 3.4x a single stream, and eight measured lower than four. A configured 115 Open Platform token enables native rapid or multipart upload. Without that token, set `clouddrive_c115_account_id` to the matching managed account: the writable CloudDrive2 mount must expose `/115open/emby`, and the importer writes a task-owned staging file, publishes it after `fsync`, then verifies the final parent, name, size, and SHA-1 through 115 before deleting the spool. The CloudDrive2 FUSE mount reports directories as root-owned without propagating default ACLs, so `ensure-transfer-access.sh` grants the service user access on `_待整理`, `电视剧追更`, and `综艺追更`; the `embymedia-v2` unit runs it before start and the CloudDrive monitor re-runs it every minute so directories created later become writable without a restart. A plain import publishes flat into `_待整理` rather than mirroring the Quark share's folder names, because a subdirectory created through the provider API is never service-writable. Keep the spool on persistent private storage so interrupted work can reconcile after restart.
+
+## NAS transfer worker
+
+The optional NAS worker keeps Debian as the only production database and task owner while moving Quark download bytes and CloudDrive2-backed 115 writes to a direct-connected NAS. Each instance uses an independent CloudDrive2 `/Config`, mount root, cache, and admin port; the NAS mount maps the same managed 115 account's `/115open/emby` directory to `/CloudNAS/CloudDrive`. The worker requires the shared `.embymedia-health-canary`, the exact `_待整理/.embymedia-nas-worker-health-canary` identity visible through both CloudDrive2 and the 115 API, writable destination directories, a persistent private spool, and at least the configured free-space reserve plus the current file size. It never falls back to an HTTP or SOCKS proxy.
+
+On Debian, supply a previously verified OpenSSH `known_hosts` entry instead of trusting a network scan during deployment. The controller setup creates a dedicated Ed25519 key owned by `embymedia`, records strict host-key checking, and adds the four `EMBYMEDIA_NAS_WORKER_SSH_*` variables to `/etc/embymedia/v2.env`:
+
+```sh
+sudo deploy/scripts/configure-nas-worker-controller.sh gaotao@NAS_HOST 5022 VERIFIED_KNOWN_HOSTS
+```
+
+Transfer the worker binary, checksum, deployment files, generated public key, and no private credential to the NAS. Use an authorized NAS administrator once to install the root-owned, path-confined access helper; run the worker installer as the restricted NAS account; then start the digest-pinned CloudDrive2 Compose stack and configure its 115 mount through the loopback or protected-LAN Web UI:
+
+```sh
+sudo deploy/scripts/install-nas-worker-root.sh RELEASE_TREE /volume1/docker/clouddrive2/CloudNAS/CloudDrive gaotao 1026 100
+deploy/scripts/install-nas-worker.sh RELEASE_TREE CONTROLLER_PUBLIC_KEY
+CLOUDDRIVE_IMAGE=repository@sha256:digest docker compose -f /volume1/homes/gaotao/embymedia-transfer/clouddrive-compose.yml up -d --wait
+```
+
+The installer replaces only the `embymedia-nas-worker` entry in `~/.ssh/authorized_keys`; that key cannot allocate a PTY, forward ports, use an agent, or execute an arbitrary command. Its only privilege is one exact passwordless helper with no command arguments: the worker passes a validated relative destination over stdin, and the root-owned helper confines ownership changes to one existing directory below the configured mount. Quark credentials cross only encrypted stdin for the download operation and never enter arguments, NAS configuration, progress output, or logs. A transfer keeps its range checkpoint and spool on the NAS, hashes the complete file before publication, writes a source-bound `.uploading` name through the NAS CloudDrive2 mount, and waits for Debian to verify the exact 115 parent, name, size, and SHA-1 before a separate commit request removes the spool. SSH loss, cancellation, mount failure, an existing foreign destination, or ambiguous provider state fails visibly and leaves resumable evidence.
 
 ## Access
 

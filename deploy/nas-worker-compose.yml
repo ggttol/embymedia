@@ -1,0 +1,24 @@
+name: embymedia-nas-worker
+
+services:
+  clouddrive2:
+    image: ${CLOUDDRIVE_IMAGE:?set digest-pinned CLOUDDRIVE_IMAGE}
+    init: true
+    environment:
+      CLOUDDRIVE_HOME: /Config
+      TZ: Asia/Shanghai
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    volumes:
+      - ${NAS_CLOUDDRIVE_CONFIG:-/volume1/docker/embymedia-clouddrive/config}:/Config
+      - ${NAS_CLOUDDRIVE_MOUNT:-/volume1/docker/embymedia-clouddrive/CloudNAS}:/CloudNAS:shared
+    healthcheck:
+      test: [CMD-SHELL, "timeout 5 sh -c 'mountpoint -q /CloudNAS/CloudDrive && stat /CloudNAS/CloudDrive/.embymedia-health-canary >/dev/null'"]
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 60s
