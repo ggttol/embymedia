@@ -72,57 +72,47 @@ func (s *TaskQueueService) cloudDrive115Mount(ctx context.Context, accountID str
 	return "", fmt.Errorf("no writable mounted CloudDrive2 path is bound to /115open/emby")
 }
 
-func (s *TaskQueueService) uploadViaCloudDriveAt(ctx context.Context, item domain.CrossDriveItem, account *domain.DriveAccount, parentCID, spoolPath, mountRoot string) (UploadResult, error) {
-	relativeDirectory := filepath.Dir(item.RelativePath)
-	if relativeDirectory == "." {
-		relativeDirectory = ""
-	}
-	cleanRelative, err := cleanRelative(relativeDirectory, "CloudDrive2 upload directory")
-	if err != nil {
-		return UploadResult{}, err
-	}
-	return s.uploadViaCloudDriveDirectory(ctx, item, account, parentCID, spoolPath, filepath.Join(mountRoot, "_待整理", cleanRelative))
-}
-
-func (s *TaskQueueService) prepareCloudDriveRelativeDestination(ctx context.Context, account *domain.DriveAccount, baseCID, relativePath string) (string, string, error) {
+// cloudDriveStagingDirectory returns the writable CloudDrive2 path of the fixed
+// /emby/_待整理 staging directory. The FUSE mount reports new subdirectories as
+// root-owned 0755 without inheriting ACLs, so a plain import publishes flat into
+// the one directory the deployment grants instead of mirroring the Quark share's
+// own folder names.
+func (s *TaskQueueService) cloudDriveStagingDirectory(ctx context.Context, account *domain.DriveAccount) (string, error) {
 	mountRoot, err := s.cloudDrive115Mount(ctx, account.ID)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	relativeDirectory := filepath.Dir(relativePath)
-	if relativeDirectory == "." {
-		relativeDirectory = ""
+	directory := filepath.Join(mountRoot, "_待整理")
+	if err := waitForLocalDirectory(ctx, directory); err != nil {
+		return "", err
 	}
-	clean, err := cleanRelative(relativeDirectory, "CloudDrive2 upload directory")
-	if err != nil {
-		return "", "", err
+	if err := unix.Access(directory, unix.W_OK); err != nil {
+		return "", fmt.Errorf("CloudDrive2 staging directory %s is not writable: %w", directory, err)
 	}
-	destinationDirectory := filepath.Join(mountRoot, "_待整理", clean)
-	if err := os.MkdirAll(destinationDirectory, 0o700); err != nil {
-		return "", "", err
-	}
-	if err := unix.Access(destinationDirectory, unix.W_OK); err != nil {
-		return "", "", fmt.Errorf("CloudDrive2 destination directory is not writable: %w", err)
-	}
-	parentCID, err := s.waitForExistingRelativeDestination(ctx, account.ID, baseCID, relativeDirectory)
-	if err != nil {
-		return "", "", err
-	}
-	return parentCID, destinationDirectory, nil
+	return directory, nil
 }
 
 func (s *TaskQueueService) uploadViaCloudDriveDirectory(ctx context.Context, item domain.CrossDriveItem, account *domain.DriveAccount, parentCID, spoolPath, destinationDirectory string) (UploadResult, error) {
 	provider := s.driveSvc.providers["115"].(*Provider115)
 	source := UploadSource{Path: spoolPath, Name: item.Name, Size: item.Size, SHA1: item.SHA1, PreSHA1: item.PreSHA1}
+	// Without a known digest the destination can never be verified; fail here
+	// instead of waiting out the full verification timeout.
+	if !validSHA1(source.SHA1) {
+		return UploadResult{}, fmt.Errorf("verified spool SHA-1 is required before upload")
+	}
 	existing, err := provider.findDestinationFile(ctx, account, parentCID, item.Name)
 	if err != nil {
 		return UploadResult{}, err
 	}
 	if existing != nil {
-		if err := verifyDestinationIdentity(existing, source, parentCID); err != nil {
-			return UploadResult{}, fmt.Errorf("same-name destination conflict: %w", err)
+		switch classifyDestination(existing, source, parentCID) {
+		case destinationVerified:
+			return UploadResult{FileID: existing.FileID, Rapid: true}, nil
+		case destinationForeign:
+			return UploadResult{}, fmt.Errorf("same-name destination conflict: 115 destination identity verification failed for %s", source.Name)
 		}
-		return UploadResult{FileID: existing.FileID, Rapid: true}, nil
+		// An earlier attempt already published this name; 115 owns the verdict.
+		return provider.waitForVerifiedDestination(ctx, account, parentCID, source, false, item.Size)
 	}
 	if err := waitForLocalDirectory(ctx, destinationDirectory); err != nil {
 		return UploadResult{}, err
@@ -131,11 +121,14 @@ func (s *TaskQueueService) uploadViaCloudDriveDirectory(ctx context.Context, ite
 	stagingPath := filepath.Join(destinationDirectory, ".embymedia-quark-"+hex.EncodeToString(key[:])+".uploading")
 	finalPath := filepath.Join(destinationDirectory, item.Name)
 	if info, err := os.Lstat(finalPath); err == nil {
-		return UploadResult{}, fmt.Errorf("CloudDrive2 destination %s already exists with unverified identity", finalPath)
+		if !info.Mode().IsRegular() {
+			return UploadResult{}, fmt.Errorf("CloudDrive2 destination %s is not a regular file", finalPath)
+		}
+		// The bytes are already published locally; wait for 115 to verify the
+		// identity instead of rewriting a duplicate or failing the attempt.
+		return provider.waitForVerifiedDestination(ctx, account, parentCID, source, false, item.Size)
 	} else if !os.IsNotExist(err) {
 		return UploadResult{}, err
-	} else if info != nil {
-		return UploadResult{}, fmt.Errorf("CloudDrive2 destination is not absent")
 	}
 	if info, err := os.Stat(stagingPath); err == nil {
 		if !info.Mode().IsRegular() || info.Size() != item.Size {

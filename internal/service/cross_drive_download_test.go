@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -56,8 +57,9 @@ func (r *rangeRecorder) reset() {
 }
 
 // newQuarkDownloadFixture builds a claimed cross-drive item whose only provider
-// interaction is a ranged Quark download.
-func newQuarkDownloadFixture(t *testing.T, content []byte, signed func(rangeHeader string) (int, []byte)) *quarkDownloadFixture {
+// interaction is a ranged Quark download. The signed callback returns a status
+// and the response body for one range request.
+func newQuarkDownloadFixture(t *testing.T, content []byte, signed func(rangeHeader string) (int, io.Reader)) *quarkDownloadFixture {
 	t.Helper()
 	directory := t.TempDir()
 	db, err := storage.Open(filepath.Join(directory, "state.db"))
@@ -109,6 +111,10 @@ func newQuarkDownloadFixture(t *testing.T, content []byte, signed func(rangeHead
 		t.Fatalf("items: %+v %v", items, err)
 	}
 	recorder := &rangeRecorder{}
+	spool := filepath.Join(directory, "download.part")
+	item := items[0]
+	// Pin the spool path so the fixture and the service agree on the checkpoint key.
+	item.SpoolPath = spool
 	drive := NewDriveService(db, "", "")
 	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		header := make(http.Header)
@@ -124,18 +130,18 @@ func newQuarkDownloadFixture(t *testing.T, content []byte, signed func(rangeHead
 				return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(`{"status":500,"message":"probe failure"}`)), Request: request}, nil
 			}
 			header.Set("Content-Type", "application/octet-stream")
-			return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(bytes.NewReader(body)), Request: request}, nil
+			return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(body), Request: request}, nil
 		default:
 			return &http.Response{StatusCode: http.StatusNotFound, Header: header, Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"error":"unexpected %s"}`, request.URL))), Request: request}, nil
 		}
 	})
 	return &quarkDownloadFixture{
 		queue: NewTaskQueueService(db, drive, NewEmbyService(db)), db: db, taskID: task.ID, owner: "owner",
-		item: items[0], spool: filepath.Join(directory, "download.part"), ranges: recorder, content: content,
+		item: item, spool: spool, ranges: recorder, content: content,
 	}
 }
 
-func rangeBytes(t *testing.T, content []byte, rangeHeader string) (int, []byte) {
+func rangeBytes(t *testing.T, content []byte, rangeHeader string) (int, io.Reader) {
 	t.Helper()
 	value := strings.TrimPrefix(rangeHeader, "bytes=")
 	parts := strings.Split(value, "-")
@@ -156,7 +162,28 @@ func rangeBytes(t *testing.T, content []byte, rangeHeader string) (int, []byte) 
 	if end >= int64(len(content)) {
 		end = int64(len(content)) - 1
 	}
-	return http.StatusPartialContent, content[start : end+1]
+	return http.StatusPartialContent, bytes.NewReader(content[start : end+1])
+}
+
+// failingReader yields a prefix of its data and then fails, simulating a CDN
+// stream error partway through one ranged response.
+type failingReader struct {
+	data  []byte
+	after int
+	read  int
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.read >= r.after {
+		return 0, fmt.Errorf("stream error: stream ID 9; INTERNAL_ERROR; received from peer")
+	}
+	limit := min(len(p), r.after-r.read, len(r.data)-r.read)
+	if limit <= 0 {
+		return 0, io.EOF
+	}
+	copy(p, r.data[r.read:r.read+limit])
+	r.read += limit
+	return limit, nil
 }
 
 func TestQuarkDownloadUsesParallelSegments(t *testing.T) {
@@ -165,7 +192,7 @@ func TestQuarkDownloadUsesParallelSegments(t *testing.T) {
 	defer func() { quarkDownloadSegmentSize = previous }()
 	content := bytes.Repeat([]byte{0x7b}, 4<<20)
 	var inFlight, peak atomic.Int32
-	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, []byte) {
+	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, io.Reader) {
 		current := inFlight.Add(1)
 		for {
 			observed := peak.Load()
@@ -192,12 +219,114 @@ func TestQuarkDownloadUsesParallelSegments(t *testing.T) {
 	if !strings.EqualFold(sha, hex.EncodeToString(digest[:])) {
 		t.Fatalf("sha = %s", sha)
 	}
-	segments, err := fixture.db.ListCrossDriveDownloadSegments(fixture.item.ID)
+	segments, err := fixture.db.ListCrossDriveDownloadSegments(fixture.spool)
 	if err != nil || len(segments) != 4 {
 		t.Fatalf("segments = %v err=%v", segments, err)
 	}
 	if peak.Load() != 4 {
 		t.Fatalf("peak concurrency = %d, want 4", peak.Load())
+	}
+}
+
+func TestQuarkDownloadReconnectsAfterMidStreamFailure(t *testing.T) {
+	previous := quarkDownloadSegmentSize
+	quarkDownloadSegmentSize = 1 << 20
+	defer func() { quarkDownloadSegmentSize = previous }()
+	content := bytes.Repeat([]byte{0x4e}, 2<<20)
+	var failed atomic.Int32
+	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, io.Reader) {
+		if failed.Load() == 0 && strings.HasPrefix(rangeHeader, "bytes=0-") {
+			// The first attempt for segment zero dies after 256 KiB; the reopened
+			// range must resume from the bytes already written, not from scratch.
+			failed.Add(1)
+			return http.StatusPartialContent, &failingReader{data: content[:1<<20], after: 256 << 10}
+		}
+		return rangeBytes(t, content, rangeHeader)
+	})
+	spool, _, _, err := fixture.queue.downloadQuarkItem(context.Background(), fixture.taskID, fixture.owner, "quark", fixture.item, fixture.item.Size, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(spool)
+	if err != nil || !bytes.Equal(written, content) {
+		t.Fatalf("spool mismatch after reconnect: %d bytes err=%v", len(written), err)
+	}
+	ranges := fixture.ranges.all()
+	resumed := false
+	for _, requested := range ranges {
+		if requested == "bytes=262144-1048575" {
+			resumed = true
+		}
+	}
+	if !resumed {
+		t.Fatalf("failed segment did not resume from its partial offset: %v", ranges)
+	}
+}
+
+func TestQuarkProviderDownloadAbortsWhenTheCdnStalls(t *testing.T) {
+	previous := quarkDownloadSegmentTimeout
+	quarkDownloadSegmentTimeout = 300 * time.Millisecond
+	defer func() { quarkDownloadSegmentTimeout = previous }()
+	release := make(chan struct{})
+	defer close(release)
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/file/download":
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(response, `{"status":200,"data":[{"download_url":"`+server.URL+`/signed"}]}`)
+		case "/signed":
+			// Headers and a partial body arrive, then the connection goes silent
+			// without closing: exactly the stall that would pin the single worker.
+			response.Header().Set("Content-Length", "1048576")
+			response.WriteHeader(http.StatusPartialContent)
+			_, _ = response.Write([]byte("partial"))
+			response.(http.Flusher).Flush()
+			// Return when the client gives up so the test server can shut down.
+			select {
+			case <-release:
+			case <-request.Context().Done():
+			}
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	provider := NewProviderQuark(server.Client())
+	provider.baseURL = server.URL
+	provider.downloadBaseURL = server.URL
+	provider.sleep = func(context.Context, time.Duration) error { return nil }
+	account := &domain.DriveAccount{ID: "quark", Type: "quark", Cookie: "cookie"}
+
+	body, err := provider.OpenDownload(context.Background(), account, "file", 0, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, readErr := io.ReadAll(body)
+	body.Close()
+	if readErr == nil {
+		t.Fatal("a stalled CDN response read completed")
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("a stalled CDN response blocked for %s", elapsed)
+	}
+}
+
+func TestQuarkDownloadReportsPersistentSegmentFailure(t *testing.T) {
+	previous := quarkDownloadSegmentSize
+	quarkDownloadSegmentSize = 1 << 20
+	defer func() { quarkDownloadSegmentSize = previous }()
+	content := bytes.Repeat([]byte{0x11}, 1<<20)
+	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, io.Reader) {
+		return http.StatusInternalServerError, nil
+	})
+	if _, _, _, err := fixture.queue.downloadQuarkItem(context.Background(), fixture.taskID, fixture.owner, "quark", fixture.item, fixture.item.Size, 0); err == nil {
+		t.Fatal("a segment that never succeeded was reported as downloaded")
+	}
+	segments, err := fixture.db.ListCrossDriveDownloadSegments(fixture.spool)
+	if err != nil || len(segments) != 0 {
+		t.Fatalf("failed segment was checkpointed: %v err=%v", segments, err)
 	}
 }
 
@@ -208,7 +337,7 @@ func TestQuarkDownloadResumesOnlyMissingSegments(t *testing.T) {
 	content := bytes.Repeat([]byte{0x2d}, 3<<20)
 	var failing atomic.Bool
 	failing.Store(true)
-	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, []byte) {
+	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, io.Reader) {
 		if failing.Load() && strings.HasPrefix(rangeHeader, "bytes=1048576-") {
 			return http.StatusInternalServerError, nil
 		}
@@ -217,7 +346,7 @@ func TestQuarkDownloadResumesOnlyMissingSegments(t *testing.T) {
 	if _, _, _, err := fixture.queue.downloadQuarkItem(context.Background(), fixture.taskID, fixture.owner, "quark", fixture.item, fixture.item.Size, 0); err == nil {
 		t.Fatal("failed segment was reported as a completed download")
 	}
-	checkpointed, err := fixture.db.ListCrossDriveDownloadSegments(fixture.item.ID)
+	checkpointed, err := fixture.db.ListCrossDriveDownloadSegments(fixture.spool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +372,7 @@ func TestQuarkDownloadResumesOnlyMissingSegments(t *testing.T) {
 	if err != nil || !bytes.Equal(written, content) {
 		t.Fatalf("resumed spool mismatch: %d bytes err=%v", len(written), err)
 	}
-	segments, err := fixture.db.ListCrossDriveDownloadSegments(fixture.item.ID)
+	segments, err := fixture.db.ListCrossDriveDownloadSegments(fixture.spool)
 	if err != nil || len(segments) != 3 {
 		t.Fatalf("segments = %v err=%v", segments, err)
 	}

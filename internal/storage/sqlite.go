@@ -182,6 +182,13 @@ func (d *DB) migrate() error {
 		PRIMARY KEY(item_id, segment)
 	);
 
+	CREATE TABLE IF NOT EXISTS cross_drive_download_segments_v2 (
+		spool TEXT NOT NULL,
+		segment INTEGER NOT NULL,
+		bytes INTEGER NOT NULL,
+		PRIMARY KEY(spool, segment)
+	);
+
 	CREATE TABLE IF NOT EXISTS cross_drive_upload_parts (
 		item_id INTEGER NOT NULL REFERENCES cross_drive_items(id) ON DELETE CASCADE,
 		part_number INTEGER NOT NULL,
@@ -289,6 +296,15 @@ func (d *DB) migrate() error {
 		if err := d.ensureColumn(migration.table, migration.column, migration.definition); err != nil {
 			return err
 		}
+	}
+	if _, err := d.db.Exec(`
+		INSERT OR IGNORE INTO cross_drive_download_segments_v2 (spool, segment, bytes)
+		SELECT item.spool_path, segment.segment, segment.bytes
+		FROM cross_drive_download_segments AS segment
+		JOIN cross_drive_items AS item ON item.id = segment.item_id
+		WHERE COALESCE(item.spool_path, '') != ''
+	`); err != nil {
+		return err
 	}
 	if _, err := d.db.Exec(`CREATE INDEX IF NOT EXISTS async_tasks_schedule_id_idx ON async_tasks(schedule_id, created_at DESC)`); err != nil {
 		return err

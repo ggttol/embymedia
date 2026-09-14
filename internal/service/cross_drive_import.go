@@ -26,6 +26,9 @@ const (
 	// eight measured lower than four.
 	quarkDownloadDefaultConnections = 4
 	quarkDownloadReportInterval     = time.Second
+	// quarkSegmentAttempts bounds reconnects for one spool segment. The Quark CDN
+	// emits transient HTTP/2 stream errors that succeed on a reopened range.
+	quarkSegmentAttempts = 4
 )
 
 // quarkDownloadSegmentSize is the parallel spool segment. Four connections with
@@ -289,6 +292,10 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 			_ = s.db.MarkCrossDriveItemFailed(item.ID, task.ID, owner, err.Error())
 			return nil, err
 		}
+		// The upload and its destination verification must use the hashes just
+		// computed from the spool, not the pre-download row: a freshly downloaded
+		// item carries no SHA-1 yet, and an empty expectation can never verify.
+		item.SpoolPath, item.SHA1, item.PreSHA1 = spool, sha, pre
 		account, err := s.driveSvc.getAccountForProvider("115", c115AccountID)
 		if err != nil {
 			return nil, err
@@ -297,9 +304,9 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 		cloudDriveDestination := ""
 		if !bound {
 			if strings.TrimSpace(account.Token) == "" {
-				parent, cloudDriveDestination, err = s.prepareCloudDriveRelativeDestination(ctx, account, destinationCID, item.RelativePath)
+				cloudDriveDestination, err = s.cloudDriveStagingDirectory(ctx, account)
 			} else {
-				parent, err = s.resolveRelativeDestination(ctx, c115AccountID, destinationCID, filepath.Dir(item.RelativePath))
+				parent, err = s.resolveImportDestination(ctx, c115AccountID)
 			}
 			if err != nil {
 				return nil, err
@@ -627,46 +634,6 @@ func (s *TaskQueueService) resolveRelativeDestination(ctx context.Context, accou
 	return current, nil
 }
 
-func (s *TaskQueueService) waitForExistingRelativeDestination(ctx context.Context, accountID, base, relative string) (string, error) {
-	clean, err := cleanRelative(relative, "CloudDrive2 upload directory")
-	if err != nil {
-		return "", err
-	}
-	current := base
-	for _, segment := range strings.Split(filepath.ToSlash(clean), "/") {
-		if segment == "" || segment == "." {
-			continue
-		}
-		deadline := time.Now().Add(cloudDriveUploadWait)
-		for {
-			files, err := s.listAllProviderFiles(ctx, "115", accountID, current)
-			if err != nil {
-				return "", err
-			}
-			matches := make([]string, 0, 1)
-			for _, file := range files {
-				if file.IsFolder && file.Name == segment && file.ParentID == current {
-					matches = append(matches, file.FileID)
-				}
-			}
-			if len(matches) == 1 {
-				current = matches[0]
-				break
-			}
-			if len(matches) > 1 {
-				return "", fmt.Errorf("115 destination segment %q is ambiguous", segment)
-			}
-			if time.Now().After(deadline) {
-				return "", fmt.Errorf("CloudDrive2 destination segment %q did not appear in 115", segment)
-			}
-			if err := sleepContext(ctx, time.Second); err != nil {
-				return "", err
-			}
-		}
-	}
-	return current, nil
-}
-
 func transferSettings(db interface{ GetSetting(string) (string, error) }) (string, int64, error) {
 	directory, err := db.GetSetting("transfer_temp_dir")
 	if err != nil {
@@ -715,8 +682,18 @@ func (s *TaskQueueService) downloadQuarkItem(ctx context.Context, taskID, owner,
 	}
 	spool := item.SpoolPath
 	if spool == "" {
-		key := sha1.Sum([]byte(taskID + "\x00" + item.SourceFileID))
-		spool = filepath.Join(directory, hex.EncodeToString(key[:])+".part")
+		reusable, err := s.db.FindReusableCrossDriveSpool(item.SourceFileID, item.Size)
+		if err != nil {
+			return "", "", "", err
+		}
+		if reusable != "" {
+			spool = reusable
+		} else {
+			// Key new spools by the source object so later retries reuse both
+			// durable bytes and segment checkpoints.
+			key := sha1.Sum([]byte(accountID + "\x00" + item.SourceFileID))
+			spool = filepath.Join(directory, hex.EncodeToString(key[:])+".part")
+		}
 	}
 	file, err := os.OpenFile(spool, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -730,19 +707,9 @@ func (s *TaskQueueService) downloadQuarkItem(ctx context.Context, taskID, owner,
 	if stat.Size() > item.Size {
 		return "", "", "", fmt.Errorf("spool file exceeds source size")
 	}
-	segments, err := s.db.ListCrossDriveDownloadSegments(item.ID)
+	segments, err := s.db.ListCrossDriveDownloadSegments(spool)
 	if err != nil {
 		return "", "", "", err
-	}
-	if len(segments) == 0 && stat.Size() > 0 {
-		// A spool produced by the earlier sequential downloader is adopted as
-		// whole segments; the trailing partial segment is fetched again.
-		for index := int64(0); index*quarkDownloadSegmentSize+quarkDownloadSegmentSize <= stat.Size(); index++ {
-			if err := s.db.SaveCrossDriveDownloadSegment(item.ID, taskID, owner, int(index), quarkDownloadSegmentSize); err != nil {
-				return "", "", "", err
-			}
-			segments[int(index)] = quarkDownloadSegmentSize
-		}
 	}
 	downloaded := int64(0)
 	for _, size := range segments {
@@ -776,7 +743,7 @@ func (s *TaskQueueService) downloadQuarkItem(ctx context.Context, taskID, owner,
 					}
 					start := int64(index) * quarkDownloadSegmentSize
 					length := min(quarkDownloadSegmentSize, item.Size-start)
-					err := s.downloadQuarkSegment(workerCtx, file, accountID, taskID, owner, item, index, start, length, func(count int64) error {
+					err := s.downloadQuarkSegment(workerCtx, file, accountID, taskID, owner, spool, item, index, start, length, func(count int64) error {
 						mu.Lock()
 						defer mu.Unlock()
 						downloaded = min(item.Size, downloaded+count)
@@ -860,29 +827,61 @@ func (s *TaskQueueService) reportQuarkDownload(taskID, owner string, item domain
 
 // downloadQuarkSegment writes one bounded range at its spool offset and records
 // the checkpoint only after the bytes are durable.
-func (s *TaskQueueService) downloadQuarkSegment(ctx context.Context, file *os.File, accountID, taskID, owner string, item domain.CrossDriveItem, index int, start, length int64, report func(int64) error) error {
-	body, err := s.driveSvc.OpenProviderDownload(ctx, "quark", accountID, item.SourceFileID, start, length)
-	if err != nil {
-		return err
-	}
-	defer body.Close()
+func (s *TaskQueueService) downloadQuarkSegment(ctx context.Context, file *os.File, accountID, taskID, owner, spool string, item domain.CrossDriveItem, index int, start, length int64, report func(int64) error) error {
 	buffer := make([]byte, 1<<20)
 	written := int64(0)
-	for written < length {
-		wanted := int(min(int64(len(buffer)), length-written))
-		count, readErr := io.ReadFull(body, buffer[:wanted])
-		if count > 0 {
-			if _, err := file.WriteAt(buffer[:count], start+written); err != nil {
+	var lastErr error
+	for attempt := 0; attempt < quarkSegmentAttempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepContext(ctx, time.Duration(attempt)*time.Second); err != nil {
 				return err
 			}
-			written += int64(count)
+		}
+		body, err := s.driveSvc.OpenProviderDownload(ctx, "quark", accountID, item.SourceFileID, start+written, length-written)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			lastErr = err
+			continue
+		}
+		lastErr = s.consumeQuarkSegment(ctx, body, file, buffer, start, length, &written, report)
+		if lastErr == nil {
+			return s.db.SaveCrossDriveDownloadSegment(spool, taskID, owner, index, length)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return fmt.Errorf("Quark segment %d of %s failed after %d attempts: %w", index, item.Name, quarkSegmentAttempts, lastErr)
+}
+
+// consumeQuarkSegment drains one ranged response into the spool at its offset.
+// A CDN stream error is returned so the caller can reopen from the new offset;
+// the connection is always closed here.
+func (s *TaskQueueService) consumeQuarkSegment(ctx context.Context, body io.ReadCloser, file *os.File, buffer []byte, start, length int64, written *int64, report func(int64) error) error {
+	defer body.Close()
+	for *written < length {
+		wanted := int(min(int64(len(buffer)), length-*written))
+		count, readErr := io.ReadFull(body, buffer[:wanted])
+		if count > 0 {
+			if _, err := file.WriteAt(buffer[:count], start+*written); err != nil {
+				return err
+			}
+			*written += int64(count)
 			if err := report(int64(count)); err != nil {
 				return err
 			}
 		}
 		if readErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-				return fmt.Errorf("Quark segment %d of %s returned %d of %d bytes", index, item.Name, written, length)
+				if *written == length {
+					break
+				}
+				return fmt.Errorf("Quark ranged response ended at %d of %d bytes", *written, length)
 			}
 			return readErr
 		}
@@ -893,7 +892,7 @@ func (s *TaskQueueService) downloadQuarkSegment(ctx context.Context, file *os.Fi
 	if err := file.Sync(); err != nil {
 		return err
 	}
-	return s.db.SaveCrossDriveDownloadSegment(item.ID, taskID, owner, index, length)
+	return nil
 }
 
 func (s *TaskQueueService) reconcileVerifiedItem(ctx context.Context, accountID string, item domain.CrossDriveItem) error {

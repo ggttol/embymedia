@@ -21,11 +21,11 @@ import (
 )
 
 const (
-	quarkDefaultBaseURL    = "https://drive.quark.cn/1/clouddrive"
-	quarkMaxEntries        = 10_000
-	quarkMaxDepth          = 20
-	quarkBrowserUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
-	quarkDesktopUserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 Electron/18.3.5.12-a038f7b798 Safari/537.36 Channel/pckk_other_ch"
+	quarkDefaultBaseURL   = "https://drive.quark.cn/1/clouddrive"
+	quarkMaxEntries       = 10_000
+	quarkMaxDepth         = 20
+	quarkBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+	quarkDesktopUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 Electron/18.3.5.12-a038f7b798 Safari/537.36 Channel/pckk_other_ch"
 )
 
 type ProviderQuark struct {
@@ -866,13 +866,19 @@ func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAc
 	return signed, userAgent, nil
 }
 
+// quarkDownloadSegmentTimeout bounds one ranged segment request, header to last
+// byte. A stalled CDN connection would otherwise block the single transfer worker
+// forever; the segment retry then reopens from the bytes already written.
+// Tests shrink it.
+var quarkDownloadSegmentTimeout = 10 * time.Minute
+
 func (p *ProviderQuark) downloadHTTPClient() (*http.Client, error) {
 	if p.proxyURL == nil {
-		return &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect}, nil
+		return &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect, Timeout: quarkDownloadSegmentTimeout}, nil
 	}
 	proxySetting := strings.TrimSpace(p.proxyURL())
 	if proxySetting == "" {
-		return &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect}, nil
+		return &http.Client{Transport: p.client.Transport, CheckRedirect: p.client.CheckRedirect, Timeout: quarkDownloadSegmentTimeout}, nil
 	}
 	parsed, err := url.Parse(proxySetting)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "socks5") {
@@ -894,7 +900,7 @@ func (p *ProviderQuark) downloadHTTPClient() (*http.Client, error) {
 	} else {
 		transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
 	}
-	return &http.Client{Transport: transport, CheckRedirect: p.client.CheckRedirect}, nil
+	return &http.Client{Transport: transport, CheckRedirect: p.client.CheckRedirect, Timeout: quarkDownloadSegmentTimeout}, nil
 }
 
 func proxyFromURL(parsed *url.URL) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {

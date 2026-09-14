@@ -132,14 +132,128 @@ func (p *Provider115) findDestinationFile(ctx context.Context, account *domain.D
 	return nil, fmt.Errorf("115 destination contains more than %d objects", quarkMaxEntries)
 }
 
-func verifyDestinationIdentity(file *domain.DriveFile, source UploadSource, parent string) error {
+// cloudDriveUploadPlaceholder reports whether the parent still exposes an
+// in-progress CloudDrive2 publication of name. Publishing a file through the
+// FUSE mount renames it locally and uploads in the background, so until the
+// upload finishes 115 lists "<name>**..uploading" instead of the final object.
+func (p *Provider115) cloudDriveUploadPlaceholder(ctx context.Context, account *domain.DriveAccount, parent, name string) (bool, error) {
+	for offset := 0; offset < quarkMaxEntries; offset += 1000 {
+		files, total, err := p.service.listFiles(ctx, account.ID, parent, offset, 1000)
+		if err != nil {
+			return false, err
+		}
+		for i := range files {
+			if strings.HasPrefix(files[i].Name, name) && strings.HasSuffix(files[i].Name, "..uploading") {
+				return true, nil
+			}
+		}
+		if len(files) == 0 || int64(offset+len(files)) >= total {
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("115 destination contains more than %d objects", quarkMaxEntries)
+}
+
+// destinationVerifyBaseTimeout is the floor before 115 must reveal a verified
+// identity. CloudDrive2's asynchronous write-back can leave a same-name entry
+// looking stable with a provisional size or hash for minutes, so a mismatch is
+// waited out rather than failed; a genuine conflict still fails, later, without
+// ever overwriting the object. Tests shrink it.
+var destinationVerifyBaseTimeout = 2 * time.Minute
+
+const destinationVerifyTimeoutCap = 30 * time.Minute
+
+// destinationState classifies a same-name 115 object against the expected source.
+type destinationState int
+
+const (
+	// destinationVerified means 115 reports the exact parent, name, size and SHA-1.
+	destinationVerified destinationState = iota
+	// destinationUnsettled means 115 has not finished publishing the object. The
+	// CloudDrive2 write-back reports a growing file whose SHA-1 is recomputed, so a
+	// mismatched size or hash is only meaningful once it stops changing.
+	destinationUnsettled
+	// destinationForeign means another object owns this name or parent.
+	destinationForeign
+)
+
+// classifyDestination compares a same-name 115 object against the expected source.
+// An absent object is still being published; a present object that differs in
+// folder type, parent, name, size or SHA-1 belongs to a different file and must
+// never be overwritten.
+func classifyDestination(file *domain.DriveFile, source UploadSource, parent string) destinationState {
 	if file == nil {
-		return fmt.Errorf("115 upload completed but the destination object was not found")
+		return destinationUnsettled
 	}
-	if file.IsFolder || file.ParentID != parent || file.Name != source.Name || file.Size != source.Size || !strings.EqualFold(file.Sha1, source.SHA1) {
-		return fmt.Errorf("115 destination identity verification failed for %s", source.Name)
+	if file.IsFolder || file.ParentID != parent || file.Name != source.Name {
+		return destinationForeign
 	}
-	return nil
+	if strings.TrimSpace(file.Sha1) == "" || file.Size != source.Size || !strings.EqualFold(file.Sha1, source.SHA1) {
+		return destinationForeign
+	}
+	return destinationVerified
+}
+
+// destinationVerifyTimeout bounds one idle stretch with no observable progress.
+// A 907 MB episode needed longer than 30 seconds of asynchronous CloudDrive2
+// write-back plus provider hash computation.
+func destinationVerifyTimeout(size int64) time.Duration {
+	timeout := destinationVerifyBaseTimeout + time.Duration(size/(1<<20))*time.Second
+	if timeout > destinationVerifyTimeoutCap {
+		return destinationVerifyTimeoutCap
+	}
+	return timeout
+}
+
+// destinationVerifyCeiling bounds the total wait across observable progress, so
+// a large backlog can drain without holding the single worker forever.
+var destinationVerifyCeiling = 4 * time.Hour
+
+func (p *Provider115) waitForVerifiedDestination(ctx context.Context, account *domain.DriveAccount, parent string, source UploadSource, rapid bool, transferred int64) (UploadResult, error) {
+	idleTimeout := destinationVerifyTimeout(source.Size)
+	started := time.Now()
+	ceiling := started.Add(destinationVerifyCeiling)
+	// Failing requires one full idle stretch with no observed progress, so a
+	// drained backlog can outlast the timeout while a stall still fails.
+	deadline := started.Add(idleTimeout)
+	interval := time.Second
+	for {
+		file, err := p.findDestinationFile(ctx, account, parent, source.Name)
+		if err != nil {
+			if ctx.Err() != nil {
+				return UploadResult{}, ctx.Err()
+			}
+			return UploadResult{}, err
+		}
+		switch classifyDestination(file, source, parent) {
+		case destinationVerified:
+			return UploadResult{FileID: file.FileID, Rapid: rapid, Transferred: transferred}, nil
+		case destinationForeign:
+			return UploadResult{}, fmt.Errorf("115 destination identity verification failed for %s", source.Name)
+		case destinationUnsettled:
+			// No final object yet: a visible CloudDrive2 upload placeholder
+			// proves the publication is still progressing, so keep waiting.
+			pending, probeErr := p.cloudDriveUploadPlaceholder(ctx, account, parent, source.Name)
+			if probeErr != nil {
+				if ctx.Err() != nil {
+					return UploadResult{}, ctx.Err()
+				}
+				return UploadResult{}, probeErr
+			}
+			if pending {
+				deadline = time.Now().Add(idleTimeout)
+			}
+		}
+		if time.Now().After(deadline) || time.Now().After(ceiling) {
+			return UploadResult{}, fmt.Errorf("115 did not finish verifying %s after %s", source.Name, time.Since(started).Round(time.Second))
+		}
+		if time.Since(started) > time.Minute {
+			interval = 5 * time.Second
+		}
+		if err := sleepContext(ctx, interval); err != nil {
+			return UploadResult{}, err
+		}
+	}
 }
 
 // UploadFile rapidly uploads or multipart-uploads one already-spooled file and then
@@ -166,10 +280,15 @@ func (p *Provider115) UploadFile(ctx context.Context, account *domain.DriveAccou
 		return UploadResult{}, err
 	}
 	if existing != nil {
-		if err := verifyDestinationIdentity(existing, source, parentCID); err != nil {
-			return UploadResult{}, fmt.Errorf("same-name destination conflict: %w", err)
+		switch classifyDestination(existing, source, parentCID) {
+		case destinationVerified:
+			return UploadResult{FileID: existing.FileID, Rapid: true}, nil
+		case destinationForeign:
+			return UploadResult{}, fmt.Errorf("same-name destination conflict: 115 destination identity verification failed for %s", source.Name)
 		}
-		return UploadResult{FileID: existing.FileID, Rapid: true}, nil
+		// An earlier attempt already published this name and 115 is still
+		// computing its identity; wait instead of uploading the same name again.
+		return p.waitForVerifiedDestination(ctx, account, parentCID, source, true, 0)
 	}
 	client, err := c115SDK(account, p.service.client)
 	if err != nil {
@@ -286,29 +405,6 @@ func (p *Provider115) UploadFile(ctx context.Context, account *domain.DriveAccou
 		return UploadResult{}, fmt.Errorf("complete 115 multipart upload: %w", err)
 	}
 	return p.waitForVerifiedDestination(ctx, account, parentCID, source, false, source.Size)
-}
-
-func (p *Provider115) waitForVerifiedDestination(ctx context.Context, account *domain.DriveAccount, parent string, source UploadSource, rapid bool, transferred int64) (UploadResult, error) {
-	var identityErr error
-	for attempt := 0; attempt < 30; attempt++ {
-		file, err := p.findDestinationFile(ctx, account, parent, source.Name)
-		if err == nil && file != nil {
-			if verifyErr := verifyDestinationIdentity(file, source, parent); verifyErr == nil {
-				return UploadResult{FileID: file.FileID, Rapid: rapid, Transferred: transferred}, nil
-			} else {
-				identityErr = verifyErr
-			}
-		} else if err != nil && ctx.Err() == nil {
-			return UploadResult{}, err
-		}
-		if err := sleepContext(ctx, time.Second); err != nil {
-			return UploadResult{}, err
-		}
-	}
-	if identityErr != nil {
-		return UploadResult{}, fmt.Errorf("115 destination identity did not stabilize for %s: %w", source.Name, identityErr)
-	}
-	return UploadResult{}, fmt.Errorf("115 destination verification timed out for %s", source.Name)
 }
 
 func (p *Provider115) AbortUpload(ctx context.Context, account *domain.DriveAccount, source UploadSource) error {

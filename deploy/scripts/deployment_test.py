@@ -39,6 +39,9 @@ elif command == 'flock':
     pass
 elif command == 'setfacl':
     pass
+elif command == 'getfacl':
+    acls = json.loads((root / 'acls.json').read_text()) if (root / 'acls.json').exists() else {}
+    print(acls.get(str(p(args[-1])), ''))
 elif command == 'caddy':
     assert args[:2] == ['validate', '--config'], args
     assert p(args[2]).is_file(), args
@@ -180,7 +183,7 @@ class DeploymentScriptsTest(unittest.TestCase):
         shim = self.fake_bin / 'shim'
         shim.write_text(f'#!{sys.executable}\n' + MOCK)
         shim.chmod(0o755)
-        for name in ('id', 'flock', 'setfacl', 'sleep', 'timeout', 'findmnt', 'umount', 'docker', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'caddy', 'restic'):
+        for name in ('id', 'flock', 'setfacl', 'getfacl', 'sleep', 'timeout', 'findmnt', 'umount', 'docker', 'systemctl', 'install', 'chown', 'mv', 'sha256sum', 'runuser', 'curl', 'caddy', 'restic'):
             (self.fake_bin / name).symlink_to(shim)
         self.env['PATH'] = str(self.fake_bin) + os.pathsep + os.environ['PATH']
         self.source = self.root / 'source'
@@ -426,6 +429,45 @@ class DeploymentScriptsTest(unittest.TestCase):
         self.assertTrue(any(command[0] == 'umount' and '-l' in command for command in commands))
         self.assertTrue(any(command[0] == 'docker' and 'stop' in command and 'clouddrive2' in command for command in commands))
         self.assertGreaterEqual(sum(command[0] == 'docker' and 'up' in command for command in commands), 2)
+
+    def test_transfer_access_grants_service_user_on_transfer_trees(self):
+        mount = self.root / 'srv/embymedia/data/clouddrive/CloudNAS/CloudDrive'
+        (mount / '_待整理').mkdir(parents=True)
+        (mount / '电视剧追更/Show (2026)').mkdir(parents=True)
+        (mount / '.embymedia-health-canary').touch()
+        (self.root / 'mount-present').touch()
+        (self.root / 'acls.json').write_text(json.dumps({
+            str(mount / '_待整理'): 'user::rwx\nuser:embymedia:rwx\ndefault:user:embymedia:rwx\n',
+        }))
+        result = self.run_script('ensure-transfer-access.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        granted = [command for command in commands if command[0] == 'setfacl']
+        self.assertEqual(len(granted), 2, granted)
+        self.assertEqual({command[-1] for command in granted}, {
+            str(mount / '电视剧追更'),
+            str(mount / '电视剧追更/Show (2026)'),
+        })
+        self.assertTrue(all('u:embymedia:rwx,d:u:embymedia:rwx' in command for command in granted))
+
+    def test_transfer_access_leaves_missing_mount_unchanged(self):
+        result = self.run_script('ensure-transfer-access.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('mount is not present', result.stderr)
+        commands = (self.root / 'commands').read_text() if (self.root / 'commands').exists() else ''
+        self.assertNotIn('setfacl', commands)
+
+    def test_clouddrive_recovery_refreshes_transfer_access_when_healthy(self):
+        mount = self.root / 'srv/embymedia/data/clouddrive/CloudNAS/CloudDrive'
+        (mount / '_待整理').mkdir(parents=True)
+        (mount / '.embymedia-health-canary').touch()
+        (self.root / 'mount-present').touch()
+        result = self.run_script('clouddrive-recover.sh', EMBYMEDIA_CLOUDDRIVE_MOUNT=str(mount))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [json.loads(line) for line in (self.root / 'commands').read_text().splitlines()]
+        granted = [command for command in commands if command[0] == 'setfacl']
+        self.assertEqual(len(granted), 1, commands)
+        self.assertEqual(granted[0][-1], str(mount / '_待整理'))
 
     def test_stack_stop_cleans_remaining_fuse_mount(self):
         (self.root / 'mount-present').touch()

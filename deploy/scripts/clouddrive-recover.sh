@@ -57,6 +57,9 @@ if [ -n "$container" ]; then
 fi
 if [ "$health" = healthy ] && healthy_mount; then
   rm -f "$failure_file"
+  # Directories the provider creates later arrive without ACLs; refresh so the
+  # service can keep writing transfer destinations without a restart.
+  /opt/embymedia-v2/current/deploy/scripts/ensure-transfer-access.sh || echo 'transfer access refresh failed' >&2
   exit 0
 fi
 

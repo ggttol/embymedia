@@ -382,11 +382,13 @@ func (d *DB) SaveCrossDriveUploadPart(itemID int64, partNumber int, etag string,
 	return err
 }
 
-// ListCrossDriveDownloadSegments returns the completed spool segments of one item.
-func (d *DB) ListCrossDriveDownloadSegments(itemID int64) (map[int]int64, error) {
+// ListCrossDriveDownloadSegments returns the completed spool segments recorded
+// for a spool path. Segments are keyed by the spool so a retry of the same
+// source object reuses them instead of downloading the file again.
+func (d *DB) ListCrossDriveDownloadSegments(spool string) (map[int]int64, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	rows, err := d.db.Query(`SELECT segment, bytes FROM cross_drive_download_segments WHERE item_id = ?`, itemID)
+	rows, err := d.db.Query(`SELECT segment, bytes FROM cross_drive_download_segments_v2 WHERE spool = ?`, spool)
 	if err != nil {
 		return nil, err
 	}
@@ -403,20 +405,43 @@ func (d *DB) ListCrossDriveDownloadSegments(itemID int64) (map[int]int64, error)
 	return segments, rows.Err()
 }
 
+// FindReusableCrossDriveSpool returns the newest persisted spool for the same
+// opaque source identity and size. The caller still verifies the full SHA-1
+// before upload; this only avoids downloading durable bytes again after retry.
+func (d *DB) FindReusableCrossDriveSpool(sourceFileID string, size int64) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var spool sql.NullString
+	err := d.db.QueryRow(`
+		SELECT spool_path
+		FROM cross_drive_items
+		WHERE source_file_id = ? AND size = ? AND COALESCE(spool_path, '') != ''
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+	`, sourceFileID, size).Scan(&spool)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return spool.String, nil
+}
+
 // SaveCrossDriveDownloadSegment records a fully written spool segment for the owning run.
-func (d *DB) SaveCrossDriveDownloadSegment(itemID int64, taskID, owner string, segment int, size int64) error {
+func (d *DB) SaveCrossDriveDownloadSegment(spool, taskID, owner string, segment int, size int64) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	result, err := d.db.Exec(`INSERT INTO cross_drive_download_segments (item_id, segment, bytes)
+	result, err := d.db.Exec(`INSERT INTO cross_drive_download_segments_v2 (spool, segment, bytes)
 		SELECT ?, ?, ?
-		WHERE EXISTS (SELECT 1 FROM cross_drive_items i JOIN cross_drive_imports c ON c.task_id = i.task_id WHERE i.id = ? AND i.task_id = ? AND c.run_owner = ?)
-		ON CONFLICT(item_id, segment) DO UPDATE SET bytes = excluded.bytes`, itemID, segment, size, itemID, taskID, owner)
+		WHERE EXISTS (SELECT 1 FROM cross_drive_imports WHERE task_id = ? AND run_owner = ?)
+		ON CONFLICT(spool, segment) DO UPDATE SET bytes = excluded.bytes`, spool, segment, size, taskID, owner)
 	if err != nil {
 		return err
 	}
 	changed, _ := result.RowsAffected()
 	if changed == 0 {
-		return fmt.Errorf("cross-drive item %d lost run ownership", itemID)
+		return fmt.Errorf("cross-drive import %s lost run ownership", taskID)
 	}
 	return nil
 }

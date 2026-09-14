@@ -40,7 +40,7 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 		t.Fatal(err)
 	}
 	drive := NewDriveService(db, "", "")
-	rootListed, embyListed, targetListed, packListed := 0, 0, 0, 0
+	rootListed, embyListed, targetListed := 0, 0, 0
 	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		header := make(http.Header)
 		header.Set("Content-Type", "application/json")
@@ -90,14 +90,7 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 				if targetListed == 1 {
 					body = `{"state":true,"count":0,"data":[]}`
 				} else {
-					body = `{"state":true,"count":1,"data":[{"cid":"pack","pid":"target","n":"Pack"}]}`
-				}
-			case "pack":
-				packListed++
-				if packListed == 1 {
-					body = `{"state":true,"count":0,"data":[]}`
-				} else {
-					body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"pack","n":"movie.mkv","s":"14","sha":"` + sha + `"}]}`
+					body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"target","n":"movie.mkv","s":"14","sha":"` + sha + `"}]}`
 				}
 			default:
 				t.Fatalf("unexpected 115 CID %q", cid)
@@ -108,8 +101,6 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 				body = `{"state":true,"cid":"emby"}`
 			} else if request.Form.Get("cname") == "_待整理" {
 				body = `{"state":true,"cid":"target"}`
-			} else if request.Form.Get("cname") == "Pack" {
-				body = `{"state":true,"cid":"pack"}`
 			} else {
 				t.Fatalf("unexpected mkdir %v", request.Form)
 			}
@@ -142,6 +133,9 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 	}
 	if detail.Import.Phase != "verified" || detail.Import.CompletedFiles != 1 || detail.Import.CompletedBytes != int64(len(content)) || len(detail.Items) != 1 || detail.Items[0].DestinationID != "destination" {
 		t.Fatalf("detail: %+v", detail)
+	}
+	if !strings.EqualFold(detail.Items[0].SHA1, sha) || detail.Items[0].PreSHA1 == "" {
+		t.Fatalf("verified item lost its computed digest: %+v", detail.Items[0])
 	}
 	matches, err := filepath.Glob(filepath.Join(temp, "*.part"))
 	if err != nil || len(matches) != 0 {

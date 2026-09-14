@@ -82,6 +82,13 @@ func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
 	if err := db.UpdateCrossDriveItemDownload(item.ID, task.ID, "crashed", "downloading", spool, 16<<20); err != nil {
 		t.Fatal(err)
 	}
+	// A crashed attempt leaves per-segment checkpoints behind; the durable 16 MiB
+	// prefix is exactly what those segments recorded.
+	for segment := 0; segment < 16; segment++ {
+		if err := db.SaveCrossDriveDownloadSegment(spool, task.ID, "crashed", segment, quarkDownloadSegmentSize); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := db.UpdateCrossDriveItemHashes(item.ID, task.ID, "crashed", fullSHA, preSHA); err != nil {
 		t.Fatal(err)
 	}
@@ -135,10 +142,8 @@ func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
 			case "emby":
 				body = `{"state":true,"count":1,"data":[{"cid":"target","pid":"emby","n":"_待整理"}]}`
 			case "target":
-				body = `{"state":true,"count":1,"data":[{"cid":"pack","pid":"target","n":"Pack"}]}`
-			case "pack":
 				if destinationVisible {
-					body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"pack","n":"movie.mkv","s":"` + strconv.Itoa(len(content)) + `","sha":"` + fullSHA + `"}]}`
+					body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"target","n":"movie.mkv","s":"` + strconv.Itoa(len(content)) + `","sha":"` + fullSHA + `"}]}`
 				} else {
 					body = `{"state":true,"count":0,"data":[]}`
 				}

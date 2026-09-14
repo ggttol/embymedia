@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
 	"github.com/embymedia/embymedia/internal/storage"
@@ -54,8 +55,6 @@ func TestProvider115RapidUploadVerifiesDestination(t *testing.T) {
 			listCalls++
 			if listCalls == 1 {
 				body = `{"state":true,"count":0,"data":[]}`
-			} else if listCalls == 2 {
-				body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"0","n":"movie.mkv","s":"0","sha":""}]}`
 			} else {
 				body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"0","n":"movie.mkv","s":"7","sha":"` + source.SHA1 + `"}]}`
 			}
@@ -127,13 +126,83 @@ func TestProvider115MultipartUploadAndConflict(t *testing.T) {
 	}
 }
 
-func TestProvider115RefusesSameNameDifferentBytes(t *testing.T) {
+func TestProvider115RefusesSettledSameNameDifferentBytes(t *testing.T) {
+	previous := destinationVerifyBaseTimeout
+	destinationVerifyBaseTimeout = 50 * time.Millisecond
+	defer func() { destinationVerifyBaseTimeout = previous }()
 	source := uploadFixtureSource(t, "content")
+	uploaded := false
 	provider, account := uploadFixtureService(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/open/upload/init" {
+			uploaded = true
+		}
 		body := `{"state":true,"count":1,"data":[{"fid":"existing","cid":"0","n":"movie.mkv","s":"7","sha":"0000000000000000000000000000000000000000"}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 	}))
-	if _, err := provider.UploadFile(context.Background(), account, "0", source); err == nil || !strings.Contains(err.Error(), "same-name destination conflict") {
-		t.Fatalf("conflict result: %v", err)
+	if _, err := provider.UploadFile(context.Background(), account, "0", source); err == nil || !strings.Contains(err.Error(), "identity verification failed for movie.mkv") {
+		t.Fatalf("settled conflict result: %v", err)
+	}
+	if uploaded {
+		t.Fatal("a conflicting same-name object was overwritten")
+	}
+}
+
+func TestProvider115WaitsWhileCloudDriveUploadsInBackground(t *testing.T) {
+	previousBase, previousCeiling := destinationVerifyBaseTimeout, destinationVerifyCeiling
+	destinationVerifyBaseTimeout = 150 * time.Millisecond
+	destinationVerifyCeiling = 30 * time.Second
+	defer func() {
+		destinationVerifyBaseTimeout, destinationVerifyCeiling = previousBase, previousCeiling
+	}()
+	source := uploadFixtureSource(t, "content")
+	started := time.Now()
+	provider, account := uploadFixtureService(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		// The upload runs in the background for a fixed window, so both the exact
+		// lookup and the placeholder probe observe the same state per poll.
+		body := `{"state":true,"count":1,"data":[{"fid":"partial","cid":"0","n":"movie.mkv**..uploading","s":"0"}]}`
+		if time.Since(started) > 8*time.Second {
+			body = `{"state":true,"count":1,"data":[{"fid":"destination","cid":"0","n":"movie.mkv","s":"7","sha":"` + source.SHA1 + `"}]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	}))
+	result, err := provider.waitForVerifiedDestination(context.Background(), account, "0", source, false, source.Size)
+	if err != nil || result.FileID != "destination" {
+		t.Fatalf("background upload was abandoned: %+v err=%v", result, err)
+	}
+	if elapsed := time.Since(started); elapsed < 8*time.Second {
+		t.Fatalf("background upload returned before the placeholder cleared: %s", elapsed)
+	}
+}
+
+func TestProvider115GivesUpWhenNoUploadIsInFlight(t *testing.T) {
+	previousBase, previousCeiling := destinationVerifyBaseTimeout, destinationVerifyCeiling
+	destinationVerifyBaseTimeout = 50 * time.Millisecond
+	destinationVerifyCeiling = 500 * time.Millisecond
+	defer func() {
+		destinationVerifyBaseTimeout, destinationVerifyCeiling = previousBase, previousCeiling
+	}()
+	source := uploadFixtureSource(t, "content")
+	provider, account := uploadFixtureService(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"state":true,"count":0,"data":[]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	}))
+	started := time.Now()
+	if _, err := provider.waitForVerifiedDestination(context.Background(), account, "0", source, false, source.Size); err == nil || !strings.Contains(err.Error(), "did not finish verifying") {
+		t.Fatalf("absent destination result: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("absent destination waited %s past its idle timeout", elapsed)
+	}
+}
+
+func TestProvider115RejectsUnverifiableSourceBeforeUpload(t *testing.T) {
+	source := uploadFixtureSource(t, "content")
+	source.SHA1 = ""
+	provider, account := uploadFixtureService(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Fatalf("unverifiable source reached the provider: %s", request.URL.Path)
+		return nil, nil
+	}))
+	if _, err := provider.UploadFile(context.Background(), account, "0", source); err == nil || !strings.Contains(err.Error(), "SHA-1") {
+		t.Fatalf("unverifiable source result: %v", err)
 	}
 }
