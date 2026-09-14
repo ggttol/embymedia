@@ -14,7 +14,7 @@ Status: implemented
 
 受限命令 SSH Worker 只把夸克到 115 的数据面移到可直连的 NAS。Debian 仍然是唯一的生产数据库与任务所有者：它选择资源、验证 provider 身份、持久保存任务状态、取消工作，并执行最终的 115 验证。每次操作只有一个有界 JSON 请求经过加密 stdin，Worker 是一次性进程，在输出逐行事件后退出。
 
-`internal/transfer` 拥有共享的下载、检查点与发布机制。下载保持四条范围连接与 10 MiB 分段上限，且分段检查点仅在其字节持久化后才写入，因此重启会复用已完成的工作而不是重新下载。发布通过 NAS CloudDrive2 挂载写入绑定源身份的 `.uploading` 名称，计算完整文件 hash，然后原子重命名。Worker 的 HTTP transport 绝不读取环境代理。
+`internal/transfer` 拥有共享的下载、检查点与发布机制。下载保持四条范围连接与 10 MiB 分段上限，且分段检查点仅在其字节持久化后才写入，因此重启会复用已完成的工作而不是重新下载。发布直接写入最终目标名称，因为在 CloudDrive2 仍在上传时重命名 FUSE 文件会让 115 永久保留一个 `<name>**..uploading` 对象，且内容身份改为通过 115 API 确认，而不是回读文件。Worker 的 HTTP transport 绝不读取环境代理。
 
 NAS 运行独立的 CloudDrive2 实例，拥有自己的 `/Config`、挂载根、缓存与管理端口，以及私有中转区和固定的 `_待整理/.embymedia-nas-worker-health-canary`。Debian 在接受导入前通过 115 API 解析该 canary，从而把 NAS 挂载与控制端绑定到已配置的 115 账号；不一致会在任何 provider 写入前失败。只有在 Debian 验证准确的 115 父目录、名称、大小与 SHA-1 并发送独立 commit 请求后，才会删除后台中转字节。
 

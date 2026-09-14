@@ -1,4 +1,4 @@
 # Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
 # Update both languages together; see docs/AGENTS.md for the pairing policy.
-2026-09-14-direct-connected-nas-transfer-worker.md: c2ba7caef161307539648f4ca63c1b4ff51998bd
-2026-09-14-direct-connected-nas-transfer-worker.zh.md: f6c7d89b1d0ce553d0f4b12354a3aa0c449dd941
+2026-09-14-direct-connected-nas-transfer-worker.md: c7004d2e0638f6f199de29480dfb5c56df20d4f7
+2026-09-14-direct-connected-nas-transfer-worker.zh.md: 192bd2a4dce859ebfbd7b01af701d69c49f1b6f7

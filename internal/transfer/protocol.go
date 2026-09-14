@@ -32,6 +32,7 @@ type Request struct {
 	ExpectedSHA1      string `json:"expected_sha1,omitempty"`
 	QuarkCookie       string `json:"quark_cookie,omitempty"`
 	Destination       string `json:"destination,omitempty"`
+	Replace           bool   `json:"replace,omitempty"`
 	Connections       int    `json:"connections,omitempty"`
 	RequiredFreeBytes int64  `json:"required_free_bytes,omitempty"`
 }

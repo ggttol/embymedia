@@ -109,9 +109,17 @@ func (s *TaskQueueService) transferQuarkItemViaNAS(ctx context.Context, taskID, 
 	if err := s.db.UpdateCrossDriveImport(taskID, owner, "uploading", state.DestinationCID, item.RelativePath, ""); err != nil {
 		return UploadResult{}, err
 	}
+	// 115 lists an in-progress upload as "<name>**..uploading". A placeholder with
+	// no settled object means an earlier publication never finished, and the
+	// mount still reports that stale file at its full size, so the bytes are
+	// rewritten instead of skipped.
+	replace, err := provider.cloudDriveUploadPlaceholder(ctx, c115Account, parentCID, item.Name)
+	if err != nil {
+		return UploadResult{}, err
+	}
 	published, err := s.nasWorker.Publish(ctx, transfer.Request{
 		JobID: jobID, AccountID: quarkAccount.ID, SourceFileID: item.SourceFileID, SourceRevision: item.SourceRevision,
-		Name: item.Name, Size: item.Size, ExpectedSHA1: item.SHA1, Destination: destination,
+		Name: item.Name, Size: item.Size, ExpectedSHA1: item.SHA1, Destination: destination, Replace: replace,
 	}, func(event transfer.Event) error {
 		if event.Phase != "uploading" || event.Size != item.Size || !strings.EqualFold(event.SHA1, item.SHA1) {
 			return fmt.Errorf("NAS worker returned invalid upload progress")

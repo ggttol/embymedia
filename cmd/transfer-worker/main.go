@@ -116,7 +116,7 @@ func run(ctx context.Context, encoder *json.Encoder, spoolDir, mountRoot, access
 		if err := emit(transfer.Event{Type: "progress", Phase: "uploading", DownloadedBytes: request.Size, Size: request.Size, SHA1: request.ExpectedSHA1}); err != nil {
 			return err
 		}
-		if err := transfer.Publish(ctx, spoolPath, mountRoot, request.Destination, key, request.Name, request.Size, request.ExpectedSHA1); err != nil {
+		if err := transfer.Publish(ctx, spoolPath, mountRoot, request.Destination, request.Name, request.Size, request.ExpectedSHA1, request.Replace); err != nil {
 			return err
 		}
 		return emit(transfer.Event{Type: "completed", Phase: "published", DownloadedBytes: request.Size, Size: request.Size, SHA1: request.ExpectedSHA1})

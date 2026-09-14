@@ -50,7 +50,7 @@ deploy/scripts/install-nas-worker.sh RELEASE_TREE CONTROLLER_PUBLIC_KEY
 CLOUDDRIVE_IMAGE=repository@sha256:digest docker compose -f /volume1/homes/gaotao/embymedia-transfer/clouddrive-compose.yml up -d --wait
 ```
 
-安装器只替换 `~/.ssh/authorized_keys` 中的 `embymedia-nas-worker` 条目；该密钥不能分配 PTY、转发端口、使用 agent 或执行任意命令。它唯一的提权能力是一个不带命令参数的准确免密助手：Worker 通过 stdin 传入已验证的相对目标，归 root 所有的助手把所有权修改限制在已配置挂载下一个已存在目录。夸克凭据只在下载操作中经过加密 stdin，不进入参数、NAS 配置、进度输出或日志。传输在 NAS 保存范围检查点与中转文件，发布前计算完整文件 hash，通过 NAS CloudDrive2 挂载写入绑定源身份的 `.uploading` 名称，并等待 Debian 验证准确的 115 父目录、名称、大小与 SHA-1，之后才由独立 commit 请求删除中转文件。SSH 丢失、取消、挂载失败、已有外来同名目标或 provider 状态有歧义都会明确失败并保留可恢复证据。
+安装器只替换 `~/.ssh/authorized_keys` 中的 `embymedia-nas-worker` 条目；该密钥不能分配 PTY、转发端口、使用 agent 或执行任意命令。它唯一的提权能力是一个不带命令参数的准确免密助手：Worker 通过 stdin 传入已验证的相对目标，归 root 所有的助手把所有权修改限制在已配置挂载下一个已存在目录。夸克凭据只在下载操作中经过加密 stdin，不进入参数、NAS 配置、进度输出或日志。传输在 NAS 保存范围检查点与中转文件，发布前计算完整文件 hash，通过 NAS CloudDrive2 挂载直接写入最终目标名称，并等待 Debian 验证准确的 115 父目录、名称、大小与 SHA-1，之后才由独立 commit 请求删除中转文件。绝不要重命名仍在上传的 CloudDrive2 文件：115 会留下一个永远不会结算的 `<name>**..uploading` 对象。当存在此类占位对象且没有已结算对象时，Worker 会重写目标，因为挂载仍会把这个陈旧文件报告为完整大小。SSH 丢失、取消、挂载失败、已有外来同名目标或 provider 状态有歧义都会明确失败并保留可恢复证据。
 
 ## 访问
 

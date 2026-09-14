@@ -2,9 +2,6 @@ package transfer
 
 import (
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,8 +10,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-var errFileIdentityMismatch = errors.New("file identity mismatch")
 
 func CheckDestination(mountRoot, destination string, requiredFreeBytes int64) error {
 	root, err := filepath.Abs(mountRoot)
@@ -33,7 +28,7 @@ func CheckDestination(mountRoot, destination string, requiredFreeBytes int64) er
 		return fmt.Errorf("CloudDrive2 mount canary is unavailable: %w", err)
 	}
 	workerCanary := filepath.Join(root, "_待整理", WorkerCanaryName)
-	if exists, err := matchingRegularFile(workerCanary, 0, EmptySHA1); err != nil {
+	if exists, err := regularFileOfSize(workerCanary, 0); err != nil {
 		return fmt.Errorf("NAS worker canary identity is invalid: %w", err)
 	} else if !exists {
 		return fmt.Errorf("NAS worker canary is unavailable")
@@ -65,7 +60,14 @@ func CheckDestination(mountRoot, destination string, requiredFreeBytes int64) er
 	return nil
 }
 
-func Publish(ctx context.Context, spoolPath, mountRoot, destination, sourceKey, name string, size int64, expectedSHA1 string) error {
+// Publish writes the spool straight to its final destination name. CloudDrive2
+// uploads a closed FUSE file in the background and 115 lists "<name>**..uploading"
+// until that upload finishes; renaming the file while its upload is still in
+// flight leaves that in-progress object behind permanently, so the final name is
+// written directly and the mount is never asked to rename it. 115 remains the
+// authority on identity: the caller verifies the exact parent, name, size and
+// SHA-1 through the 115 API after this returns.
+func Publish(ctx context.Context, spoolPath, mountRoot, destination, name string, size int64, expectedSHA1 string, replace bool) error {
 	cleanDestination, err := CleanDestination(destination)
 	if err != nil {
 		return err
@@ -74,7 +76,7 @@ func Publish(ctx context.Context, spoolPath, mountRoot, destination, sourceKey, 
 	if err != nil {
 		return err
 	}
-	if err := CheckDestination(mountRoot, cleanDestination, 0); err != nil {
+	if err := CheckDestination(mountRoot, cleanDestination, size); err != nil {
 		return err
 	}
 	root, err := filepath.Abs(mountRoot)
@@ -86,29 +88,31 @@ func Publish(ctx context.Context, spoolPath, mountRoot, destination, sourceKey, 
 		return err
 	}
 	finalPath := filepath.Join(directory, cleanName)
-	digest := sha1.Sum([]byte(sourceKey))
-	stagingPath := filepath.Join(directory, ".embymedia-quark-"+hex.EncodeToString(digest[:])+".uploading")
-	if exists, err := matchingRegularFile(finalPath, size, expectedSHA1); err != nil {
-		return fmt.Errorf("same-name destination conflict: %w", err)
-	} else if exists {
-		return nil
-	}
-	if exists, err := matchingRegularFile(stagingPath, size, expectedSHA1); err != nil {
-		if !errors.Is(err, errFileIdentityMismatch) {
-			return err
+	if replace {
+		// The caller established that 115 has no verified object for this name,
+		// for example because an earlier publication left a
+		// "<name>**..uploading" placeholder behind. The mount still reports that
+		// stale file at its full size, so it must be removed before the bytes are
+		// written again.
+		if err := os.Remove(finalPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale destination %s: %w", cleanName, err)
 		}
-		if removeErr := os.Remove(stagingPath); removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("remove invalid transfer staging file: %w", removeErr)
+	} else {
+		switch exists, err := regularFileOfSize(finalPath, size); {
+		case err != nil:
+			return fmt.Errorf("same-name destination conflict: %w", err)
+		case exists:
+			// A previous publication already reached the destination name. 115
+			// owns the verdict on whether those bytes are the expected object.
+			return nil
 		}
-	} else if exists {
-		return os.Rename(stagingPath, finalPath)
 	}
 	source, err := os.Open(spoolPath)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
-	target, err := os.OpenFile(stagingPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	target, err := os.OpenFile(finalPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -116,7 +120,7 @@ func Publish(ctx context.Context, spoolPath, mountRoot, destination, sourceKey, 
 	syncErr := target.Sync()
 	closeErr := target.Close()
 	if copyErr != nil || written != size || syncErr != nil || closeErr != nil {
-		_ = os.Remove(stagingPath)
+		_ = os.Remove(finalPath)
 		switch {
 		case copyErr != nil:
 			return copyErr
@@ -128,21 +132,21 @@ func Publish(ctx context.Context, spoolPath, mountRoot, destination, sourceKey, 
 			return closeErr
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		_ = os.Remove(stagingPath)
+	info, err := os.Stat(finalPath)
+	if err != nil {
 		return err
 	}
-	if actual, err := HashPath(stagingPath); err != nil {
-		_ = os.Remove(stagingPath)
-		return err
-	} else if !strings.EqualFold(actual, expectedSHA1) {
-		_ = os.Remove(stagingPath)
-		return fmt.Errorf("CloudDrive2 staging content identity changed")
+	if !info.Mode().IsRegular() || info.Size() != size {
+		_ = os.Remove(finalPath)
+		return fmt.Errorf("CloudDrive2 reported %d of %d bytes for %s", info.Size(), size, cleanName)
 	}
-	return os.Rename(stagingPath, finalPath)
+	return nil
 }
 
-func matchingRegularFile(path string, size int64, expectedSHA1 string) (bool, error) {
+// regularFileOfSize reports whether path is a regular file of exactly size
+// bytes. Content identity is deliberately left to the 115 API, so a published
+// file is never read back through the FUSE mount.
+func regularFileOfSize(path string, size int64) (bool, error) {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return false, nil
@@ -151,14 +155,7 @@ func matchingRegularFile(path string, size int64, expectedSHA1 string) (bool, er
 		return false, err
 	}
 	if !info.Mode().IsRegular() || info.Size() != size {
-		return false, fmt.Errorf("%w: %s has an unexpected type or size", errFileIdentityMismatch, path)
-	}
-	actual, err := HashPath(path)
-	if err != nil {
-		return false, err
-	}
-	if !strings.EqualFold(actual, expectedSHA1) {
-		return false, fmt.Errorf("%w: %s has unexpected content", errFileIdentityMismatch, path)
+		return false, fmt.Errorf("%s has an unexpected type or size", path)
 	}
 	return true, nil
 }

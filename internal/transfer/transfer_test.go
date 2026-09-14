@@ -77,17 +77,23 @@ func TestPublishIsIdempotentAndRejectsChangedDestination(t *testing.T) {
 	}
 	digest := sha1.Sum(content)
 	sha := strings.ToUpper(hex.EncodeToString(digest[:]))
-	if err := Publish(context.Background(), spool, root, "_待整理", "source", "movie.mkv", int64(len(content)), sha); err != nil {
+	if err := Publish(context.Background(), spool, root, "_待整理", "movie.mkv", int64(len(content)), sha, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := Publish(context.Background(), spool, root, "_待整理", "source", "movie.mkv", int64(len(content)), sha); err != nil {
+	if err := Publish(context.Background(), spool, root, "_待整理", "movie.mkv", int64(len(content)), sha, false); err != nil {
 		t.Fatalf("idempotent publish failed: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(destination, "movie.mkv"), bytes.Repeat([]byte{'x'}, len(content)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(destination, "movie.mkv"), bytes.Repeat([]byte{'x'}, len(content)+1), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Publish(context.Background(), spool, root, "_待整理", "source", "movie.mkv", int64(len(content)), sha); err == nil || !strings.Contains(err.Error(), "same-name destination conflict") {
+	if err := Publish(context.Background(), spool, root, "_待整理", "movie.mkv", int64(len(content)), sha, false); err == nil || !strings.Contains(err.Error(), "same-name destination conflict") {
 		t.Fatalf("changed destination was accepted: %v", err)
+	}
+	if err := Publish(context.Background(), spool, root, "_待整理", "movie.mkv", int64(len(content)), sha, true); err != nil {
+		t.Fatalf("replace publish failed: %v", err)
+	}
+	if written, err := os.ReadFile(filepath.Join(destination, "movie.mkv")); err != nil || !bytes.Equal(written, content) {
+		t.Fatalf("replace did not rewrite the destination: %q, %v", written, err)
 	}
 }
 
