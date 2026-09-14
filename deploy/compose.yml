@@ -3,6 +3,8 @@ name: embymedia
 services:
   clouddrive2:
     image: ${CLOUDDRIVE_IMAGE:?set digest-pinned CLOUDDRIVE_IMAGE}
+    environment:
+      CLOUDDRIVE_HOME: /Config
     restart: unless-stopped
     extra_hosts:
       - host.docker.internal:host-gateway

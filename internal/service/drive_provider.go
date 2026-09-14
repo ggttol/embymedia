@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/embymedia/embymedia/internal/domain"
@@ -426,7 +428,32 @@ func (s *DriveService) OpenProviderDownload(ctx context.Context, provider, accou
 	if err != nil {
 		return nil, err
 	}
-	return p.OpenDownload(ctx, account, fileID, offset, length)
+	body, err := p.OpenDownload(ctx, account, fileID, offset, length)
+	var statusErr *ProviderHTTPError
+	if provider != "quark" || !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusPreconditionFailed {
+		return body, err
+	}
+	quark := p.(*ProviderQuark)
+	quark.downloadCookieMu.Lock()
+	defer quark.downloadCookieMu.Unlock()
+
+	// Another concurrent range may already have refreshed the persisted cookie.
+	account, err = s.getAccountForProvider(provider, accountID)
+	if err != nil {
+		return nil, err
+	}
+	body, err = quark.OpenDownload(ctx, account, fileID, offset, length)
+	statusErr = nil
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusPreconditionFailed {
+		return body, err
+	}
+	if err := quark.refreshDownloadCookie(ctx, account); err != nil {
+		return nil, err
+	}
+	if err := s.db.SaveAccount(account); err != nil {
+		return nil, fmt.Errorf("persist refreshed Quark download credential: %w", err)
+	}
+	return quark.OpenDownload(ctx, account, fileID, offset, length)
 }
 
 func (s *DriveService) ResolveProviderDeleteTargets(ctx context.Context, provider, accountID, parent string, fileIDs []string) (string, []domain.DestructiveTarget, error) {

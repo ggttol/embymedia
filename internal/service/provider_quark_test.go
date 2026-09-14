@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
+	"github.com/embymedia/embymedia/internal/storage"
 )
 
 func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
@@ -137,6 +138,68 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 	zeroBody.Close()
 	if err != nil || string(zeroContent) != "data" || signedRequests != 3 || downloadMetadataRequests != 6 {
 		t.Fatalf("zero-offset ranged download: %q signed_requests=%d metadata_requests=%d err=%v", zeroContent, signedRequests, downloadMetadataRequests, err)
+	}
+}
+
+func TestDriveServiceRefreshesExpiredQuarkDownloadCookie(t *testing.T) {
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	account := &domain.DriveAccount{
+		ID: "quark", Type: "quark", Name: "Quark", Cookie: "sid=stable; __puus=stale",
+		IsDefault: true, Status: "active",
+	}
+	if err := db.SaveAccount(account); err != nil {
+		t.Fatal(err)
+	}
+	refreshes := 0
+	signedRequests := 0
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/file/download":
+			_, _ = io.WriteString(response, `{"status":200,"data":[{"download_url":"`+server.URL+`/signed"}]}`)
+		case "/file/sort":
+			refreshes++
+			if strings.Contains(request.Header.Get("Cookie"), "__puus=") {
+				t.Fatal("credential refresh sent the expired __puus field")
+			}
+			http.SetCookie(response, &http.Cookie{Name: "__puus", Value: "fresh", Path: "/"})
+			_, _ = io.WriteString(response, `{"status":200,"data":{"list":[]},"metadata":{"_total":0}}`)
+		case "/signed":
+			signedRequests++
+			if !strings.Contains(request.Header.Get("Cookie"), "__puus=fresh") {
+				response.WriteHeader(http.StatusPreconditionFailed)
+				return
+			}
+			response.WriteHeader(http.StatusPartialContent)
+			_, _ = io.WriteString(response, "data")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	drive := NewDriveService(db, "", "")
+	drive.client.Transport = server.Client().Transport
+	provider := drive.providers["quark"].(*ProviderQuark)
+	provider.baseURL = server.URL
+	provider.downloadBaseURL = server.URL
+
+	body, err := drive.OpenProviderDownload(context.Background(), "quark", account.ID, "file", 0, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := io.ReadAll(body)
+	body.Close()
+	if err != nil || string(content) != "data" || refreshes != 1 || signedRequests != 3 {
+		t.Fatalf("refreshed download content=%q refreshes=%d signed=%d err=%v", content, refreshes, signedRequests, err)
+	}
+	accounts, err := db.ListAccounts()
+	if err != nil || len(accounts) != 1 || !strings.Contains(accounts[0].Cookie, "__puus=fresh") || strings.Contains(accounts[0].Cookie, "__puus=stale") {
+		t.Fatalf("refreshed cookie was not persisted: accounts=%d err=%v", len(accounts), err)
 	}
 }
 

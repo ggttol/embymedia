@@ -31,9 +31,9 @@ const (
 	quarkSegmentAttempts = 4
 )
 
-// quarkDownloadSegmentSize is the parallel spool segment. Four connections with
-// 32 MiB ranges measured about 3.4x single-stream Quark throughput. Tests shrink it.
-var quarkDownloadSegmentSize = int64(32 << 20)
+// quarkDownloadSegmentSize stays within the 10 MiB range limit advertised by
+// current signed Quark download responses. Tests shrink it for focused cases.
+var quarkDownloadSegmentSize = int64(10 << 20)
 
 // quarkDownloadConnections reads the operator-configured parallel download count.
 func (s *TaskQueueService) quarkDownloadConnections() int {
@@ -695,6 +695,13 @@ func (s *TaskQueueService) downloadQuarkItem(ctx context.Context, taskID, owner,
 			spool = filepath.Join(directory, hex.EncodeToString(key[:])+".part")
 		}
 	}
+	spoolExisted := true
+	if _, err := os.Stat(spool); err != nil {
+		if !os.IsNotExist(err) {
+			return "", "", "", err
+		}
+		spoolExisted = false
+	}
 	file, err := os.OpenFile(spool, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return "", "", "", err
@@ -710,6 +717,12 @@ func (s *TaskQueueService) downloadQuarkItem(ctx context.Context, taskID, owner,
 	segments, err := s.db.ListCrossDriveDownloadSegments(spool)
 	if err != nil {
 		return "", "", "", err
+	}
+	if !spoolExisted {
+		// Segment checkpoints describe bytes in this exact spool. If an operator
+		// removed the spool after a verified upload, they cannot be reused to
+		// turn a newly created sparse file into a false completed download.
+		segments = map[int]int64{}
 	}
 	downloaded := int64(0)
 	for _, size := range segments {

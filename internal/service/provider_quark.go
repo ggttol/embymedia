@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/embymedia/embymedia/internal/domain"
@@ -29,11 +30,12 @@ const (
 )
 
 type ProviderQuark struct {
-	client          *http.Client
-	baseURL         string
-	downloadBaseURL string
-	proxyURL        func() string
-	sleep           func(context.Context, time.Duration) error
+	client           *http.Client
+	baseURL          string
+	downloadBaseURL  string
+	proxyURL         func() string
+	sleep            func(context.Context, time.Duration) error
+	downloadCookieMu sync.Mutex
 }
 
 func NewProviderQuark(client *http.Client) *ProviderQuark {
@@ -824,6 +826,81 @@ func (p *ProviderQuark) waitTask(ctx context.Context, account *domain.DriveAccou
 		}
 	}
 	return nil, fmt.Errorf("Quark share save task did not complete before timeout")
+}
+
+func quarkCookieWithout(raw, name string) string {
+	parts := make([]string, 0)
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		key, _, found := strings.Cut(part, "=")
+		if part == "" || !found || strings.TrimSpace(key) == name {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func quarkCookieWith(raw, name, value string) string {
+	without := quarkCookieWithout(raw, name)
+	if without == "" {
+		return name + "=" + value
+	}
+	return without + "; " + name + "=" + value
+}
+
+// refreshDownloadCookie replaces Quark's short-lived CDN authorization cookie.
+// Ordinary drive APIs continue to work after __puus expires, while signed file
+// downloads fail with HTTP 412 until an API request omits the stale field.
+func (p *ProviderQuark) refreshDownloadCookie(ctx context.Context, account *domain.DriveAccount) error {
+	requestClient := p.client
+	if p.proxyURL != nil && strings.TrimSpace(p.proxyURL()) != "" {
+		proxyClient, err := p.downloadHTTPClient()
+		if err != nil {
+			return err
+		}
+		requestClient = proxyClient
+	}
+	query := url.Values{
+		"pr": {"ucpro"}, "fr": {"pc"}, "pdir_fid": {"0"},
+		"_page": {"1"}, "_size": {"1"}, "_fetch_total": {"1"},
+		"_sort": {"file_type:asc,updated_at:desc"},
+	}
+	endpoint := strings.TrimRight(p.baseURL, "/") + "/file/sort?" + query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Cookie", quarkCookieWithout(account.Cookie, "__puus"))
+	request.Header.Set("Origin", "https://pan.quark.cn")
+	request.Header.Set("Referer", "https://pan.quark.cn/")
+	request.Header.Set("User-Agent", quarkBrowserUserAgent)
+	response, err := requestClient.Do(request)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return safeProviderRequestError("refresh Quark download credential", err)
+	}
+	defer response.Body.Close()
+	var envelope quarkEnvelope
+	decodeErr := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&envelope)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return &ProviderHTTPError{Operation: "refresh Quark download credential", StatusCode: response.StatusCode}
+	}
+	if decodeErr != nil {
+		return fmt.Errorf("decode Quark download credential refresh: %w", decodeErr)
+	}
+	if !quarkAccepted(envelope) {
+		return fmt.Errorf("Quark download credential refresh was rejected")
+	}
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == "__puus" && strings.TrimSpace(cookie.Value) != "" {
+			account.Cookie = quarkCookieWith(account.Cookie, cookie.Name, cookie.Value)
+			return nil
+		}
+	}
+	return fmt.Errorf("Quark did not issue a refreshed download credential")
 }
 
 func (p *ProviderQuark) downloadURL(ctx context.Context, account *domain.DriveAccount, id string) (string, string, error) {

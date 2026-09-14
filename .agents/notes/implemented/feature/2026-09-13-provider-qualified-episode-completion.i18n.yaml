@@ -1,4 +1,4 @@
 # Bilingual-pair consistency record: Git blob SHA-1 of each confirmed language.
 # Update both languages together; see docs/AGENTS.md for the pairing policy.
-2026-09-13-provider-qualified-episode-completion.md: 31cc572ef20f5f5aefb9a17ce3f7a6f9b358dce4
-2026-09-13-provider-qualified-episode-completion.zh.md: db20b0e0c50b622644a3fe10f1fb45049c5d8a65
+2026-09-13-provider-qualified-episode-completion.md: 0d7965e744cb86f83c168869434d942323db42d1
+2026-09-13-provider-qualified-episode-completion.zh.md: 4e76cfe9d51a7cd6f1d7c88d57787e43d02ef762

@@ -377,3 +377,56 @@ func TestQuarkDownloadResumesOnlyMissingSegments(t *testing.T) {
 		t.Fatalf("segments = %v err=%v", segments, err)
 	}
 }
+
+func TestQuarkDownloadStaysWithinProviderRangeLimit(t *testing.T) {
+	content := bytes.Repeat([]byte{0x72}, (10<<20)+1)
+	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, io.Reader) {
+		value := strings.TrimPrefix(rangeHeader, "bytes=")
+		parts := strings.Split(value, "-")
+		if len(parts) != 2 {
+			t.Fatalf("unexpected Range %q", rangeHeader)
+		}
+		start, _ := strconv.ParseInt(parts[0], 10, 64)
+		end, _ := strconv.ParseInt(parts[1], 10, 64)
+		if end-start+1 > 10<<20 {
+			return http.StatusPreconditionFailed, nil
+		}
+		return rangeBytes(t, content, rangeHeader)
+	})
+	spool, _, _, err := fixture.queue.downloadQuarkItem(context.Background(), fixture.taskID, fixture.owner, "quark", fixture.item, fixture.item.Size, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(spool)
+	if err != nil || !bytes.Equal(written, content) {
+		t.Fatalf("range-limited spool mismatch: %d bytes err=%v", len(written), err)
+	}
+}
+
+func TestQuarkDownloadRedownloadsDeletedSpoolDespiteCheckpoints(t *testing.T) {
+	previous := quarkDownloadSegmentSize
+	quarkDownloadSegmentSize = 1 << 20
+	defer func() { quarkDownloadSegmentSize = previous }()
+	content := bytes.Repeat([]byte{0x6a}, 2<<20)
+	fixture := newQuarkDownloadFixture(t, content, func(rangeHeader string) (int, io.Reader) {
+		return rangeBytes(t, content, rangeHeader)
+	})
+	if _, _, _, err := fixture.queue.downloadQuarkItem(context.Background(), fixture.taskID, fixture.owner, "quark", fixture.item, fixture.item.Size, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(fixture.spool); err != nil {
+		t.Fatal(err)
+	}
+	fixture.ranges.reset()
+	spool, _, _, err := fixture.queue.downloadQuarkItem(context.Background(), fixture.taskID, fixture.owner, "quark", fixture.item, fixture.item.Size, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.ranges.all()) != 2 {
+		t.Fatalf("deleted spool reused stale segment checkpoints: %v", fixture.ranges.all())
+	}
+	written, err := os.ReadFile(spool)
+	if err != nil || !bytes.Equal(written, content) {
+		t.Fatalf("redownloaded spool mismatch: %d bytes err=%v", len(written), err)
+	}
+}
