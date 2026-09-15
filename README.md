@@ -6,6 +6,14 @@ English | [中文](README.zh.md)
 
 EmbyMedia manages 115 accounts and files, CloudDrive2 mounts, Emby libraries, STRM output, and persistent media tasks through a Vue browser application, REST, OpenAPI, and MCP. One Go binary embeds the browser application. Production requires neither Node.js nor DeepSeek API credentials.
 
+## What it does
+
+- Verified media import: Quark shares download through an optional direct-connected NAS worker and publish to 115; every file is checked by parent, name, size, and SHA-1 before the transfer stage completes.
+- Automatic catalog ingest: a verified import continues into move, canonical naming, STRM synchronization, a tracked Emby scan, and aired-episode verification only when one existing Emby Series is uniquely proven.
+- Aired-episode completion: scheduled searches of 115 and Quark fill missing episodes of the two following libraries and report conflicts as explicit findings instead of failing valid work.
+- Task Center: one seven-stage workflow view (source, NAS transfer, 115 verification, cataloging, organization, STRM, Emby) with durable attempts, cancellation, retry, and audit state.
+- Hourly fast Emby refresh plus one daily full STRM reconciliation keeps routine scans quick while preserving verification.
+
 ## Table of Contents
 
 - [Build and run](#build-and-run)
