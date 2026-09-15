@@ -3,7 +3,7 @@ module github.com/embymedia/embymedia
 go 1.26
 
 require (
-	github.com/OpenListTeam/115-sdk-go v0.2.4
+	github.com/OpenListTeam/115-sdk-go v0.2.6
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.15.4
