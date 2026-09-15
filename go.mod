@@ -1,6 +1,6 @@
 module github.com/embymedia/embymedia
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/OpenListTeam/115-sdk-go v0.2.4
@@ -9,8 +9,8 @@ require (
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/mark3labs/mcp-go v1.0.0
 	github.com/robfig/cron/v3 v3.0.1
-	golang.org/x/net v0.56.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/net v0.59.0
+	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
 	modernc.org/sqlite v1.58.0
@@ -29,8 +29,8 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250324211829-b45e905df463 // indirect
 	modernc.org/libc v1.75.6 // indirect
