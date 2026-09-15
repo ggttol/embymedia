@@ -95,6 +95,7 @@ type SeriesAutoFillResult struct {
 	ReplacementRecovery map[string]string           `json:"replacement_recovery,omitempty"`
 	replacement         *completedPackReplacement
 	probeErr            error
+	fatalErr            error
 }
 
 // LibraryAutoFillResult records one allowed following library's bounded repair result.
@@ -352,8 +353,18 @@ func stopAutoFillShareProbes(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	var transportErr *url.Error
+	if errors.As(err, &transportErr) {
+		return true
+	}
 	var statusErr *ProviderHTTPError
-	return errors.As(err, &statusErr) && (statusErr.StatusCode == http.StatusMethodNotAllowed || statusErr.StatusCode == http.StatusTooManyRequests)
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	return statusErr.StatusCode == http.StatusUnauthorized ||
+		statusErr.StatusCode == http.StatusMethodNotAllowed ||
+		statusErr.StatusCode == http.StatusTooManyRequests ||
+		statusErr.StatusCode >= http.StatusInternalServerError
 }
 
 func (s *TaskQueueService) scanAutoFillShare(ctx context.Context, candidate autoFillCandidate) (string, []autoFillLeaf, error) {
@@ -553,20 +564,26 @@ func (s *TaskQueueService) cancelQueuedAutoFillImports(results []LibraryAutoFill
 func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library domain.EmbyLibrary, libraryCID string, gaps map[episodeKey]struct{}, seriesID, seriesName string, canonical *domain.EmbyMediaItem, tmdbCount int, spec seriesAutoFillSpec) (SeriesAutoFillResult, []string) {
 	result := SeriesAutoFillResult{SeriesID: seriesID, SeriesName: seriesName, MissingEpisodes: sortedEpisodeLabels(gaps)}
 	if canonical == nil || canonical.Type != "Series" {
-		result.Issue = fmt.Sprintf("Emby Series %s is absent from its eligible library", seriesID)
+		err := fmt.Errorf("Emby Series %s is absent from its eligible library", seriesID)
+		result.Issue = err.Error()
+		result.fatalErr = err
 		result.RemainingEpisodes = result.MissingEpisodes
 		return result, nil
 	}
 	series := canonical
 	tmdbID := strings.TrimSpace(series.ProviderIDs["Tmdb"])
 	if tmdbID == "" || tmdbCount != 1 {
-		result.Issue = fmt.Sprintf("canonical TMDB identity is missing or duplicated (%d matching Series)", tmdbCount)
+		err := fmt.Errorf("canonical TMDB identity is missing or duplicated (%d matching Series)", tmdbCount)
+		result.Issue = err.Error()
+		result.fatalErr = err
 		result.RemainingEpisodes = result.MissingEpisodes
 		return result, nil
 	}
 	folder := filepath.Base(filepath.Clean(series.Path))
 	if folder == "." || folder == string(filepath.Separator) || filepath.Base(filepath.Dir(filepath.Clean(series.Path))) != library.Name {
-		result.Issue = "Series path is not a direct child of the eligible library"
+		err := errors.New("Series path is not a direct child of the eligible library")
+		result.Issue = err.Error()
+		result.fatalErr = err
 		result.RemainingEpisodes = result.MissingEpisodes
 		return result, nil
 	}
@@ -574,12 +591,14 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 	targetCID, err := s.resolveAutoFillFolder(ctx, libraryCID, folder)
 	if err != nil {
 		result.Issue = err.Error()
+		result.fatalErr = err
 		result.RemainingEpisodes = result.MissingEpisodes
 		return result, nil
 	}
 	candidates, discoveryErrors, err := s.searchAutoFillCandidates(ctx, seriesName, spec.CandidateLimit)
 	if err != nil {
 		result.Issue = err.Error()
+		result.fatalErr = err
 		result.RemainingEpisodes = result.MissingEpisodes
 		return result, nil
 	}
@@ -766,6 +785,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 				}
 				result.Issue = err.Error()
 				lastTransferError = err.Error()
+				result.fatalErr = errors.Join(result.fatalErr, err)
 				continue
 			}
 			selectedKeys := make(map[episodeKey]struct{}, len(keys))
@@ -798,6 +818,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 			if queueErr != nil {
 				result.Issue = queueErr.Error()
 				lastTransferError = queueErr.Error()
+				result.fatalErr = errors.Join(result.fatalErr, queueErr)
 				continue
 			}
 			result.QueuedImports = append(result.QueuedImports, AutoFillQueuedImport{TaskID: child.ID, Provider: "quark", ResourceID: match.candidate.ID, Episodes: sortedEpisodeLabels(selectedKeys), SelectedNames: selectedNames, Bytes: selectedBytes})
@@ -810,6 +831,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		if accountErr != nil {
 			result.Issue = accountErr.Error()
 			lastTransferError = accountErr.Error()
+			result.fatalErr = errors.Join(result.fatalErr, accountErr)
 			continue
 		}
 		shareCode, receiveCode, parseErr := ParseShareCode(match.candidate.URL, match.candidate.Password)
@@ -829,6 +851,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		}
 		if _, _, transferErr := s.driveSvc.receiveShareEntriesCtx(ctx, account, shareCode, receiveCode, selectedIDs, targetCID, match.shareTitle); transferErr != nil {
 			lastTransferError = transferErr.Error()
+			result.fatalErr = errors.Join(result.fatalErr, transferErr)
 			if stopAutoFillShareProbes(transferErr) {
 				result.probeErr = transferErr
 				break
@@ -857,6 +880,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 	if spec.Transfer && len(transferredPaths) > 0 {
 		if err := waitForAutoFillFiles(ctx, transferredPaths); err != nil {
 			result.Issue = err.Error()
+			result.fatalErr = errors.Join(result.fatalErr, err)
 			result.probeErr = errors.Join(result.probeErr, err)
 		}
 	}
@@ -907,6 +931,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 	results := make([]LibraryAutoFillResult, 0, len(spec.Libraries))
 	totalMissing, totalMatched, totalTransferred := 0, 0, 0
 	anyTransferred := false
+	var fatalErr error
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer cancel()
@@ -1000,7 +1025,9 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 		}
 		sort.Strings(duplicateIDs)
 		for _, tmdbID := range duplicateIDs {
-			libraryResult.Issues = append(libraryResult.Issues, fmt.Sprintf("TMDB %s belongs to %d Series in %s", tmdbID, tmdbCounts[tmdbID], libraryName))
+			issue := fmt.Sprintf("TMDB %s belongs to %d Series in %s", tmdbID, tmdbCounts[tmdbID], libraryName)
+			libraryResult.Issues = append(libraryResult.Issues, issue)
+			fatalErr = errors.Join(fatalErr, errors.New(issue))
 		}
 		if len(order) > spec.MaxSeries {
 			libraryResult.SkippedSeries = len(order) - spec.MaxSeries
@@ -1030,6 +1057,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 			if seriesResult.Issue != "" {
 				libraryResult.Issues = append(libraryResult.Issues, seriesResult.SeriesName+": "+seriesResult.Issue)
 			}
+			fatalErr = errors.Join(fatalErr, seriesResult.fatalErr)
 			if len(transferredPaths) > 0 {
 				anyTransferred = true
 			}
@@ -1102,6 +1130,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 			if !exists {
 				seriesResult.Issue = "canonical Series disappeared after refresh"
 				results[index].Issues = append(results[index].Issues, seriesResult.SeriesName+": "+seriesResult.Issue)
+				fatalErr = errors.Join(fatalErr, errors.New(seriesResult.SeriesName+": "+seriesResult.Issue))
 				continue
 			}
 			tmdbID := strings.TrimSpace(current.ProviderIDs["Tmdb"])
@@ -1113,6 +1142,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 			if !hadInitial || current.Path != initial.Path || tmdbID == "" || tmdbID != strings.TrimSpace(initial.ProviderIDs["Tmdb"]) || tmdbCounts[tmdbID] != expectedTMDBCount {
 				seriesResult.Issue = "canonical Series path or expected TMDB identity group changed after refresh"
 				results[index].Issues = append(results[index].Issues, seriesResult.SeriesName+": "+seriesResult.Issue)
+				fatalErr = errors.Join(fatalErr, errors.New(seriesResult.SeriesName+": "+seriesResult.Issue))
 			}
 		}
 	}
@@ -1128,6 +1158,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 				seriesResult.Issue = err.Error()
 				seriesResult.ReplacementStatus = "kept_old"
 				results[libraryIndex].Issues = append(results[libraryIndex].Issues, seriesResult.SeriesName+": "+err.Error())
+				fatalErr = errors.Join(fatalErr, fmt.Errorf("%s: %w", seriesResult.SeriesName, err))
 				continue
 			}
 			seriesResult.ReplacementStatus = "replaced"
@@ -1160,19 +1191,25 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 	if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Auto-fill completed mode=%s missing=%d matched=%d transferred=%d remaining=%d", mode, totalMissing, totalMatched, totalTransferred, totalRemaining)); err != nil {
 		return nil, err
 	}
-	result := map[string]any{
-		"mode": mode, "libraries": results, "missing": totalMissing, "matched": totalMatched,
-		"transferred": totalTransferred, "remaining": totalRemaining,
-	}
 	issues := make([]string, 0)
 	for _, libraryResult := range results {
 		issues = append(issues, libraryResult.Issues...)
 	}
+	result := map[string]any{
+		"mode": mode, "libraries": results, "missing": totalMissing, "matched": totalMatched,
+		"transferred": totalTransferred, "remaining": totalRemaining,
+		"issues": issues, "verification_complete": totalRemaining == 0 && len(issues) == 0,
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if fatalErr != nil {
+		return result, fmt.Errorf("automatic episode completion failed: %w", fatalErr)
+	}
 	if len(issues) > 0 {
-		return result, fmt.Errorf("automatic episode completion failed: %s", strings.Join(issues, "; "))
+		if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Auto-fill completed with findings=%d remaining=%d", len(issues), totalRemaining)); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }

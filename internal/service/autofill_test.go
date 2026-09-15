@@ -244,7 +244,7 @@ func TestListAiredMissingEpisodesExcludesFutureAndUnnumberedItems(t *testing.T) 
 }
 
 func TestSeriesAutoFillStopsTerminalProbesAndRetainsMatches(t *testing.T) {
-	for _, failure := range []string{"405", "429", "canceled", "message-only"} {
+	for _, failure := range []string{"401", "405", "429", "500", "transport", "canceled", "message-only"} {
 		t.Run(failure, func(t *testing.T) {
 			drive, db := newSnapshotTestDrive(t, "0")
 			ctx, cancel := context.WithCancel(context.Background())
@@ -266,10 +266,16 @@ func TestSeriesAutoFillStopsTerminalProbesAndRetainsMatches(t *testing.T) {
 						body = `{"state":true,"data":{"count":1,"shareinfo":{"share_title":"Show (2026)"},"list":[{"fid":"episode-1","n":"Show.2026.S01E01.mkv"}]}}`
 					case "rejected":
 						switch failure {
+						case "401":
+							status = http.StatusUnauthorized
 						case "405":
 							status = http.StatusMethodNotAllowed
 						case "429":
 							status = http.StatusTooManyRequests
+						case "500":
+							status = http.StatusInternalServerError
+						case "transport":
+							return nil, &url.Error{Op: "Get", URL: request.URL.String(), Err: fmt.Errorf("connection reset")}
 						case "canceled":
 							cancel()
 							return nil, ctx.Err()
@@ -369,6 +375,67 @@ func TestSeriesAutoFillTaskStopsShareProbesAfterRejection(t *testing.T) {
 	}
 	if len(outcome.Libraries) != 1 || len(outcome.Libraries[0].Series) != 1 || outcome.Libraries[0].Series[0].Issue == "" || outcome.Missing != 2 || outcome.Remaining != 2 || outcome.VerificationComplete {
 		t.Fatalf("task lost unresolved gaps or rejection diagnostics: %+v", outcome)
+	}
+}
+
+func TestSeriesAutoFillTaskCompletesWithFindingsWhenCandidatesAreUnavailable(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/Library/VirtualFolders":
+			_, _ = io.WriteString(response, `[{"Name":"电视剧追更","CollectionType":"tvshows","ItemId":"library"}]`)
+		case "/Shows/Missing":
+			_, _ = io.WriteString(response, `{"Items":[{"SeriesId":"series","SeriesName":"Show","ParentIndexNumber":1,"IndexNumber":2,"PremiereDate":"2026-01-01T00:00:00Z"}],"TotalRecordCount":1}`)
+		case "/Items":
+			_, _ = io.WriteString(response, `{"Items":[{"Id":"series","Name":"Show","Type":"Series","Path":"/strm/电视剧追更/Show (2026)","ProviderIds":{"Tmdb":"42"}}],"TotalRecordCount":1}`)
+		case "/files":
+			_, _ = io.WriteString(response, `{"state":true,"count":1,"data":[{"cid":"series-cid","pid":"library-cid","n":"Show (2026)","s":"0"}]}`)
+		case "/search":
+			_, _ = io.WriteString(response, `{"links":[{"id":1,"title":"Show (2026) S01E02","url":"https://115.com/s/expired","health_status":"valid"}]}`)
+		case "/share/snap":
+			_, _ = io.WriteString(response, `{"state":false,"error":"链接已失效"}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer provider.Close()
+
+	drive, db := newSnapshotTestDrive(t, "0")
+	if err := db.SetSettings(map[string]string{"emby_url": provider.URL, "resource_api_url": provider.URL, "c115_cid_map": `{"电视剧追更":"library-cid"}`}); err != nil {
+		t.Fatal(err)
+	}
+	providerURL, _ := url.Parse(provider.URL)
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme, clone.URL.Host = providerURL.Scheme, providerURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := queue.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Stop()
+	task, err := queue.Enqueue("series_auto_fill", map[string]any{"libraries": []string{"电视剧追更"}, "transfer": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, db, task.ID, "completed")
+	stored, err := db.GetAsyncTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome struct {
+		Remaining            int      `json:"remaining"`
+		Issues               []string `json:"issues"`
+		VerificationComplete bool     `json:"verification_complete"`
+	}
+	if err := json.Unmarshal([]byte(stored.Result), &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Error != "" || outcome.Remaining != 1 || len(outcome.Issues) != 1 || outcome.VerificationComplete || !strings.Contains(outcome.Issues[0], "链接已失效") {
+		t.Fatalf("unavailable candidate did not complete with a finding: task=%+v outcome=%+v", stored, outcome)
 	}
 }
 
