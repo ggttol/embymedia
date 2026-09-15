@@ -121,6 +121,52 @@ func TestTaskQueuePersistsRealExecutionAndLogs(t *testing.T) {
 	}
 }
 
+func TestTaskQueueFastEmbyRefreshSkipsSTRMTraversal(t *testing.T) {
+	var starts, polls atomic.Int32
+	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !handleTrackedEmbyScan(response, request, &starts, &polls) {
+			http.NotFound(response, request)
+		}
+	}))
+	defer embyServer.Close()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	configureTestMedia(t, db)
+	if err := db.SetSetting("emby_url", embyServer.URL); err != nil {
+		t.Fatal(err)
+	}
+	queue := NewTaskQueueService(db, NewDriveService(db, "", ""), NewEmbyService(db))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := queue.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Stop()
+	task, err := queue.Enqueue("emby_refresh", map[string]any{"sync_strm": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, db, task.ID, "completed")
+	stored, err := db.GetAsyncTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stored.Result), &result); err != nil {
+		t.Fatal(err)
+	}
+	if starts.Load() != 1 || result["strm"] != nil || result["strm_sync"] != "skipped" || result["emby_status"] != "Completed" {
+		t.Fatalf("fast refresh did not skip only STRM work: starts=%d result=%v", starts.Load(), result)
+	}
+	strmRoot, _ := db.GetSetting("strm_root")
+	if _, err := os.Stat(filepath.Join(strmRoot, "Movies", "New.strm")); !os.IsNotExist(err) {
+		t.Fatalf("fast refresh touched STRM output: %v", err)
+	}
+}
+
 func TestTaskQueueCancelsRunningProviderRequest(t *testing.T) {
 	started := make(chan struct{})
 	embyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

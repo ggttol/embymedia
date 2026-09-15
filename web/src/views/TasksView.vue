@@ -227,6 +227,12 @@ let executionsGeneration = 0
 function taskDefinition(type: string): TaskDefinition {
   return taskDefinitions[type as TaskType] ?? { label: '未知任务', description: '该任务类型不受当前页面支持。', defaultName: '未知任务' }
 }
+function executionTaskDefinition(task: AsyncTask): TaskDefinition {
+  if (task.type === 'emby_refresh' && task.payload?.sync_strm === false) {
+    return { label: '快速刷新 Emby', description: '跳过网盘和 STRM 全量遍历，直接跟踪 Emby 全库扫描直到结束。', defaultName: '快速刷新 Emby' }
+  }
+  return taskDefinition(task.type)
+}
 
 function statusLabel(status: string) {
   return ({ pending: '等待执行', running: '正在执行', completed: '已完成', failed: '执行失败', cancelled: '已取消', idle: '等待下次执行', paused: '已停用' } as Record<string, string>)[status] ?? status
@@ -681,7 +687,7 @@ function taskSummary(type: string, payload: Record<string, unknown> = {}) {
       const libraries = Array.isArray(payload.libraries) ? payload.libraries.join('、') : '未选择'
       return `${payload.transfer === false ? '仅预检' : payload.replace_completed_pack === true ? '自动转存 · 完结整包替换' : '自动转存'} · ${libraries}`
     }
-    case 'emby_refresh': return payload.library_id ? `媒体库 ID：${payload.library_id}` : '范围：全部媒体源与 Emby 媒体库'
+    case 'emby_refresh': return payload.library_id ? `媒体库 ID：${payload.library_id}` : payload.sync_strm === false ? '范围：仅刷新全部 Emby 媒体库；STRM 由每日完整同步维护' : '范围：全部媒体源与 Emby 媒体库'
     case 'emby_missing_posters': return '范围：全部 Emby 媒体条目'
     case 'emby_match': return `Emby 条目 ${payload.item_id || '未填写'} → TMDB ${payload.tmdb_id || '未填写'}`
     case 'emby_metadata_repair': return `${payload.auto_apply === false ? '仅生成候选' : '安全自动匹配'} · 本次最多 ${Number(payload.limit || 100)} 个条目`
@@ -774,7 +780,7 @@ async function fetchQuarkTaskDetail(taskID: string, generation: number) {
     updateQuarkTransferRate(taskID, detailResponse)
     quarkTaskDetails.value = { ...quarkTaskDetails.value, [taskID]: detailResponse }
     const detailTask = (data as QuarkTaskDetailResponse).task
-    if (detailTask?.id) asyncTasks.value = asyncTasks.value.map((task) => task.id === detailTask.id ? { ...task, ...detailTask } : task)
+    if (detailTask?.id) asyncTasks.value = asyncTasks.value.map((task) => task.id === detailTask.id ? { ...task, ...detailTask, payload: detailTask.payload ?? task.payload ?? {} } : task)
     const errors = { ...quarkDetailErrors.value }
     delete errors[taskID]
     quarkDetailErrors.value = errors
@@ -790,7 +796,7 @@ async function fetchExecutions() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '读取执行记录失败')
     if (generation !== executionsGeneration) return
-    asyncTasks.value = data.tasks ?? []
+    asyncTasks.value = (data.tasks ?? []).map((task: AsyncTask) => ({ ...task, payload: task.payload ?? {} }))
     executionsLoaded.value = true
     executionsError.value = ''
     const quarkTasks = asyncTasks.value.filter((task) => task.type === 'quark_to_115_import')
@@ -821,7 +827,7 @@ async function runTask(task: ScheduledTask) {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '启动任务失败')
     if (!data.task?.id || data.task.schedule_id !== task.id || !data.schedule?.id) throw new Error('服务未返回可跟踪的执行记录')
-    const queued = data.task as AsyncTask
+    const queued = { ...data.task, payload: data.task.payload ?? {} } as AsyncTask
     schedulesGeneration++
     executionsGeneration++
     asyncTasks.value = [queued, ...asyncTasks.value.filter((item) => item.id !== queued.id)]
@@ -929,7 +935,7 @@ async function retryTask() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '重新执行失败')
     if (!data.id) throw new Error('服务未返回可跟踪的执行记录')
-    const queued = data as AsyncTask
+    const queued = { ...data, payload: data.payload ?? {} } as AsyncTask
     schedulesGeneration++
     executionsGeneration++
     asyncTasks.value = [queued, ...asyncTasks.value.filter((item) => item.id !== queued.id)]
@@ -1299,7 +1305,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
           <div class="flex items-start gap-3.5 min-w-0">
             <span class="w-2.5 h-2.5 mt-2 rounded-full shrink-0" :class="asyncTone(task)"></span>
-            <div><h3 class="font-serif text-lg font-semibold text-text tracking-tight">{{ taskDefinition(task.type).label }}</h3><p class="mt-1 text-sm text-text-muted">{{ taskDefinition(task.type).description }}</p></div>
+            <div><h3 class="font-serif text-lg font-semibold text-text tracking-tight">{{ executionTaskDefinition(task).label }}</h3><p class="mt-1 text-sm text-text-muted">{{ executionTaskDefinition(task).description }}</p></div>
           </div>
           <span
             class="self-start px-3 py-1 rounded-full text-xs font-medium border"

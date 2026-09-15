@@ -280,7 +280,10 @@ func validateQuarkImportPayload(payload map[string]any, allowAutofillBinding boo
 func validateTask(taskType string, payload map[string]any) error {
 	switch taskType {
 	case "emby_refresh":
-		_, err := stringPayload(payload, "library_id", false)
+		if _, err := stringPayload(payload, "library_id", false); err != nil {
+			return err
+		}
+		_, err := booleanPayload(payload, "sync_strm", true)
 		return err
 	case "emby_match":
 		if _, err := stringPayload(payload, "item_id", true); err != nil {
@@ -565,22 +568,34 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 			}
 			return map[string]any{"library_id": libraryID, "accepted": true, "completion_tracked": false}, nil
 		}
-		strm, err := s.runSTRMSync(ctx, task, 10, 75)
-		if err != nil {
-			return nil, err
+		syncSTRM, _ := booleanPayload(task.Payload, "sync_strm", true)
+		result := map[string]any{"library_id": "", "accepted": true, "completion_tracked": true}
+		scanStart := 10.0
+		if syncSTRM {
+			strm, err := s.runSTRMSync(ctx, task, 10, 75)
+			if err != nil {
+				return nil, err
+			}
+			result["strm"] = strm
+			scanStart = 80
+		} else {
+			result["strm_sync"] = "skipped"
+			if err := s.db.AppendTaskLog(task.ID, "STRM synchronization skipped for fast Emby refresh"); err != nil {
+				return nil, err
+			}
 		}
-		scan, err := s.embySvc.RunLibraryScanCtx(ctx, s.taskProgress(task.ID, 80, 99))
+		scan, err := s.embySvc.RunLibraryScanCtx(ctx, s.taskProgress(task.ID, scanStart, 99))
 		if err != nil {
 			return nil, err
 		}
 		if err := s.db.AppendTaskLog(task.ID, "Emby full-library scan reached its recorded terminal state"); err != nil {
 			return nil, err
 		}
-		return map[string]any{
-			"strm": strm, "library_id": "", "accepted": true, "completion_tracked": true,
-			"emby_task_id": scan.TaskID, "emby_status": scan.Status,
-			"started_at": scan.StartedAt, "completed_at": scan.CompletedAt,
-		}, nil
+		result["emby_task_id"] = scan.TaskID
+		result["emby_status"] = scan.Status
+		result["started_at"] = scan.StartedAt
+		result["completed_at"] = scan.CompletedAt
+		return result, nil
 	case "emby_match":
 		itemID, _ := stringPayload(task.Payload, "item_id", true)
 		tmdbID, _ := stringPayload(task.Payload, "tmdb_id", true)

@@ -368,6 +368,7 @@ func processConcurrently[T any](ctx context.Context, items []T, process func(con
 				case <-workerCtx.Done():
 					return
 				case item, ok := <-jobs:
+
 					if !ok {
 						return
 					}
@@ -390,6 +391,25 @@ send:
 	close(jobs)
 	workers.Wait()
 	return context.Cause(workerCtx)
+}
+func countSTRMFiles(ctx context.Context, root string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(root, func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.EqualFold(filepath.Ext(entry.Name()), ".strm") {
+			count++
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	return count, err
 }
 
 type strmSyncJob struct {
@@ -505,6 +525,10 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 	jobs := make([]strmSyncJob, 0, 1024)
 	jobIndex := make(map[string]int)
 	var relocations map[string]strmRelocation
+	estimatedMediaFiles, err := countSTRMFiles(ctx, strmBase)
+	if err != nil {
+		return STRMResult{}, err
+	}
 	err = filepath.WalkDir(mediaBase, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -533,8 +557,12 @@ func (s *MediaService) SyncSTRMWithProgress(ctx context.Context, library string,
 			return nil
 		}
 		result.MediaFiles++
-		if result.MediaFiles%1000 == 0 {
-			if err := reportMediaProgress(update, 10, fmt.Sprintf("STRM source scan processed %d media files", result.MediaFiles)); err != nil {
+		if result.MediaFiles%500 == 0 {
+			progress := 10.0
+			if estimatedMediaFiles > 0 {
+				progress = 5 + 24*min(1, float64(result.MediaFiles)/float64(estimatedMediaFiles))
+			}
+			if err := reportMediaProgress(update, progress, fmt.Sprintf("STRM source scan processed %d media files", result.MediaFiles)); err != nil {
 				return err
 			}
 		}

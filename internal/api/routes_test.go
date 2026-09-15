@@ -382,6 +382,20 @@ func TestQuarkImportRejectsArbitraryDestination(t *testing.T) {
 	}
 }
 
+func TestPublicAsyncTaskAlwaysIncludesPayloadObject(t *testing.T) {
+	public := publicAsyncTask(domain.AsyncTask{Type: "emby_refresh"})
+	if public.Payload == nil {
+		t.Fatal("public task payload is nil")
+	}
+	encoded, err := json.Marshal(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"payload":{}`) {
+		t.Fatalf("public task omitted payload object: %s", encoded)
+	}
+}
+
 func TestPublicAsyncTaskMarksAndRedactsAutofillChild(t *testing.T) {
 	task := domain.AsyncTask{Type: "quark_to_115_import", Payload: map[string]any{
 		"parent_task_id": "parent", "share_url": "https://pan.quark.cn/s/secret", "share_password": "password",

@@ -34,7 +34,7 @@ For 115 deletion, first call `mcp_embymedia_c115_request_delete` with one freshl
 
 `mcp_embymedia_task_submit` accepts exactly one of these task types and an object-valued `payload`:
 
-- `emby_refresh`: `{}` or `{"library_id":"..."}`.
+- `emby_refresh`: `{}` performs full STRM reconciliation, target verification, and a tracked Emby scan; `{"sync_strm":false}` runs only the tracked full Emby scan; `{"library_id":"..."}` submits one untracked library refresh.
 - `emby_match`: `{"item_id":"...","tmdb_id":"..."}`.
 - `c115_save_share`: `{"url":"...","password":"...","target_cid":"...","account_id":"..."}`; optional fields may be omitted.
 - `c115_offline_download`: `{"urls":["magnet:..."],"target_cid":"...","account_id":"..."}`.

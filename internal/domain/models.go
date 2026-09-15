@@ -190,7 +190,7 @@ type AsyncTask struct {
 	ID          string         `json:"id"`
 	Type        string         `json:"type"`
 	ScheduleID  string         `json:"schedule_id,omitempty"`
-	Payload     map[string]any `json:"payload,omitempty"`
+	Payload     map[string]any `json:"payload"`
 	Status      string         `json:"status"`
 	Progress    float64        `json:"progress"`
 	Result      string         `json:"result,omitempty"`

@@ -554,6 +554,9 @@ func (s *Server) handleDelete(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"success": true})
 }
 func publicAsyncTask(task domain.AsyncTask) domain.AsyncTask {
+	if task.Payload == nil {
+		task.Payload = map[string]any{}
+	}
 	if task.Type != "quark_to_115_import" {
 		return task
 	}
