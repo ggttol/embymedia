@@ -237,6 +237,8 @@ func TestSeriesAutoFillReportsDuplicateIdentityWithoutGaps(t *testing.T) {
 		switch request.URL.Path {
 		case "/Library/VirtualFolders":
 			_, _ = io.WriteString(response, `[{"Name":"电视剧追更","CollectionType":"tvshows","ItemId":"library"}]`)
+		case "/Items/old/Refresh", "/Items/duplicate/Refresh":
+			response.WriteHeader(http.StatusNoContent)
 		case "/Shows/Missing":
 			_, _ = io.WriteString(response, `{"Items":[],"TotalRecordCount":0}`)
 		case "/Items":

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -436,6 +437,78 @@ func TestSeriesAutoFillTaskCompletesWithFindingsWhenCandidatesAreUnavailable(t *
 	}
 	if stored.Error != "" || outcome.Remaining != 1 || len(outcome.Issues) != 1 || outcome.VerificationComplete || !strings.Contains(outcome.Issues[0], "链接已失效") {
 		t.Fatalf("unavailable candidate did not complete with a finding: task=%+v outcome=%+v", stored, outcome)
+	}
+}
+
+func TestSeriesAutoFillRefreshesSeriesMetadataBeforeMissingScan(t *testing.T) {
+	var calls []string
+	var callsMu sync.Mutex
+	provider := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		callsMu.Lock()
+		calls = append(calls, request.Method+" "+request.URL.Path)
+		callsMu.Unlock()
+		switch {
+		case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/Items/") && strings.HasSuffix(request.URL.Path, "/Refresh"):
+			if request.URL.Query().Get("MetadataRefreshMode") != "FullRefresh" {
+				t.Errorf("refresh did not request full metadata mode: %s", request.URL.RawQuery)
+			}
+			response.WriteHeader(http.StatusNoContent)
+		case request.URL.Path == "/Library/VirtualFolders":
+			_, _ = io.WriteString(response, `[{"Name":"电视剧追更","CollectionType":"tvshows","ItemId":"library"}]`)
+		case request.URL.Path == "/Shows/Missing":
+			callsMu.Lock()
+			refreshed := false
+			for _, call := range calls {
+				if strings.HasSuffix(call, "/Refresh") {
+					refreshed = true
+				}
+			}
+			callsMu.Unlock()
+			if !refreshed {
+				t.Error("missing scan ran before any series metadata refresh")
+			}
+			_, _ = io.WriteString(response, `{"Items":[],"TotalRecordCount":0}`)
+		case request.URL.Path == "/Items":
+			_, _ = io.WriteString(response, `{"Items":[{"Id":"series-1","Name":"交锋","Type":"Series","Path":"/strm/电视剧追更/交锋 (2026)","ProviderIds":{"Tmdb":"294486"}},{"Id":"series-2","Name":"NoIdentity","Type":"Series","Path":"/strm/电视剧追更/NoIdentity"}],"TotalRecordCount":2}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer provider.Close()
+
+	drive, db := newSnapshotTestDrive(t, "0")
+	if err := db.SetSettings(map[string]string{"emby_url": provider.URL, "resource_api_url": provider.URL, "c115_cid_map": `{"电视剧追更":"library-cid"}`}); err != nil {
+		t.Fatal(err)
+	}
+	providerURL, _ := url.Parse(provider.URL)
+	drive.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme, clone.URL.Host = providerURL.Scheme, providerURL.Host
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := queue.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Stop()
+	task, err := queue.Enqueue("series_auto_fill", map[string]any{"libraries": []string{"电视剧追更"}, "transfer": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTaskStatus(t, db, task.ID, "completed")
+	refreshCount := 0
+	callsMu.Lock()
+	defer callsMu.Unlock()
+	for _, call := range calls {
+		if strings.HasSuffix(call, "/Refresh") {
+			refreshCount++
+		}
+	}
+	if refreshCount != 1 {
+		t.Fatalf("expected one TMDB-bound series refresh, got %d from %v", refreshCount, calls)
 	}
 }
 

@@ -660,6 +660,28 @@ func (s *EmbyService) ListAiredMissingEpisodesCtx(ctx context.Context, libraryID
 	return missing, nil
 }
 
+// RefreshSeriesMetadataCtx asks Emby to re-download one Series' provider
+// metadata. Emby's own provider throttling decides whether the request
+// triggers a network fetch, so repeated calls are safe but may be deduped.
+func (s *EmbyService) RefreshSeriesMetadataCtx(ctx context.Context, itemID string) error {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return fmt.Errorf("Emby item ID is required")
+	}
+	query := url.Values{"MetadataRefreshMode": {"FullRefresh"}, "ImageRefreshMode": {"Default"}, "ReplaceAllMetadata": {"false"}}
+	req, err := s.newRequest(ctx, http.MethodPost, "/Items/"+url.PathEscape(itemID)+"/Refresh?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("refresh Emby series metadata: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return requireEmbyResponse(resp, "Emby series metadata refresh")
+}
+
 // ListAiredSeriesEpisodesCtx returns numbered episodes already owned by one Series and released no later than now.
 func (s *EmbyService) ListAiredSeriesEpisodesCtx(ctx context.Context, seriesID string, now time.Time) ([]EmbyMissingEpisode, error) {
 	seriesID = strings.TrimSpace(seriesID)

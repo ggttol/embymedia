@@ -996,23 +996,41 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 		if err := s.db.AppendTaskLog(task.ID, "Auto-fill scanning library "+libraryName); err != nil {
 			return nil, err
 		}
-		missing, err := s.embySvc.ListAiredMissingEpisodesCtx(ctx, library.ID, time.Now())
-		if err != nil {
-			return nil, err
-		}
-		missing = filterAutoFillMissingEpisodes(missing, spec.SeriesIDs)
 		seriesInventory, err := s.embySvc.ListSeriesCtx(ctx, library.ID)
 		if err != nil {
 			return nil, err
 		}
 		seriesByID := make(map[string]domain.EmbyMediaItem, len(seriesInventory))
 		tmdbCounts := make(map[string]int)
+		refreshOrder := make([]string, 0)
 		for _, series := range seriesInventory {
 			seriesByID[series.ID] = series
 			if tmdbID := strings.TrimSpace(series.ProviderIDs["Tmdb"]); tmdbID != "" {
 				tmdbCounts[tmdbID]++
+				refreshOrder = append(refreshOrder, series.ID)
 			}
 		}
+		sort.Strings(refreshOrder)
+		for _, seriesID := range refreshOrder {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if err := s.embySvc.RefreshSeriesMetadataCtx(ctx, seriesID); err != nil {
+				if logErr := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Auto-fill series metadata refresh failed series=%s: %v", seriesID, err)); logErr != nil {
+					return nil, logErr
+				}
+			}
+		}
+		if len(refreshOrder) > 0 {
+			if err := s.db.AppendTaskLog(task.ID, fmt.Sprintf("Auto-fill refreshed series metadata library=%s series=%d", libraryName, len(refreshOrder))); err != nil {
+				return nil, err
+			}
+		}
+		missing, err := s.embySvc.ListAiredMissingEpisodesCtx(ctx, library.ID, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		missing = filterAutoFillMissingEpisodes(missing, spec.SeriesIDs)
 		initialSeriesByLibrary[library.ID] = seriesByID
 		order, gaps, names := gapsBySeries(missing)
 		results = append(results, LibraryAutoFillResult{LibraryID: library.ID, LibraryName: libraryName, MissingCount: len(missing), RemainingCount: len(missing), Series: []SeriesAutoFillResult{}})
