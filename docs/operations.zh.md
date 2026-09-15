@@ -52,6 +52,8 @@ CLOUDDRIVE_IMAGE=repository@sha256:digest docker compose -f /volume1/homes/gaota
 
 安装器只替换 `~/.ssh/authorized_keys` 中的 `embymedia-nas-worker` 条目；该密钥不能分配 PTY、转发端口、使用 agent 或执行任意命令。它唯一的提权能力是一个不带命令参数的准确免密助手：Worker 通过 stdin 传入已验证的相对目标，归 root 所有的助手把所有权修改限制在已配置挂载下一个已存在目录。夸克凭据只在下载操作中经过加密 stdin，不进入参数、NAS 配置、进度输出或日志。传输在 NAS 保存范围检查点与中转文件，发布前计算完整文件 hash，通过 NAS CloudDrive2 挂载直接写入最终目标名称，并等待 Debian 验证准确的 115 父目录、名称、大小与 SHA-1，之后才由独立 commit 请求删除中转文件。绝不要重命名仍在上传的 CloudDrive2 文件：115 会留下一个永远不会结算的 `<name>**..uploading` 对象。当存在此类占位对象且没有已结算对象时，Worker 会重写目标，因为挂载仍会把这个陈旧文件报告为完整大小。SSH 丢失、取消、挂载失败、已有外来同名目标或 provider 状态有歧义都会明确失败并保留可恢复证据。
 
+每个手动提交的夸克导入在 115 身份全部核对后，控制端都会确定性地创建唯一一个 `media_ingest` 接力任务，不需要额外自动计划。只有当编号视频及相关字幕通过标题加年份或 TMDB 证据唯一证明一个现有 Emby Series 时，接力任务才移动这些文件；不支持的文件与有歧义的匹配继续保留在 `_待整理`。随后它同步对应媒体库 STRM，等待 Emby 扫描，并验证已导入且已播出的集号。任务中心把两个持久任务归为一条七阶段流程。重试传输不会重复创建接力；应在合并流程中重试当前失败阶段。
+
 ## 访问
 
 在 `/agent` 创建分别命名的 Agent token，安全保管仅返回一次的明文 secret。主机上的客户端携带 `Authorization: Bearer <token>` 或 `X-Agent-Token: <token>` 连接 `http://127.0.0.1:3080/mcp`。远程访问使用经过身份验证的部署端点与适当受保护的网络路径。明文 HTTP 不会加密传输中的密码或 token。

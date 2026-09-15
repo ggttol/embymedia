@@ -12,6 +12,8 @@ Candidate directions considered:
 
 Ambition: VARIANCE 4 · MOTION 2 · DENSITY 8.
 
+Task Center redesign read: an operations control room for one automated media journey, industrial/editorial language, signature moment: a live seven-stop rail from source proof through Emby verification.
+
 ## Color
 Source: the Warm Paper reference and operational status conventions.
 - background / surface: `#ebe5d6` / `#f8f5eb`
@@ -46,14 +48,15 @@ Source: custom rationale; privacy/performance-preserving local font stacks.
 - Failed reads remain distinct from successful empty results; stale results show their age.
 - Core-service health belongs to the Dashboard summary; the navigation rail contains identity and navigation only, without a second probe or status copy.
 - Automatic episode completion is a locked-scope operations flow: library checkboxes, transfer/preview modes, bounded candidate controls, an explicit destructive completed-pack switch, and a four-stage inspection-to-verification ledger. Replacement state distinguishes staged, retained-old, and completed deletion outcomes.
+- Import executions render as one workflow rather than unrelated jobs: share intake, NAS download, 115 identity check, catalog decision, directory organization, STRM sync, and Emby verification. Each stage exposes observed evidence, current ownership, and the exact stop reason; ambiguous identity is a review state, never a red success.
 - Poster maintenance is presented as one inspect–repair–verify task; completed runs remain warnings when any poster is still missing or a refresh request failed.
 - Metadata repair pairs one confidence statement with a bounded work limit and explicit auto-apply switch; execution cards separate auto-matched, review, and no-candidate outcomes and expose provider candidates progressively.
-- The Task Center places the schedule inventory before execution history. History renders the five newest filtered records first and expands in five-record increments, with an explicit collapse action.
+- The Task Center leads with one automation rail and its current bottleneck, then scheduled policies, then grouped workflow history. Import and post-processing children read as one operation, while raw execution IDs and logs remain available through progressive disclosure.
 - Hourly schedules sort by minute within the Task Center so automatic episode completion, STRM synchronization, and Emby refresh read in execution order. Metadata repair, poster repair, and read-only STRM verification run once daily at 04:10, 04:20, and 04:40.
 - Library artwork uses one 16:9 projection-booth archive system: oversized Chinese titles, a physical media symbol, a library index code, and one continuous film-perforation rail. Each library owns one material color and symbol; copyrighted title art, third-party logos, gradients, and interchangeable media thumbnails are excluded. The `IMAX巨幕` artwork states `高码率 · 大文件` so the display name does not claim that every title is an official IMAX release.
 
 ## Composition
-Persistent navigation → page heading → actionable exceptions and running tasks → compact inventory → secondary trends. Resource workflows preserve search context and name transfer destinations. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options. The library-artwork set forms a horizontal projection-booth index whose film-perforation rail aligns when Emby displays the libraries together; the two追更 libraries lead the sequence.
+Persistent navigation → page heading → live automation rail → policy inventory → grouped workflow history → detailed logs. The rail is the product-specific anchor: one connected rule carries observed transfer, catalog, filesystem, STRM, and Emby states instead of presenting six interchangeable cards. Agent setup prioritizes connection, configuration, and tokens; tool catalogs and audit detail are progressive disclosure. Settings groups connection, paths, and advanced options. The library-artwork set forms a horizontal projection-booth index whose film-perforation rail aligns when Emby displays the libraries together; the two追更 libraries lead the sequence.
 
 ## Motion
 Status pulse and 180ms control transitions only. No scroll reveal. Reduced motion removes pulses/transitions while preserving state.
@@ -62,3 +65,4 @@ Status pulse and 180ms control transitions only. No scroll reveal. Reduced motio
 - ≥1024px: fixed rail and full operations canvas.
 - 640–1023px: compact persistent top navigation.
 - <640px: five persistent destinations (Overview, Search, Files, Tasks, More); secondary destinations open in an accessible dialog. File rows recompose for touch; save and batch-action bars sit above navigation and safe-area insets.
+- Task workflow rail: desktop uses a connected seven-column ledger; narrow layouts use a vertical ordered timeline with the same stage labels, evidence, and actions. No horizontal wheel interception.

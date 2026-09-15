@@ -383,13 +383,23 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 		return nil, err
 	}
 	destinationPath := "/emby/_待整理"
+	result = map[string]any{"destination_cid": destinationCID, "destination_path": destinationPath, "files_completed": len(items), "bytes_completed": totalBytes}
 	if bound {
 		if err := s.finalizeAutofillImport(ctx, c115AccountID, state); err != nil {
 			return nil, err
 		}
 		destinationPath = "/" + filepath.ToSlash(filepath.Join(state.AutofillLibraryName, state.AutofillSeriesFolder))
+		result["destination_path"] = destinationPath
+		result["pipeline_stage"] = "emby_verified"
+		return result, nil
 	}
-	return map[string]any{"destination_cid": destinationCID, "destination_path": destinationPath, "files_completed": len(items), "bytes_completed": totalBytes}, nil
+	ingest, err := s.enqueueMediaIngest(task.ID)
+	if err != nil {
+		return nil, fmt.Errorf("enqueue automatic media ingest: %w", err)
+	}
+	result["pipeline_stage"] = "transfer_verified"
+	result["next_task_id"] = ingest.ID
+	return result, nil
 }
 
 func sameCrossDriveBinding(a, b *domain.CrossDriveImport) bool {

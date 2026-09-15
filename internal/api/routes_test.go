@@ -381,3 +381,19 @@ func TestQuarkImportRejectsArbitraryDestination(t *testing.T) {
 		t.Fatalf("arbitrary destination was accepted: %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestPublicAsyncTaskMarksAndRedactsAutofillChild(t *testing.T) {
+	task := domain.AsyncTask{Type: "quark_to_115_import", Payload: map[string]any{
+		"parent_task_id": "parent", "share_url": "https://pan.quark.cn/s/secret", "share_password": "password",
+		"quark_account_id": "quark", "c115_account_id": "c115",
+	}}
+	public := publicAsyncTask(task)
+	if public.Payload["workflow_kind"] != "autofill_child" {
+		t.Fatalf("public workflow kind = %#v", public.Payload["workflow_kind"])
+	}
+	for _, secret := range []string{"parent_task_id", "share_url", "share_password"} {
+		if _, exposed := public.Payload[secret]; exposed {
+			t.Fatalf("public task exposed %s", secret)
+		}
+	}
+}

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Activity, CalendarClock, FileText, FolderDown, ListTodo, Loader2, Play, Plus, RefreshCcw, RotateCcw, ScanSearch, ShieldCheck, WandSparkles, X } from 'lucide-vue-next'
 import UiDialog from '../components/UiDialog.vue'
 
-type TaskType = 'series_auto_fill' | 'quark_to_115_import' | 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'emby_metadata_repair' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
+type TaskType = 'series_auto_fill' | 'quark_to_115_import' | 'media_ingest' | 'emby_refresh' | 'emby_match' | 'emby_missing_posters' | 'emby_metadata_repair' | 'c115_save_share' | 'c115_offline_download' | 'strm_sync' | 'strm_verify'
 
 interface AsyncTask {
   id: string
@@ -98,7 +98,8 @@ interface TaskDefinition {
 const taskTypeOrder: TaskType[] = ['series_auto_fill', 'emby_metadata_repair', 'emby_missing_posters', 'emby_refresh', 'emby_match', 'strm_sync', 'strm_verify', 'c115_save_share', 'c115_offline_download']
 const taskDefinitions: Record<TaskType, TaskDefinition> = {
   series_auto_fill: { label: '自动补集', description: '只检查“电视剧追更”和“综艺追更”的已播缺集；验证资源内的准确集号后，精确转存到原剧集目录并刷新 Emby。', defaultName: '每日自动补集' },
-  quark_to_115_import: { label: '夸克分享发送到 115', description: '逐文件传输并核对 115 目标；自动补集会绑定到经过验证的剧集目录。', defaultName: '夸克分享发送到 115' },
+  quark_to_115_import: { label: '夸克分享全自动入库', description: 'NAS 直连传输并核对 115；验证完成后自动匹配现有剧集、移动改名、同步 STRM，并扫描复核 Emby。', defaultName: '夸克分享全自动入库' },
+  media_ingest: { label: '自动编排并入库', description: '匹配唯一现有剧集身份，移动并规范化已核对文件，同步 STRM，完成 Emby 扫描后复核集号。', defaultName: '自动编排并入库' },
   emby_refresh: { label: '同步媒体并刷新 Emby', description: '先把网盘视频同步为 STRM，再跟踪 Emby 全库扫描直到结束；指定媒体库 ID 时只提交该库刷新。', defaultName: '每日同步媒体并刷新 Emby' },
   emby_missing_posters: { label: '检查并修复海报', description: '检查没有主海报的电影和剧集，向 Emby 请求完整图片刷新，并复查实际修复结果。', defaultName: '每周检查并修复海报' },
   emby_metadata_repair: { label: '检查并修复元数据', description: '检查缺少 TMDB 身份的电影和剧集；仅自动应用标题、年份、类型唯一一致且不会产生重复条目的候选。', defaultName: '每周检查并修复元数据' },
@@ -186,17 +187,29 @@ const orderedTasks = computed(() => [...tasks.value].sort((left, right) => {
   if (leftMinute !== null && rightMinute !== null) return leftMinute - rightMinute
   return new Date(left.next_run_at || 0).getTime() - new Date(right.next_run_at || 0).getTime()
 }))
-const activeTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'pending' || task.status === 'running').length)
-const completedTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'completed' && !taskHasFindings(task)).length)
-const attentionTaskCount = computed(() => asyncTasks.value.filter((task) => task.status === 'failed' || task.status === 'cancelled' || taskHasFindings(task)).length)
+const workflowRoots = computed(() => asyncTasks.value.filter((task) => task.type !== 'media_ingest' && task.payload?.workflow_kind !== 'autofill_child'))
+function mediaIngestFor(task: AsyncTask) {
+  if (task.type !== 'quark_to_115_import') return undefined
+  return asyncTasks.value.find((candidate) => candidate.type === 'media_ingest' && candidate.payload.source_task_id === task.id)
+}
+function workflowStatus(task: AsyncTask) {
+  const child = mediaIngestFor(task)
+  if (!child || task.status === 'failed' || task.status === 'cancelled') return task.status
+  return child.status
+}
+const activeTaskCount = computed(() => workflowRoots.value.filter((task) => workflowStatus(task) === 'pending' || workflowStatus(task) === 'running').length)
+const completedTaskCount = computed(() => workflowRoots.value.filter((task) => workflowStatus(task) === 'completed' && !taskHasFindings(task)).length)
+const attentionTaskCount = computed(() => workflowRoots.value.filter((task) => ['failed', 'cancelled'].includes(workflowStatus(task)) || taskHasFindings(task)).length)
 const filteredAsyncTasks = computed(() => {
-  if (executionFilter.value === 'running') return asyncTasks.value.filter((t) => t.status === 'pending' || t.status === 'running')
-  if (executionFilter.value === 'completed') return asyncTasks.value.filter((t) => t.status === 'completed' && !taskHasFindings(t))
-  if (executionFilter.value === 'attention') return asyncTasks.value.filter((t) => t.status === 'failed' || t.status === 'cancelled' || taskHasFindings(t))
-  return asyncTasks.value
+  if (executionFilter.value === 'running') return workflowRoots.value.filter((task) => workflowStatus(task) === 'pending' || workflowStatus(task) === 'running')
+  if (executionFilter.value === 'completed') return workflowRoots.value.filter((task) => workflowStatus(task) === 'completed' && !taskHasFindings(task))
+  if (executionFilter.value === 'attention') return workflowRoots.value.filter((task) => ['failed', 'cancelled'].includes(workflowStatus(task)) || taskHasFindings(task))
+  return workflowRoots.value
 })
 const visibleAsyncTasks = computed(() => filteredAsyncTasks.value.slice(0, visibleExecutionLimit.value))
 const hiddenExecutionCount = computed(() => Math.max(0, filteredAsyncTasks.value.length - visibleAsyncTasks.value.length))
+const featuredWorkflow = computed(() => workflowRoots.value.find((task) => task.type === 'quark_to_115_import' && ['pending', 'running'].includes(workflowStatus(task)))
+  ?? workflowRoots.value.find((task) => task.type === 'quark_to_115_import'))
 watch(executionFilter, () => { visibleExecutionLimit.value = executionPageSize })
 
 function showMoreExecutions() {
@@ -350,7 +363,7 @@ function quarkImportProgress(task: AsyncTask) {
 }
 
 function taskProgress(task: AsyncTask) {
-  return task.type === 'quark_to_115_import' ? quarkImportProgress(task) : Math.min(100, Math.max(0, Number(task.progress || 0)))
+  return task.type === 'quark_to_115_import' ? importWorkflowProgress(task) : Math.min(100, Math.max(0, Number(task.progress || 0)))
 }
 
 function quarkCheckpointCounts(task: AsyncTask) {
@@ -377,6 +390,71 @@ function quarkImportVerified(task: AsyncTask) {
   if (!state || state.phase !== 'verified') return false
   const counts = quarkCheckpointCounts(task)
   return counts.remaining === 0 && (Number(state.total_bytes || 0) === 0 || Number(state.completed_bytes || 0) >= Number(state.total_bytes || 0))
+}
+
+type WorkflowStageTone = 'done' | 'active' | 'waiting' | 'attention'
+interface WorkflowStage {
+  key: string
+  label: string
+  detail: string
+  tone: WorkflowStageTone
+  icon: object
+}
+
+function mediaIngestResult(task: AsyncTask) {
+  const child = mediaIngestFor(task)
+  return child ? resultRecord(child) : null
+}
+
+function importWorkflowProgress(task: AsyncTask) {
+  const transfer = quarkImportProgress(task)
+  const child = mediaIngestFor(task)
+  if (!child) return transfer * 0.7
+  return Math.min(100, 70 + Math.min(100, Math.max(0, Number(child.progress || 0))) * 0.3)
+}
+
+function importWorkflowStages(task: AsyncTask): WorkflowStage[] {
+  const state = quarkImportState(task)
+  const child = mediaIngestFor(task)
+  const result = mediaIngestResult(task)
+  const phase = state?.phase || ''
+  const transferPhase = ({ saving_share: 0, discovering: 0, downloading: 1, uploading: 2, verifying: 2, verified: 3 } as Record<string, number>)[phase] ?? 0
+  let current = transferPhase
+  if (quarkImportVerified(task)) {
+    if (!child || child.status === 'pending') current = 3
+    else if (child.status === 'running') {
+      const progress = Number(child.progress || 0)
+      current = progress < 25 ? 3 : progress < 62 ? 4 : progress < 80 ? 5 : 6
+    } else current = 6
+  }
+  const stopped = ['failed', 'cancelled'].includes(workflowStatus(task))
+  const review = child?.status === 'completed' && Number(result?.needs_review || 0) > 0
+  const tones = (index: number): WorkflowStageTone => {
+    if (index < current) return 'done'
+    if (index > current) return 'waiting'
+    if (stopped || (review && index >= 3)) return 'attention'
+    if (workflowStatus(task) === 'completed' && index === 6) return 'done'
+    return 'active'
+  }
+  const counts = quarkCheckpointCounts(task)
+  return [
+    { key: 'source', label: '来源确认', detail: phase === 'saving_share' ? '正在接收分享' : '分享与文件清单已固定', tone: tones(0), icon: ScanSearch },
+    { key: 'transfer', label: 'NAS 直连', detail: `${counts.verified} / ${counts.total} 个文件`, tone: tones(1), icon: FolderDown },
+    { key: 'identity', label: '115 核对', detail: state?.destination_path || '/emby/_待整理', tone: tones(2), icon: ShieldCheck },
+    { key: 'catalog', label: '身份编目', detail: String(result?.series || (child ? '正在匹配现有 Emby 剧集' : '等待自动接力')), tone: tones(3), icon: WandSparkles },
+    { key: 'organize', label: '移动改名', detail: result ? `${Number(result.files_organized || 0)} 个文件 · ${String(result.library || '待确认')}` : '等待唯一身份', tone: tones(4), icon: ListTodo },
+    { key: 'strm', label: 'STRM 同步', detail: result?.library ? String(result.library) : '等待规范目录', tone: tones(5), icon: FileText },
+    { key: 'emby', label: 'Emby 入库', detail: result?.stage === 'verified' ? `${Array.isArray(result.episodes_verified) ? result.episodes_verified.length : 0} 集已复核` : child?.status === 'failed' ? '入库失败' : review ? '需要人工确认' : '等待扫描验证', tone: tones(6), icon: RefreshCcw },
+  ]
+}
+
+function workflowToneClass(tone: WorkflowStageTone) {
+  return {
+    done: 'workflow-stage-done',
+    active: 'workflow-stage-active',
+    waiting: 'workflow-stage-waiting',
+    attention: 'workflow-stage-attention',
+  }[tone]
 }
 
 function autoFillSeriesResults(task: AsyncTask): Record<string, unknown>[] {
@@ -450,11 +528,18 @@ function candidateDecisionLabel(decision: unknown) {
 }
 
 function taskHasFindings(task: AsyncTask) {
+  if (task.type === 'quark_to_115_import') {
+    if (!quarkImportVerified(task)) return task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'
+    const child = mediaIngestFor(task)
+    if (!child) return false
+    if (child.status === 'failed' || child.status === 'cancelled') return true
+    return child.status === 'completed' && Number(resultRecord(child)?.needs_review || 0) > 0
+  }
   if (task.status === 'failed' || task.status === 'cancelled') return true
   if (task.status !== 'completed') return false
-  if (task.type === 'quark_to_115_import') return !quarkImportVerified(task)
   const result = resultRecord(task)
   if (!result) return false
+  if (task.type === 'media_ingest') return Number(result.needs_review || 0) > 0
   if (task.type === 'emby_missing_posters') return Number(result.remaining || 0) > 0 || (Array.isArray(result.failed) && result.failed.length > 0)
   if (task.type === 'emby_metadata_repair') return Number(result.needs_review || 0) > 0 || Number(result.no_match || 0) > 0
   if (task.type === 'series_auto_fill') {
@@ -469,10 +554,21 @@ function taskHasFindings(task: AsyncTask) {
 
 function taskStatusLabel(task: AsyncTask) {
   if (task.type === 'quark_to_115_import') {
-    if (task.status === 'completed' && !quarkImportVerified(task)) return '已结束 · 待核对'
-    if (task.status === 'completed' && quarkImportVerified(task)) return '已完成核对'
-    const state = quarkImportState(task)
-    if (state?.phase) return state.phase === 'verified' && task.status !== 'completed' ? `${statusLabel(task.status)} · 等待任务结束` : importPhaseLabel(state.phase)
+    if (!quarkImportVerified(task)) {
+      if (task.status === 'completed') return '传输结束 · 待核对'
+      const state = quarkImportState(task)
+      return state?.phase ? importPhaseLabel(state.phase) : statusLabel(task.status)
+    }
+    const child = mediaIngestFor(task)
+    if (!child) return '传输已核对 · 等待接力'
+    if (child.status === 'pending') return '等待自动编排'
+    if (child.status === 'running') {
+      const progress = Number(child.progress || 0)
+      return progress < 25 ? '正在匹配媒体身份' : progress < 62 ? '正在移动并改名' : progress < 80 ? '正在同步 STRM' : '正在扫描并复核 Emby'
+    }
+    if (child.status === 'failed') return '自动入库失败'
+    if (child.status === 'cancelled') return '自动入库已取消'
+    return Number(resultRecord(child)?.needs_review || 0) > 0 ? '自动完成 · 有待确认项' : '全流程完成'
   }
   return task.status === 'completed' && taskHasFindings(task) ? '已完成 · 有发现' : statusLabel(task.status)
 }
@@ -507,12 +603,23 @@ function resultSummary(task: AsyncTask) {
       const strm = typeof result.strm === 'object' && result.strm !== null ? result.strm as Record<string, unknown> : null
       return strm ? `有效 ${Number(strm.valid || 0)} · 缺失 ${Number(strm.missing || 0)} · 无效 ${Number(strm.invalid || 0)}${Number(strm.removed || 0) > 0 || Number(strm.removed_directories || 0) > 0 ? ` · 已清理 ${Number(strm.removed || 0)} 个旧 STRM 和 ${Number(strm.removed_directories || 0)} 个空目录` : ''}` : 'STRM 操作已完成。'
     }
+    case 'media_ingest':
+      return result.stage === 'verified'
+        ? `已将 ${Number(result.files_organized || 0)} 个文件编排到 ${String(result.library || '')} / ${String(result.series || '')}，并核对 ${Array.isArray(result.episodes_verified) ? result.episodes_verified.length : 0} 集。`
+        : `自动编目结束，${Number(result.needs_review || 0)} 项需要确认；原文件保持在 _待整理。`
     case 'quark_to_115_import': {
       const state = quarkImportState(task)
       const files = Number(state?.completed_files ?? result.files_completed ?? 0)
       const bytes = Number(state?.completed_bytes ?? result.bytes_completed ?? 0)
-      const destination = String(state?.destination_path || result.destination_path || '/emby/_待整理')
-      return `${state ? importPhaseLabel(state.phase) : '等待详细核对'}：已核对 ${files} 个文件、${formatBytes(bytes)}，目标目录 ${destination}。`
+      const child = mediaIngestFor(task)
+      const childResult = child ? resultRecord(child) : null
+      if (child?.status === 'completed' && childResult?.stage === 'verified') {
+        return `全流程完成：传输核对 ${files} 个文件、${formatBytes(bytes)}；编排 ${Number(childResult.files_organized || 0)} 个文件至 ${String(childResult.library || '')} / ${String(childResult.series || '')}，Emby 已复核。`
+      }
+      if (child?.status === 'completed' && Number(childResult?.needs_review || 0) > 0) {
+        return `传输核对完成；自动编目有 ${Number(childResult?.needs_review || 0)} 项待确认，文件安全保留在 _待整理。`
+      }
+      return `${state ? importPhaseLabel(state.phase) : '等待详细核对'}：已核对 ${files} 个文件、${formatBytes(bytes)}；${child ? taskStatusLabel(task) : '等待自动接力'}。`
     }
     default: return '任务已保存执行结果。'
   }
@@ -541,6 +648,15 @@ function scheduleName(task: AsyncTask) {
 
 function activeExecution(schedule: ScheduledTask) {
   return asyncTasks.value.find((task) => (task.schedule_id === schedule.id || task.id === schedule.result) && (task.status === 'pending' || task.status === 'running'))
+}
+
+function workflowActionTask(task: AsyncTask) {
+  const child = mediaIngestFor(task)
+  return child && task.status === 'completed' ? child : task
+}
+
+function workflowError(task: AsyncTask) {
+  return workflowActionTask(task).error || task.error || ''
 }
 
 function userError(error?: string) {
@@ -574,6 +690,7 @@ function taskSummary(type: string, payload: Record<string, unknown> = {}) {
     case 'c115_save_share': return `分享链接：${payload.url || '未填写'}${payload.target_cid ? ` · 保存到 CID ${payload.target_cid}` : ''}`
     case 'c115_offline_download': return `${Array.isArray(payload.urls) ? payload.urls.length : 0} 个下载地址${payload.target_cid ? ` · 保存到 CID ${payload.target_cid}` : ''}`
     case 'quark_to_115_import': return `夸克目录：${String(payload.quark_target_id || '未知')} · 115 固定目标：/emby/_待整理`
+    case 'media_ingest': return `来源导入：${String(payload.source_task_id || '未知')}`
     default: return '没有可显示的任务信息'
   }
 }
@@ -614,7 +731,8 @@ function buildPayload(): Record<string, unknown> {
         ...(form.target_cid.trim() ? { target_cid: form.target_cid.trim() } : {}),
         ...(form.account_id.trim() ? { account_id: form.account_id.trim() } : {}),
       }
-    case 'quark_to_115_import': throw new Error('请从“网盘文件”提交夸克分享导入。')
+    case 'quark_to_115_import':
+    case 'media_ingest': throw new Error('自动入库由已完成的夸克导入内部接力创建。')
     case 'c115_offline_download': {
       const urls = form.urls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
       if (urls.length === 0) throw new Error('请至少填写一个下载地址。')
@@ -936,10 +1054,11 @@ async function createSchedule() {
 }
 
 function asyncTone(task: AsyncTask) {
-  if (task.status === 'completed' && taskHasFindings(task)) return 'bg-warn'
-  if (task.status === 'completed') return 'bg-ok'
-  if (task.status === 'running') return 'bg-warn animate-pulse'
-  if (task.status === 'failed' || task.status === 'cancelled') return 'bg-danger'
+  const status = workflowStatus(task)
+  if (status === 'completed' && taskHasFindings(task)) return 'bg-warn'
+  if (status === 'completed') return 'bg-ok'
+  if (status === 'running') return 'bg-warn animate-pulse'
+  if (status === 'failed' || status === 'cancelled') return 'bg-danger'
   return 'bg-text-faint'
 }
 
@@ -961,9 +1080,9 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
   <div class="task-center-page space-y-7 max-w-6xl">
     <header class="flex flex-col sm:flex-row sm:items-end justify-between gap-5 pb-7 border-b border-border">
       <div class="max-w-2xl">
-        <p class="text-[10px] font-mono font-bold tracking-[0.18em] text-annotation mb-2">AUTOMATION / EXECUTION HISTORY</p>
+        <p class="text-[10px] font-mono font-bold tracking-[0.18em] text-annotation mb-2">AUTOMATION CONTROL ROOM</p>
         <h1 class="font-serif text-3xl font-bold text-text">任务中心</h1>
-        <p class="text-sm text-text-muted mt-2">创建自动任务，查看每次执行结果，并处理失败或仍在运行的工作。</p>
+        <p class="text-sm text-text-muted mt-2">从分享、NAS 直连、115 编排、STRM 到 Emby 复核，按一个完整流程追踪。</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button type="button" @click="showScheduleForm = !showScheduleForm" :disabled="savingSchedule" class="flex min-h-11 items-center gap-2 px-4 border border-accent bg-accent text-xs font-medium text-accent-contrast disabled:opacity-50">
@@ -974,6 +1093,24 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         </button>
       </div>
     </header>
+
+    <section v-if="featuredWorkflow" class="workflow-ledger" aria-labelledby="workflow-heading">
+      <header class="workflow-ledger-header">
+        <div>
+          <p class="workflow-kicker">LIVE AUTOMATION RAIL</p>
+          <h2 id="workflow-heading" class="font-serif text-xl font-semibold text-text">全自动媒体接力</h2>
+          <p class="mt-1 text-xs text-text-muted">{{ taskStatusLabel(featuredWorkflow) }} · 执行 {{ featuredWorkflow.id }}</p>
+        </div>
+        <strong class="workflow-percent">{{ Math.round(importWorkflowProgress(featuredWorkflow)) }}%</strong>
+      </header>
+      <ol class="workflow-rail">
+        <li v-for="(stage, index) in importWorkflowStages(featuredWorkflow)" :key="stage.key" class="workflow-stage" :class="workflowToneClass(stage.tone)">
+          <div class="workflow-stage-marker"><component :is="stage.icon" aria-hidden="true" /><span>{{ String(index + 1).padStart(2, '0') }}</span></div>
+          <div><strong>{{ stage.label }}</strong><small>{{ stage.detail }}</small></div>
+        </li>
+      </ol>
+      <div class="workflow-progress" aria-hidden="true"><span :style="{ width: `${importWorkflowProgress(featuredWorkflow)}%` }"></span></div>
+    </section>
 
     <div class="flex flex-wrap items-center gap-2 p-1.5 rounded-2xl border border-border/80 bg-surface/80 backdrop-blur-xs shadow-xs">
       <button
@@ -1167,11 +1304,11 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           <span
             class="self-start px-3 py-1 rounded-full text-xs font-medium border"
             :class="{
-              'bg-[#edf4ee] text-[#2e5e43] border-[#d3e3d7]': task.status === 'completed' && !taskHasFindings(task),
-              'bg-[#f8f3ec] text-[#9b6228] border-[#ebd8bc]': task.status === 'running',
-              'bg-[#faf3e8] text-[#9b6826] border-[#ebd8bc]': task.status === 'completed' && taskHasFindings(task),
-              'bg-[#faeeee] text-[#9e3939] border-[#f3d3d3]': task.status === 'failed' || task.status === 'cancelled',
-              'bg-[#f4f2ee] text-[#78726b] border-[#e2ded6]': task.status === 'pending'
+              'bg-[#edf4ee] text-[#2e5e43] border-[#d3e3d7]': workflowStatus(task) === 'completed' && !taskHasFindings(task),
+              'bg-[#f8f3ec] text-[#9b6228] border-[#ebd8bc]': workflowStatus(task) === 'running',
+              'bg-[#faf3e8] text-[#9b6826] border-[#ebd8bc]': workflowStatus(task) === 'completed' && taskHasFindings(task),
+              'bg-[#faeeee] text-[#9e3939] border-[#f3d3d3]': workflowStatus(task) === 'failed' || workflowStatus(task) === 'cancelled',
+              'bg-[#f4f2ee] text-[#78726b] border-[#e2ded6]': workflowStatus(task) === 'pending'
             }"
           >
             {{ taskStatusLabel(task) }}
@@ -1183,14 +1320,14 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           <div class="text-xs font-mono text-text-faint sm:text-right"><span class="block">入队：{{ formatTime(task.created_at) }}</span><span class="block mt-1">更新：{{ formatTime(task.updated_at) }}</span></div>
         </div>
 
-        <div v-if="task.status === 'running' || taskProgress(task) > 0 || (task.type === 'quark_to_115_import' && quarkImportState(task))" class="flex items-center gap-3">
+        <div v-if="workflowStatus(task) === 'running' || taskProgress(task) > 0 || (task.type === 'quark_to_115_import' && quarkImportState(task))" class="flex items-center gap-3">
           <div class="flex-1 h-2 rounded-full bg-bg-muted/80 p-0.5 border border-border/40 overflow-hidden">
             <div
               class="h-full rounded-full transition-all duration-300"
               :class="{
-                'progress-streamer-danger bg-danger': task.status === 'failed',
+                'progress-streamer-danger bg-danger': workflowStatus(task) === 'failed',
                 'progress-streamer-warn bg-warn': taskHasFindings(task),
-                'progress-streamer bg-accent': task.status !== 'failed' && !taskHasFindings(task)
+                'progress-streamer bg-accent': workflowStatus(task) !== 'failed' && !taskHasFindings(task)
               }"
               :style="{ width: taskProgress(task) + '%' }"
             ></div>
@@ -1213,7 +1350,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
             <div class="h-2 overflow-hidden rounded-full border border-border/40 bg-bg-muted/80" role="progressbar" aria-label="当前文件下载进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(quarkDownloadProgress(task))"><div class="h-full rounded-full bg-accent transition-[width] duration-300" :style="{ width: `${quarkDownloadProgress(task)}%` }"></div></div>
             <p class="font-mono text-[11px] text-text-faint">{{ formatBytes(Number(quarkActiveDownload(task)?.downloaded_bytes || 0)) }} / {{ formatBytes(Number(quarkActiveDownload(task)?.size || 0)) }} · {{ quarkDownloadProgress(task).toFixed(1) }}%</p>
           </div>
-          <p v-else class="text-xs text-text-muted">当前文件：{{ quarkImportState(task)?.current_file || (quarkImportState(task)?.phase === 'verified' ? '全部文件已完成核对' : '等待 worker 更新') }}</p>
+          <p v-else class="text-xs text-text-muted break-all">当前文件：{{ quarkImportState(task)?.current_file || (quarkImportState(task)?.phase === 'verified' ? '全部文件已完成核对' : '等待 worker 更新') }}</p>
           <p v-if="quarkImportState(task)?.destination_cid" class="text-xs text-text-faint">目标：{{ quarkImportState(task)?.destination_path || '/emby/_待整理' }} · CID {{ quarkImportState(task)?.destination_cid }}</p>
           <p v-if="quarkDetailErrors[task.id]" role="status" class="rounded-lg border border-warn/30 bg-warn/5 p-2.5 text-xs text-warn">详细检查点暂时读取失败，保留上次任务状态；不会重复提交：{{ quarkDetailErrors[task.id] }}</p>
           <p v-if="task.status === 'failed' || task.status === 'cancelled'" class="text-xs text-text-muted">本次没有声明全部文件已核对；点击“重新执行”后将沿用已协调的检查点。</p>
@@ -1221,7 +1358,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           <p v-if="task.attempts || task.max_attempts" class="text-xs text-text-faint">执行尝试：{{ task.attempts }} / {{ task.max_attempts }}<span v-if="quarkImportState(task)?.prior_task_id"> · 来源检查点：{{ quarkImportState(task)?.prior_task_id }}</span></p>
         </section>
 
-        <div v-if="task.error" class="p-3.5 rounded-xl border border-danger/30 bg-danger/5 text-sm text-danger">{{ userError(task.error) }}</div>
+        <div v-if="workflowError(task)" class="p-3.5 rounded-xl border border-danger/30 bg-danger/5 text-sm text-danger break-words">{{ userError(workflowError(task)) }}</div>
 
         <div v-if="task.result" class="p-3.5 rounded-xl border text-sm" :class="taskHasFindings(task) ? 'border-warn/30 bg-warn/5' : 'border-ok/30 bg-ok/5'">
           <p class="font-medium" :class="taskHasFindings(task) ? 'text-warn' : 'text-ok'">{{ resultSummary(task) }}</p>
@@ -1278,11 +1415,15 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
           </div>
           <details class="mt-2"><summary class="min-h-11 cursor-pointer py-2 text-xs text-text-muted hover:text-text">查看完整执行结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-bg p-3 font-mono text-xs">{{ resultDetails(task) }}</pre></details>
         </div>
+        <div v-if="task.type === 'quark_to_115_import' && mediaIngestFor(task)?.result" class="p-3.5 rounded-xl border text-sm" :class="taskHasFindings(task) ? 'border-warn/30 bg-warn/5' : 'border-ok/30 bg-ok/5'">
+          <p class="font-medium" :class="taskHasFindings(task) ? 'text-warn' : 'text-ok'">{{ resultSummary(mediaIngestFor(task)!) }}</p>
+          <details class="mt-2"><summary class="min-h-11 cursor-pointer py-2 text-xs text-text-muted hover:text-text">查看自动入库结果</summary><pre class="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-bg p-3 font-mono text-xs">{{ resultDetails(mediaIngestFor(task)!) }}</pre></details>
+        </div>
 
         <div class="flex flex-wrap gap-2 pt-1">
           <button type="button" :disabled="runsLoading[task.id]" :aria-expanded="Boolean(taskRuns[task.id])" class="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-border/80 bg-surface px-3.5 text-xs font-medium hover:bg-bg-muted disabled:opacity-50 transition-colors" @click="toggleTaskRuns(task.id)"><Loader2 v-if="runsLoading[task.id]" class="w-3.5 h-3.5 animate-spin" /><FileText v-else class="w-3.5 h-3.5" />{{ runsLoading[task.id] ? '正在读取记录' : taskRuns[task.id] ? '收起执行记录' : runsErrors[task.id] ? '重试读取记录' : '查看执行记录' }}</button>
-          <button v-if="task.status === 'pending' || task.status === 'running'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-10 rounded-xl border border-danger/40 px-3.5 text-xs font-medium text-danger hover:bg-danger/5 disabled:opacity-50 transition-colors" @click="cancelTask(task)">{{ actionBusyId === task.id ? '正在提交' : '停止任务' }}</button>
-          <button v-if="task.status === 'failed' || task.status === 'cancelled'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-10 rounded-xl border border-accent px-3.5 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-50 transition-colors" @click="openRetry(task)">重新执行</button>
+          <button v-if="workflowActionTask(task).status === 'pending' || workflowActionTask(task).status === 'running'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-10 rounded-xl border border-danger/40 px-3.5 text-xs font-medium text-danger hover:bg-danger/5 disabled:opacity-50 transition-colors" @click="cancelTask(workflowActionTask(task))">{{ actionBusyId === workflowActionTask(task).id ? '正在提交' : '停止当前阶段' }}</button>
+          <button v-if="workflowActionTask(task).status === 'failed' || workflowActionTask(task).status === 'cancelled'" type="button" :disabled="Boolean(actionBusyId)" class="min-h-10 rounded-xl border border-accent px-3.5 text-xs font-medium text-accent hover:bg-accent/5 disabled:opacity-50 transition-colors" @click="openRetry(workflowActionTask(task))">重新执行当前阶段</button>
         </div>
         <p v-if="taskErrors[task.id]" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ taskErrors[task.id] }}</p>
         <p v-if="runsErrors[task.id]" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">{{ runsErrors[task.id] }}</p>
@@ -1323,6 +1464,29 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
 
 <style scoped>
 .task-center-page { padding-bottom: max(10rem, 18vh); }
+.workflow-ledger { overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); background: var(--surface); box-shadow: inset 4px 0 0 var(--accent); }
+.workflow-ledger-header { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border); }
+.workflow-kicker { margin-bottom: 5px; color: var(--annotation); font: 700 10px/1.4 "SFMono-Regular", Consolas, monospace; letter-spacing: .16em; }
+.workflow-percent { color: var(--accent); font: 500 clamp(32px, 6vw, 64px)/.9 "SFMono-Regular", Consolas, monospace; letter-spacing: -.08em; }
+.workflow-rail { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; }
+.workflow-stage { position: relative; min-width: 0; padding: 15px 13px 18px; border-right: 1px solid var(--border); }
+.workflow-stage:last-child { border-right: 0; }
+.workflow-stage::after { position: absolute; right: -1px; bottom: 0; left: 0; height: 3px; background: var(--border); content: ""; }
+.workflow-stage-marker { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 15px; }
+.workflow-stage-marker svg { width: 18px; height: 18px; }
+.workflow-stage-marker span { color: var(--text-faint); font: 700 10px/1 "SFMono-Regular", Consolas, monospace; letter-spacing: .08em; }
+.workflow-stage strong, .workflow-stage small { display: block; }
+.workflow-stage strong { font-size: 13px; font-weight: 650; color: var(--text); }
+.workflow-stage small { margin-top: 5px; overflow-wrap: anywhere; font-size: 10px; line-height: 1.45; color: var(--text-faint); }
+.workflow-stage-done { color: var(--ok); background: color-mix(in srgb, var(--ok) 4%, var(--surface)); }
+.workflow-stage-done::after { background: var(--ok); }
+.workflow-stage-active { color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.workflow-stage-active::after { background: var(--annotation); }
+.workflow-stage-attention { color: var(--danger); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); }
+.workflow-stage-attention::after { background: var(--danger); }
+.workflow-stage-waiting { color: var(--text-faint); }
+.workflow-progress { height: 4px; background: var(--bg-muted); }
+.workflow-progress span { display: block; height: 100%; background: var(--accent); transition: width 300ms ease; }
 .task-list-end { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-faint); }
 .task-list-end span { font: 700 10px/1.4 "SFMono-Regular", Consolas, monospace; letter-spacing: .14em; }
 .task-list-end strong { font-size: 12px; font-weight: 500; }
@@ -1364,6 +1528,15 @@ section > details:not([open]) > :not(summary) { display: none; }
 .auto-fill-flow svg { width: 17px; height: 17px; flex: none; color: var(--accent); }
 .auto-fill-flow b { display: block; margin-bottom: 2px; color: var(--annotation); font: 700 10px/1.2 "SFMono-Regular", Consolas, monospace; letter-spacing: .1em; }
 @media (max-width: 639px) { .auto-fill-flow { grid-template-columns: 1fr 1fr; } .auto-fill-flow li:nth-child(3) { border-left: 0; } .auto-fill-flow li:nth-child(n+3) { border-top: 1px solid var(--border); } }
-@media (prefers-reduced-motion: reduce) { .auto-fill-mode { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .auto-fill-mode, .workflow-progress span { transition: none; } }
+@media (max-width: 900px) {
+  .workflow-ledger-header { align-items: center; }
+  .workflow-percent { font-size: 34px; }
+  .workflow-rail { grid-template-columns: 1fr; }
+  .workflow-stage { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 12px; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .workflow-stage:last-child { border-bottom: 0; }
+  .workflow-stage::after { top: 0; right: auto; bottom: 0; width: 3px; height: auto; }
+  .workflow-stage-marker { margin: 0; align-items: start; }
+}
 @media (max-width: 639px) { .task-center-page { padding-bottom: 6rem; } .task-list-end { align-items: flex-start; flex-direction: column; gap: 6px; } }
 </style>

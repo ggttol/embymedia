@@ -557,7 +557,10 @@ func publicAsyncTask(task domain.AsyncTask) domain.AsyncTask {
 	if task.Type != "quark_to_115_import" {
 		return task
 	}
-	payload := make(map[string]any, len(task.Payload))
+	payload := make(map[string]any, len(task.Payload)+1)
+	if parent, ok := task.Payload["parent_task_id"].(string); ok && strings.TrimSpace(parent) != "" {
+		payload["workflow_kind"] = "autofill_child"
+	}
 	for key, value := range task.Payload {
 		if publicTaskPayloadKey(key) {
 			continue

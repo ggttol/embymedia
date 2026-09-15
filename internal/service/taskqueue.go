@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ var supportedTaskTypes = []string{
 	"emby_missing_posters",
 	"emby_metadata_repair",
 	"series_auto_fill",
+	"media_ingest",
 	"strm_sync",
 	"strm_verify",
 }
@@ -328,6 +330,9 @@ func validateTask(taskType string, payload map[string]any) error {
 			}
 		}
 		return nil
+	case "media_ingest":
+		_, err := stringPayload(payload, "source_task_id", true)
+		return err
 	case "quark_to_115_import":
 		return validateQuarkImportPayload(payload, false)
 	case "strm_sync", "strm_verify":
@@ -369,6 +374,31 @@ func (s *TaskQueueService) enqueueAutofillQuarkImport(payload map[string]any) (*
 		return nil, err
 	}
 	return s.persistTask("quark_to_115_import", payload, "")
+}
+
+func (s *TaskQueueService) enqueueMediaIngest(sourceTaskID string) (*domain.AsyncTask, error) {
+	sourceTaskID = strings.TrimSpace(sourceTaskID)
+	if sourceTaskID == "" {
+		return nil, fmt.Errorf("source_task_id is required")
+	}
+	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("media-ingest:"+sourceTaskID)).String()
+	if existing, err := s.db.GetAsyncTask(id); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	now := time.Now()
+	task := &domain.AsyncTask{
+		ID: id, Type: "media_ingest", Payload: map[string]any{"source_task_id": sourceTaskID},
+		Status: "pending", MaxAttempts: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.db.CreateAsyncTask(task); err != nil {
+		if existing, readErr := s.db.GetAsyncTask(id); readErr == nil {
+			return existing, nil
+		}
+		return nil, err
+	}
+	return task, nil
 }
 
 func (s *TaskQueueService) persistTask(taskType string, payload map[string]any, scheduleID string) (*domain.AsyncTask, error) {
@@ -582,6 +612,8 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 		return map[string]any{"scanned": repair.Scanned, "missing_identity": repair.MissingIdentity, "processed": repair.Processed, "auto_matched": repair.AutoMatched, "needs_review": repair.NeedsReview, "no_match": repair.NoMatch, "items": repair.Items}, nil
 	case "series_auto_fill":
 		return s.runSeriesAutoFill(ctx, task)
+	case "media_ingest":
+		return s.runMediaIngest(ctx, task)
 	case "c115_save_share":
 		rawURL, _ := stringPayload(task.Payload, "url", true)
 		password, _ := stringPayload(task.Payload, "password", false)

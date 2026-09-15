@@ -14,6 +14,8 @@ EmbyMedia 2.1.0 is a self-hosted Go and Vue operations system for Emby, CloudDri
 - STRM synchronization and containment-aware target verification.
 - Persistent task, schedule, execution-attempt, cancellation, retry, and audit state, including automatic aired-episode completion restricted to the `电视剧追更` and `综艺追更` libraries.
 - Credential configured/writable status without revealing stored values.
+- Quark imports may use the direct-connected NAS worker for proxy-free ranged downloads and CloudDrive2-backed 115 publication; every imported file is verified by 115 parent, name, size, and SHA-1 before the transfer stage completes.
+- A completed manual Quark import may continue into an automatic catalog pipeline only when one existing Emby Series is uniquely proven by its canonical/original title, year or TMDB evidence, and numbered episode files. The pipeline moves verified objects into that Series directory, preserves safe alternate versions, synchronizes STRM, runs a tracked Emby scan, and verifies imported episodes.
 - Agent integration through authenticated Streamable HTTP MCP, loopback legacy SSE, stdio MCP, and OpenAPI 3.1. Thirty-four MCP tools expose account/stored-file/share/offline discovery, Emby item/session discovery, task and schedule lifecycle, provider writes, validated settings updates, and system health.
 - Autonomous tokens default to read/write access and 120 requests per minute. Non-destructive 115, Emby, CloudDrive, STRM, task, settings, schedule, and Agent-token operations do not require per-action confirmation.
 - Session-backed user administration: create users, enable or disable access, reset passwords, assign administrator or operator status, and terminate the current browser session.
@@ -28,6 +30,7 @@ EmbyMedia 2.1.0 is a self-hosted Go and Vue operations system for Emby, CloudDri
 - UI improvements retain the current routes, provider operations, Chinese interface, Warm Paper palette, and login proxy; they do not introduce dark mode, TLS changes, or synthetic operational success.
 - Transfer destinations use a consistent browser preference; resource return navigation preserves search context. Favorites removal supports undo within the browser.
 - Automatic episode completion requires one unique TMDB-bound Emby Series and one exact same-name 115 Series folder; ambiguous identity, future or unnumbered episodes, unsupported filenames, unavailable candidates, and unverified post-scan gaps remain visible findings. Completed-pack replacement stages a distinct root and keeps the old root unless the new Series passes full episode, path, and TMDB verification.
+- Automatic cataloging must fail closed: ambiguous Series matches, title/year disagreement, unnumbered video, foreign same-name targets, unsupported media, or destination identity drift remains in `_待整理` as an operator-visible finding. No heuristic is allowed to claim a successful move, rename, or Emby ingest.
 
 ## Missing facts
 - No supplied product logo beyond the current EmbyMedia mark.
