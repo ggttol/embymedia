@@ -15,7 +15,7 @@ COPY internal/ ./internal/
 COPY --from=web-builder /app/web/dist ./cmd/server/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /embymedia ./cmd/server
 
-FROM alpine:3.23
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata curl \
     && addgroup -S -g 10001 embymedia \
     && adduser -S -D -H -u 10001 -G embymedia embymedia \
