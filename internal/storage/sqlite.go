@@ -274,6 +274,20 @@ func (d *DB) migrate() error {
 		password TEXT,
 		saved_at DATETIME
 	);
+	CREATE TABLE IF NOT EXISTS share_subscriptions (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		provider TEXT NOT NULL,
+		url TEXT NOT NULL,
+		password TEXT NOT NULL DEFAULT '',
+		target_cid TEXT NOT NULL,
+		active BOOLEAN NOT NULL DEFAULT 1,
+		last_cursor_time DATETIME NOT NULL DEFAULT '0001-01-01 00:00:00Z',
+		last_error TEXT,
+		last_sync_at DATETIME,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);
 	`
 
 	if _, err := d.db.Exec(schema); err != nil {

@@ -20,6 +20,7 @@ const taskPollInterval = 500 * time.Millisecond
 
 var supportedTaskTypes = []string{
 	"c115_offline_download",
+	"share_auto_sync",
 	"c115_save_share",
 	"quark_to_115_import",
 	"emby_match",
@@ -290,6 +291,9 @@ func validateTask(taskType string, payload map[string]any) error {
 			return err
 		}
 		_, err := stringPayload(payload, "tmdb_id", true)
+		return err
+	case "share_auto_sync":
+		_, err := stringPayload(payload, "subscription_id", true)
 		return err
 	case "emby_missing_posters":
 		return nil
@@ -625,6 +629,8 @@ func (s *TaskQueueService) run(ctx context.Context, task domain.AsyncTask) (map[
 			return nil, err
 		}
 		return map[string]any{"scanned": repair.Scanned, "missing_identity": repair.MissingIdentity, "processed": repair.Processed, "auto_matched": repair.AutoMatched, "needs_review": repair.NeedsReview, "no_match": repair.NoMatch, "items": repair.Items}, nil
+	case "share_auto_sync":
+		return s.runShareAutoSync(ctx, task)
 	case "series_auto_fill":
 		return s.runSeriesAutoFill(ctx, task)
 	case "media_ingest":

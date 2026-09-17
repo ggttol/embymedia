@@ -147,6 +147,14 @@ func openAPISchema() map[string]any {
 			"quark_account_id": accountID, "quark_target_id": stringSchema("Quark directory ID"), "share_url": stringSchema("Quark share URL"), "share_password": stringSchema("Optional share password"), "c115_account_id": stringSchema("Optional 115 account; default is used when omitted"),
 		}))},
 		"/api/v1/quark/share-imports/{task_id}": map[string]any{"get": apiOperation("getQuarkShareImport", "Read structured Quark-to-115 import progress", []any{pathParameter("task_id", "Import task ID")}, nil)},
+		"/api/v1/share-subscriptions": map[string]any{
+			"get":  apiOperation("listShareSubscriptions", "List configured share auto-sync subscriptions", []any{queryParameter("active_only", "Only active subscriptions", false)}, nil),
+			"post": apiOperation("createShareSubscription", "Create subscription", nil, schemaObject([]string{"name", "provider", "url", "target_cid"}, map[string]any{"name": stringSchema(""), "provider": stringSchema("115 or quark"), "url": stringSchema(""), "password": stringSchema(""), "target_cid": stringSchema("")})),
+		},
+		"/api/v1/share-subscriptions/{id}": map[string]any{
+			"put":    apiOperation("updateShareSubscription", "Update subscription", []any{pathParameter("id", "ID")}, schemaObject([]string{"name", "provider", "url", "target_cid", "active"}, map[string]any{"name": stringSchema(""), "provider": stringSchema(""), "url": stringSchema(""), "password": stringSchema(""), "target_cid": stringSchema(""), "active": map[string]any{"type": "boolean"}})),
+			"delete": apiOperation("deleteShareSubscription", "Delete subscription", []any{pathParameter("id", "ID")}, nil),
+		},
 		"/api/v1/settings": map[string]any{
 			"get":  apiOperation("getSettings", "Read redacted settings and live dependency health", nil, nil),
 			"post": apiOperation("updateSettings", "Atomically update validated settings", nil, map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}}),

@@ -125,6 +125,12 @@ func (s *Server) registerRoutes() {
 	v1.POST("/quark/share-imports", s.handleCreateQuarkShareImport)
 	v1.GET("/quark/share-imports/:task_id", s.handleGetQuarkShareImport)
 
+	// Share Subscriptions
+	v1.GET("/share-subscriptions", s.handleListShareSubscriptions)
+	v1.POST("/share-subscriptions", s.handleCreateShareSubscription)
+	v1.PUT("/share-subscriptions/:id", s.handleUpdateShareSubscription)
+	v1.DELETE("/share-subscriptions/:id", s.handleDeleteShareSubscription)
+
 	// Settings & Agent Tokens
 	v1.GET("/settings", s.handleGetSettings)
 	v1.POST("/settings", s.handleUpdateSettings)

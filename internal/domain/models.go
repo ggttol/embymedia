@@ -154,6 +154,22 @@ type HomeSummary struct {
 	LastUpdated  string `json:"last_updated"`
 }
 
+// ShareSubscription represents an automated sync subscription to a cloud drive share link
+type ShareSubscription struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Provider       string    `json:"provider"`
+	URL            string    `json:"url"`
+	Password       string    `json:"password"`
+	TargetCID      string    `json:"target_cid"`
+	Active         bool      `json:"active"`
+	LastCursorTime time.Time `json:"last_cursor_time"`
+	LastError      string    `json:"last_error,omitempty"`
+	LastSyncAt     time.Time `json:"last_sync_at,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // ScheduledTask represents an async background task or recurring job
 type ScheduledTask struct {
 	ID        string     `json:"id"`

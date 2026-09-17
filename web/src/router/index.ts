@@ -57,6 +57,11 @@ const router = createRouter({
 		name: 'users',
 		component: UsersView,
 	},
+	{
+		path: '/subscriptions',
+		name: 'subscriptions',
+		component: () => import('../views/SubscriptionsView.vue'),
+	},
     {
       path: '/:pathMatch(.*)*',
       redirect: '/',
