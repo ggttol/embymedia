@@ -39,6 +39,7 @@ const baseNavItems = [
   { name: '任务', desktopName: '任务中心', path: '/tasks', icon: ListTodo },
   { name: '智能体', desktopName: '智能体接入', path: '/agent', icon: Bot },
   { name: '设置', desktopName: '系统设置', path: '/settings', icon: Settings },
+  { name: '订阅', desktopName: '分享订阅', path: '/subscriptions', icon: Bookmark },
 ]
 const navItems = computed(() => [
   ...baseNavItems,

@@ -762,7 +762,10 @@ async function fetchSchedules() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '读取自动任务失败')
     if (generation !== schedulesGeneration) return
-    tasks.value = data.tasks ?? []
+    const incoming = data.tasks ?? []
+    if (JSON.stringify(tasks.value) !== JSON.stringify(incoming)) {
+      tasks.value = incoming
+    }
     schedulesLoaded.value = true
     schedulesError.value = ''
   } catch (error) {
@@ -780,7 +783,12 @@ async function fetchQuarkTaskDetail(taskID: string, generation: number) {
     updateQuarkTransferRate(taskID, detailResponse)
     quarkTaskDetails.value = { ...quarkTaskDetails.value, [taskID]: detailResponse }
     const detailTask = (data as QuarkTaskDetailResponse).task
-    if (detailTask?.id) asyncTasks.value = asyncTasks.value.map((task) => task.id === detailTask.id ? { ...task, ...detailTask, payload: detailTask.payload ?? task.payload ?? {} } : task)
+    if (detailTask?.id) {
+      const target = asyncTasks.value.find((t) => t.id === detailTask.id)
+      if (target && (target.status !== detailTask.status || target.progress !== detailTask.progress)) {
+        asyncTasks.value = asyncTasks.value.map((task) => task.id === detailTask.id ? { ...task, ...detailTask, payload: detailTask.payload ?? task.payload ?? {} } : task)
+      }
+    }
     const errors = { ...quarkDetailErrors.value }
     delete errors[taskID]
     quarkDetailErrors.value = errors
@@ -789,6 +797,7 @@ async function fetchQuarkTaskDetail(taskID: string, generation: number) {
     quarkDetailErrors.value = { ...quarkDetailErrors.value, [taskID]: error instanceof Error ? error.message : '读取夸克导入进度失败' }
   }
 }
+
 async function fetchExecutions() {
   const generation = ++executionsGeneration
   try {
@@ -796,24 +805,30 @@ async function fetchExecutions() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || '读取执行记录失败')
     if (generation !== executionsGeneration) return
-    asyncTasks.value = (data.tasks ?? []).map((task: AsyncTask) => ({ ...task, payload: task.payload ?? {} }))
+    const incomingTasks = (data.tasks ?? []).map((task: AsyncTask) => ({ ...task, payload: task.payload ?? {} }))
+    if (JSON.stringify(asyncTasks.value) !== JSON.stringify(incomingTasks)) {
+      asyncTasks.value = incomingTasks
+    }
     executionsLoaded.value = true
     executionsError.value = ''
-    const quarkTasks = asyncTasks.value.filter((task) => task.type === 'quark_to_115_import')
-    await Promise.all(quarkTasks.map((task) => fetchQuarkTaskDetail(task.id, generation)))
+    const activeQuarkTasks = asyncTasks.value.filter((task) =>
+      task.type === 'quark_to_115_import' &&
+      (!['completed', 'failed', 'cancelled'].includes(task.status) || !quarkTaskDetails.value[task.id])
+    )
+    await Promise.all(activeQuarkTasks.map((task) => fetchQuarkTaskDetail(task.id, generation)))
     await Promise.all(Object.keys(taskRuns.value).map((id) => fetchTaskRuns(id, true)))
   } catch (error) {
     if (generation === executionsGeneration) executionsError.value = error instanceof Error ? error.message : '读取执行记录失败'
   }
 }
 
-async function fetchTasks() {
+async function fetchTasks(silent = false) {
   if (loading.value) return
-  loading.value = true
+  if (!silent) loading.value = true
   try {
     await Promise.all([fetchSchedules(), fetchExecutions()])
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -1074,7 +1089,7 @@ function schedulePoll(delay: number) {
 }
 
 async function pollTasks() {
-  await fetchTasks()
+  await fetchTasks(true)
   schedulePoll(activeTaskCount.value > 0 ? 1000 : 5000)
 }
 
@@ -1094,7 +1109,7 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         <button type="button" @click="showScheduleForm = !showScheduleForm" :disabled="savingSchedule" class="flex min-h-11 items-center gap-2 px-4 border border-accent bg-accent text-xs font-medium text-accent-contrast disabled:opacity-50">
           <X v-if="showScheduleForm" class="w-4 h-4" /><Plus v-else class="w-4 h-4" />{{ showScheduleForm ? '收起创建表单' : '新建自动任务' }}
         </button>
-        <button type="button" @click="fetchTasks" :disabled="loading" class="flex min-h-11 items-center gap-2 px-4 border border-border bg-surface text-xs font-medium text-text disabled:opacity-50">
+        <button type="button" @click="() => fetchTasks()" :disabled="loading" class="flex min-h-11 items-center gap-2 px-4 border border-border bg-surface text-xs font-medium text-text disabled:opacity-50">
           <RotateCcw class="w-4 h-4" :class="{ 'animate-spin': loading }" />刷新
         </button>
       </div>
@@ -1275,10 +1290,10 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         <div><div class="flex items-center gap-2"><ListTodo class="w-4 h-4 text-accent" /><h2 id="schedule-heading" class="font-serif font-semibold text-xl text-text">自动任务</h2></div><p class="mt-1 text-xs text-text-faint">系统会按计划执行；也可以随时手动启动一次。</p></div>
         <span class="text-xs font-mono text-text-faint">{{ schedulesLoaded ? `${tasks.length} 个` : '—' }}</span>
       </div>
-      <div v-if="schedulesError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
+      <div v-if="schedulesError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ schedulesError }}</p><p v-if="schedulesLoaded" class="mt-1">以下为上次读取的自动任务。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="() => fetchTasks()">{{ loading ? '正在重试' : '重新读取' }}</button></div>
       <div v-else-if="!schedulesLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取自动任务</div>
       <div v-else-if="tasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-sm text-text-faint">还没有自动任务。点击页面右上角“新建自动任务”开始配置。</div>
-      <article v-for="task in orderedTasks" :key="task.id" class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs hover:shadow-card hover:border-border-strong transition-all duration-200 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+      <article v-for="task in orderedTasks" :key="task.id" class="p-5 sm:p-6 rounded-2xl border border-border/80 bg-surface shadow-xs hover:shadow-card hover:border-border-strong transition-shadow duration-200 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
         <div class="space-y-3 min-w-0">
           <div class="flex items-center gap-2.5 flex-wrap"><span class="w-2.5 h-2.5 rounded-full" :class="activeExecution(task) ? 'bg-warn animate-pulse' : { 'bg-ok': task.status === 'idle' || task.status === 'completed', 'bg-danger': task.status === 'failed', 'bg-text-faint': task.status === 'paused' }"></span><h3 class="font-serif text-lg font-semibold text-text">{{ task.name }}</h3><span class="px-2.5 py-0.5 rounded-full bg-accent-soft text-xs font-medium text-accent border border-accent/20">{{ frequencyLabel(task.cron_expr) }}</span></div>
           <div><strong class="text-sm text-text font-medium">{{ taskDefinition(task.type).label }}</strong><p class="mt-1 text-sm text-text-muted">{{ taskSummary(task.type, scheduledPayload(task)) }}</p></div>
@@ -1297,11 +1312,11 @@ onUnmounted(() => { if (pollTimer) window.clearTimeout(pollTimer) })
         <span class="text-xs font-mono text-text-faint">{{ executionsLoaded ? `显示 ${visibleAsyncTasks.length} / 筛选 ${filteredAsyncTasks.length} / 共 ${asyncTasks.length} 条` : '—' }}</span>
       </div>
 
-      <div v-if="executionsError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ executionsError }}</p><p v-if="executionsLoaded" class="mt-1">以下为上次读取的执行记录。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="fetchTasks">{{ loading ? '正在重试' : '重新读取' }}</button></div>
+      <div v-if="executionsError" role="alert" class="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger"><p>{{ executionsError }}</p><p v-if="executionsLoaded" class="mt-1">以下为上次读取的执行记录。</p><button type="button" :disabled="loading" class="mt-2 min-h-11 rounded-lg border border-danger/40 px-3 disabled:opacity-50" @click="() => fetchTasks()">{{ loading ? '正在重试' : '重新读取' }}</button></div>
       <div v-else-if="!executionsLoaded" role="status" class="flex items-center justify-center gap-2 p-8 rounded-2xl border border-border/80 bg-surface text-sm text-text-muted"><Loader2 class="w-4 h-4 animate-spin" />正在读取执行记录</div>
       <div v-else-if="filteredAsyncTasks.length === 0" class="p-8 rounded-2xl border border-dashed border-border bg-surface text-center text-text-faint text-sm">{{ asyncTasks.length === 0 ? '还没有执行记录。创建自动任务并选择“立即执行”后，进度会显示在这里。' : '当前筛选分类下无执行记录。' }}</div>
 
-      <article v-for="task in visibleAsyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 sm:p-6 rounded-2xl border bg-surface shadow-xs space-y-4 transition-all duration-200 hover:shadow-card" :class="highlightedTaskId === task.id ? 'border-accent ring-2 ring-accent/20' : 'border-border/80 hover:border-border-strong'">
+      <article v-for="task in visibleAsyncTasks" :id="`execution-${task.id}`" :key="task.id" class="p-5 sm:p-6 rounded-2xl border bg-surface shadow-xs space-y-4 transition-shadow duration-200 hover:shadow-card" :class="highlightedTaskId === task.id ? 'border-accent ring-2 ring-accent/20' : 'border-border/80 hover:border-border-strong'">
         <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
           <div class="flex items-start gap-3.5 min-w-0">
             <span class="w-2.5 h-2.5 mt-2 rounded-full shrink-0" :class="asyncTone(task)"></span>
