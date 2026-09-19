@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -57,15 +59,23 @@ func shareSelectionsPayload(payload map[string]any, key string) ([]ShareSelectio
 		return nil, fmt.Errorf("%s must be an array of source identities", key)
 	}
 	seen := make(map[string]struct{}, len(selections))
+	seenNames := make(map[string]struct{}, len(selections))
 	for index := range selections {
 		selections[index].ID = strings.TrimSpace(selections[index].ID)
-		if selections[index].ID == "" || strings.TrimSpace(selections[index].Revision) == "" || strings.TrimSpace(selections[index].Name) == "" || selections[index].Size < 0 {
+		selections[index].Name = strings.TrimSpace(selections[index].Name)
+		selections[index].Revision = strings.TrimSpace(selections[index].Revision)
+		if selections[index].ID == "" || selections[index].Revision == "" || selections[index].Name == "" || selections[index].Size < 0 {
 			return nil, fmt.Errorf("%s contains an invalid or revisionless source identity", key)
 		}
 		if _, duplicate := seen[selections[index].ID]; duplicate {
 			return nil, fmt.Errorf("%s must not contain duplicate source IDs", key)
 		}
+		nameKey := fmt.Sprintf("%s\x00%d", selections[index].Name, selections[index].Size)
+		if _, duplicate := seenNames[nameKey]; duplicate {
+			return nil, fmt.Errorf("%s must not contain duplicate name/size leaves", key)
+		}
 		seen[selections[index].ID] = struct{}{}
+		seenNames[nameKey] = struct{}{}
 	}
 	return selections, nil
 }
@@ -81,6 +91,10 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 	if err != nil {
 		return nil, err
 	}
+	importAll, err := booleanPayload(task.Payload, "import_all", false)
+	if err != nil {
+		return nil, err
+	}
 	selectedIDs, err := optionalStringSlicePayload(task.Payload, "selected_source_ids")
 	if err != nil {
 		return nil, err
@@ -88,6 +102,25 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 	selections, err := shareSelectionsPayload(task.Payload, "selected_source_manifest")
 	if err != nil {
 		return nil, err
+	}
+	if importAll && len(selections) > 0 {
+		return nil, fmt.Errorf("import_all cannot be combined with selected_source_manifest")
+	}
+	if importAll && len(selectedIDs) > 0 {
+		return nil, fmt.Errorf("import_all cannot be combined with selected_source_ids")
+	}
+	if !importAll {
+		if len(selections) == 0 {
+			return nil, fmt.Errorf("selected_source_manifest is required unless import_all:true is explicit")
+		}
+		if len(selectedIDs) != len(selections) {
+			return nil, fmt.Errorf("selected_source_manifest does not match selected_source_ids")
+		}
+		for index := range selections {
+			if selections[index].ID != selectedIDs[index] {
+				return nil, fmt.Errorf("selected_source_manifest order does not match selected_source_ids")
+			}
+		}
 	}
 	state := &domain.CrossDriveImport{
 		TaskID: task.ID, PriorTaskID: priorTaskID, Phase: "saving_share",
@@ -172,20 +205,33 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 		return nil, context.Canceled
 	}
 	if priorTaskID != "" && len(state.SavedRootIDs) == 0 {
-		prior, err := s.db.GetCrossDriveImport(priorTaskID)
-		if err != nil {
-			return nil, fmt.Errorf("read prior import checkpoints: %w", err)
+		prior, priorErr := s.db.GetCrossDriveImport(priorTaskID)
+		if priorErr == nil {
+			if !sameCrossDriveBinding(prior, state) {
+				return nil, fmt.Errorf("retry checkpoint source or destination binding changed")
+			}
+			if len(prior.SavedRootIDs) == 0 {
+				return nil, fmt.Errorf("prior import has no reconciled Quark saved-root checkpoint; refusing to resubmit the share")
+			}
+			priorTask, taskErr := s.db.GetAsyncTask(priorTaskID)
+			if taskErr != nil {
+				return nil, fmt.Errorf("read prior import task: %w", taskErr)
+			}
+			priorImportAll, boolErr := booleanPayload(priorTask.Payload, "import_all", false)
+			if boolErr != nil || priorImportAll != importAll {
+				return nil, fmt.Errorf("retry import mode changed")
+			}
+			priorManifest, manifestErr := shareSelectionsPayload(priorTask.Payload, "selected_source_manifest")
+			if manifestErr != nil || !sameShareSelectionManifest(priorManifest, selections) {
+				return nil, fmt.Errorf("retry selected source manifest changed")
+			}
+			if err := s.db.SaveCrossDriveRoots(task.ID, owner, prior.SavedRootIDs); err != nil {
+				return nil, err
+			}
+			state.SavedRootIDs = prior.SavedRootIDs
+		} else if !errors.Is(priorErr, sql.ErrNoRows) {
+			return nil, fmt.Errorf("read prior import checkpoints: %w", priorErr)
 		}
-		if !sameCrossDriveBinding(prior, state) {
-			return nil, fmt.Errorf("retry checkpoint source or destination binding changed")
-		}
-		if len(prior.SavedRootIDs) == 0 {
-			return nil, fmt.Errorf("prior import has no reconciled Quark saved-root checkpoint; refusing to resubmit the share")
-		}
-		if err := s.db.SaveCrossDriveRoots(task.ID, owner, prior.SavedRootIDs); err != nil {
-			return nil, err
-		}
-		state.SavedRootIDs = prior.SavedRootIDs
 	}
 	if len(state.SavedRootIDs) == 0 {
 		if task.Attempts > 0 {
@@ -222,7 +268,7 @@ func (s *TaskQueueService) runQuarkTo115Import(ctx context.Context, task domain.
 	if err := s.db.UpdateCrossDriveImport(task.ID, owner, "discovering", "", "", ""); err != nil {
 		return nil, err
 	}
-	if err := s.discoverQuarkImport(ctx, task.ID, owner, quarkAccountID, quarkTargetID, state.SavedRootIDs); err != nil {
+	if err := s.discoverQuarkImport(ctx, task.ID, owner, quarkAccountID, quarkTargetID, state.SavedRootIDs, selections, importAll); err != nil {
 		return nil, err
 	}
 	if err := s.db.FinalizeCrossDriveDiscovery(task.ID, owner); err != nil {
@@ -419,6 +465,18 @@ func sameCrossDriveBinding(a, b *domain.CrossDriveImport) bool {
 	return true
 }
 
+func sameShareSelectionManifest(a, b []ShareSelection) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for index := range a {
+		if a[index] != b[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *TaskQueueService) resolveAutofillDestination(ctx context.Context, state *domain.CrossDriveImport) (string, error) {
 	if state == nil || state.AutofillLibraryName == "" || state.AutofillLibraryID == "" || state.AutofillLibraryCID == "" ||
 		state.AutofillSeriesID == "" || state.AutofillTMDBID == "" || state.AutofillSeriesFolder == "" {
@@ -525,10 +583,14 @@ func (s *TaskQueueService) finalizeAutofillImport(ctx context.Context, accountID
 	return nil
 }
 
-func (s *TaskQueueService) discoverQuarkImport(ctx context.Context, taskID, owner, accountID, targetID string, rootIDs []string) error {
-	wanted := make(map[string]struct{}, len(rootIDs))
+func (s *TaskQueueService) discoverQuarkImport(ctx context.Context, taskID, owner, accountID, targetID string, rootIDs []string, selections []ShareSelection, importAll bool) error {
+	wantedRoots := make(map[string]struct{}, len(rootIDs))
 	for _, id := range rootIDs {
-		wanted[id] = struct{}{}
+		wantedRoots[id] = struct{}{}
+	}
+	wanted := make(map[string]ShareSelection, len(selections))
+	for _, selection := range selections {
+		wanted[fmt.Sprintf("%s\x00%d", selection.Name, selection.Size)] = selection
 	}
 	roots, err := s.listAllProviderFiles(ctx, "quark", accountID, targetID)
 	if err != nil {
@@ -536,6 +598,7 @@ func (s *TaskQueueService) discoverQuarkImport(ctx context.Context, taskID, owne
 	}
 	found := 0
 	visited := make(map[string]struct{})
+	discovered := make(map[string]domain.CrossDriveItem, len(wanted))
 	entries := 0
 	var walk func(domain.DriveFile, string, int) error
 	walk = func(file domain.DriveFile, relative string, depth int) error {
@@ -551,7 +614,19 @@ func (s *TaskQueueService) discoverQuarkImport(ctx context.Context, taskID, owne
 			return fmt.Errorf("Quark saved share exceeds %d entries", quarkMaxEntries)
 		}
 		if !file.IsFolder {
-			return s.db.UpsertCrossDriveItem(taskID, owner, &domain.CrossDriveItem{SourceFileID: file.FileID, SourceRevision: file.Revision, RelativePath: relative, Name: file.Name, Size: file.Size, SHA1: file.Sha1})
+			if !importAll {
+				nameKey := fmt.Sprintf("%s\x00%d", file.Name, file.Size)
+				if _, ok := wanted[nameKey]; !ok {
+					return fmt.Errorf("selected source manifest contains an unexpected saved file %s", file.Name)
+				}
+				if _, duplicate := discovered[nameKey]; duplicate {
+					return fmt.Errorf("selected source manifest contains duplicate saved file %s", file.Name)
+				}
+				discovered[nameKey] = domain.CrossDriveItem{SourceFileID: file.FileID, SourceRevision: file.Revision, RelativePath: relative, Name: file.Name, Size: file.Size, SHA1: file.Sha1}
+				return nil
+			}
+			discovered[file.FileID] = domain.CrossDriveItem{SourceFileID: file.FileID, SourceRevision: file.Revision, RelativePath: relative, Name: file.Name, Size: file.Size, SHA1: file.Sha1}
+			return nil
 		}
 		children, err := s.listAllProviderFiles(ctx, "quark", accountID, file.FileID)
 		if err != nil {
@@ -565,15 +640,31 @@ func (s *TaskQueueService) discoverQuarkImport(ctx context.Context, taskID, owne
 		return nil
 	}
 	for _, root := range roots {
-		if _, ok := wanted[root.FileID]; ok {
+		if _, ok := wantedRoots[root.FileID]; ok {
 			found++
 			if err := walk(root, root.Name, 0); err != nil {
 				return err
 			}
 		}
 	}
-	if found != len(wanted) {
+	if found != len(wantedRoots) {
 		return fmt.Errorf("Quark saved roots are not all visible in target directory")
+	}
+	if !importAll {
+		if len(discovered) != len(wanted) {
+			return fmt.Errorf("selected source manifest is missing saved files")
+		}
+		for nameKey := range wanted {
+			if _, ok := discovered[nameKey]; !ok {
+				return fmt.Errorf("selected source manifest is missing saved file %s", wanted[nameKey].Name)
+			}
+		}
+	}
+	for _, item := range discovered {
+		item := item
+		if err := s.db.UpsertCrossDriveItem(taskID, owner, &item); err != nil {
+			return err
+		}
 	}
 	return nil
 }

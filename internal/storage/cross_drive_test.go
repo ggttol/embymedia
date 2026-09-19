@@ -18,7 +18,7 @@ func TestRecoverInterruptedAsyncTasksRequeuesOnlyCrossDriveImports(t *testing.T)
 	defer db.Close()
 	now := time.Now()
 	legacy := &domain.AsyncTask{ID: "legacy", Type: "c115_save_share", Payload: map[string]any{}, Status: "pending", MaxAttempts: 1, CreatedAt: now}
-	transfer := &domain.AsyncTask{ID: "transfer", Type: "quark_to_115_import", Payload: map[string]any{}, Status: "pending", MaxAttempts: 1, CreatedAt: now.Add(time.Millisecond)}
+	transfer := &domain.AsyncTask{ID: "transfer", Type: "quark_to_115_import", Payload: map[string]any{"import_all": true}, Status: "pending", MaxAttempts: 1, CreatedAt: now.Add(time.Millisecond)}
 	if err := db.CreateAsyncTask(legacy); err != nil {
 		t.Fatal(err)
 	}

@@ -360,6 +360,52 @@ func TestBrowserUserCanApproveExactPendingDeletion(t *testing.T) {
 	}
 }
 
+func TestQuarkImportRequiresExplicitSelectionOrWholePack(t *testing.T) {
+	e := echo.New()
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	drive := service.NewDriveService(db, "", "")
+	emby := service.NewEmbyService(db)
+	queue := service.NewTaskQueueService(db, drive, emby)
+	server := NewServer(e, db, drive, emby, service.NewCloudDriveService(db), queue, service.NewCronManager(db, queue), service.NewSettingsService(db), security.NewAgentAuthorizer(db))
+	defer server.Close()
+	for _, test := range []struct {
+		body string
+		want string
+	}{
+		{`{"quark_account_id":"q","quark_target_id":"folder","share_url":"https://pan.quark.cn/s/share"}`, "selected_source_manifest"},
+		{`{"quark_account_id":"q","quark_target_id":"folder","share_url":"https://pan.quark.cn/s/share","selected_source_manifest":[]}`, "at least one file leaf"},
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/quark/share-imports", strings.NewReader(test.body))
+		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		request.Header.Set("Remote-User", "test-admin")
+		response := httptest.NewRecorder()
+		e.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), test.want) {
+			t.Fatalf("unsafe import input was not rejected clearly: %d %s", response.Code, response.Body.String())
+		}
+	}
+	for _, account := range []*domain.DriveAccount{
+		{ID: "q", Type: "quark", Name: "Quark", Cookie: "q", IsDefault: true, Status: "active"},
+		{ID: "c", Type: "115", Name: "115", Cookie: "c", IsDefault: true, Status: "active"},
+	} {
+		if err := db.SaveAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/quark/share-imports", strings.NewReader(`{"quark_account_id":"q","quark_target_id":"folder","share_url":"https://pan.quark.cn/s/share","import_all":true}`))
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	request.Header.Set("Remote-User", "test-admin")
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("explicit whole-pack import was not accepted: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestQuarkImportRejectsArbitraryDestination(t *testing.T) {
 	e := echo.New()
 	db, err := storage.Open(":memory:")

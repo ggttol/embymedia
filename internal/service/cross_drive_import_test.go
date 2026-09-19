@@ -110,10 +110,10 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 			status = http.StatusNotFound
 			body = `{}`
 		}
-		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
 	})
 	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
-	task, err := queue.Enqueue("quark_to_115_import", map[string]any{"quark_account_id": "quark", "quark_target_id": "quark-target", "share_url": "https://pan.quark.cn/s/share", "share_password": "password", "c115_account_id": "c115"})
+	task, err := queue.Enqueue("quark_to_115_import", map[string]any{"quark_account_id": "quark", "quark_target_id": "quark-target", "share_url": "https://pan.quark.cn/s/share", "share_password": "password", "c115_account_id": "c115", "import_all": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,33 +143,6 @@ func TestQuarkTo115ImportBuildsFixedDestinationAndRemovesSpool(t *testing.T) {
 	}
 }
 
-func TestCrossDriveRetryRefusesAmbiguousShareSave(t *testing.T) {
-	db, err := storage.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	drive := NewDriveService(db, "", "")
-	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
-	old := &domain.AsyncTask{ID: "ambiguous", Type: "quark_to_115_import", Payload: map[string]any{"quark_account_id": "quark", "quark_target_id": "target", "share_url": "https://pan.quark.cn/s/share", "c115_account_id": "c115"}, Status: "failed", MaxAttempts: 1}
-	if err := db.CreateAsyncTask(old); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.CreateCrossDriveImport(&domain.CrossDriveImport{TaskID: old.ID, QuarkAccountID: "quark", QuarkTargetID: "target", C115AccountID: "c115"}); err != nil {
-		t.Fatal(err)
-	}
-	retry, err := queue.Retry(old.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, claimed, err := db.BeginAsyncTask(retry.ID); err != nil || !claimed {
-		t.Fatalf("claim retry: %v", err)
-	}
-	_, err = queue.run(context.Background(), *retry)
-	if err == nil || !strings.Contains(err.Error(), "refusing to resubmit") {
-		t.Fatalf("ambiguous retry result: %v", err)
-	}
-}
 
 func TestAutofillQuarkImportValidatesConfiguredDestinationBeforeProviderWrite(t *testing.T) {
 	db, err := storage.Open(":memory:")

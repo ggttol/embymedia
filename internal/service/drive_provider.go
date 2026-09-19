@@ -447,7 +447,7 @@ func (s *DriveService) OpenProviderDownload(ctx context.Context, provider, accou
 	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusPreconditionFailed {
 		return body, err
 	}
-	if err := quark.refreshDownloadCookie(ctx, account); err != nil {
+	if err := quark.RefreshDownloadCookie(ctx, account); err != nil {
 		return nil, err
 	}
 	if err := s.db.SaveAccount(account); err != nil {

@@ -191,6 +191,9 @@ func (s *Server) handleTrends(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"code": 0, "message": "success", "data": map[string]any{"trends": trends}})
 }
 func (s *Server) handleSearch(c echo.Context) error {
+	if _, present := c.QueryParams()["keyword"]; present {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "use q for the search query; keyword is not supported"})
+	}
 	params := make(url.Values, len(c.QueryParams()))
 	for key, values := range c.QueryParams() {
 		params[key] = append([]string(nil), values...)
@@ -295,6 +298,7 @@ func (s *Server) handleSnapshotShare(c echo.Context) error {
 		AccountID string `json:"account_id"`
 		URL       string `json:"url"`
 		Password  string `json:"password"`
+		Recursive bool   `json:"recursive"`
 	}
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -302,7 +306,13 @@ func (s *Server) handleSnapshotShare(c echo.Context) error {
 	if req.Provider == "" || strings.TrimSpace(req.URL) == "" {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": "provider and url are required"})
 	}
-	snapshot, err := s.drive.SnapshotProviderShare(c.Request().Context(), req.Provider, req.AccountID, req.URL, req.Password)
+	var snapshot service.ShareSnapshot
+	var err error
+	if req.Recursive {
+		snapshot, err = s.drive.SnapshotProviderShareTree(c.Request().Context(), req.Provider, req.AccountID, req.URL, req.Password)
+	} else {
+		snapshot, err = s.drive.SnapshotProviderShare(c.Request().Context(), req.Provider, req.AccountID, req.URL, req.Password)
+	}
 	if err != nil {
 		return c.JSON(http.StatusBadGateway, map[string]any{"error": err.Error()})
 	}
@@ -581,7 +591,7 @@ func publicAsyncTask(task domain.AsyncTask) domain.AsyncTask {
 }
 
 func publicTaskPayloadKey(key string) bool {
-	if key == "share_password" || key == "share_url" || key == "expected_episodes" || key == "selected_source_ids" || key == "selected_source_manifest" || key == "parent_task_id" || key == "prior_import_task_id" {
+	if key == "source_shares" || key == "share_password" || key == "share_url" || key == "expected_episodes" || key == "selected_source_ids" || key == "selected_source_manifest" || key == "parent_task_id" || key == "prior_import_task_id" {
 		return true
 	}
 	return strings.HasPrefix(key, "autofill_")
@@ -754,13 +764,16 @@ func (s *Server) handleRetryAsyncTask(c echo.Context) error {
 	}
 	return c.JSON(http.StatusAccepted, publicAsyncTask(*task))
 }
+
 func (s *Server) handleCreateQuarkShareImport(c echo.Context) error {
 	var request struct {
-		QuarkAccountID string `json:"quark_account_id"`
-		QuarkTargetID  string `json:"quark_target_id"`
-		ShareURL       string `json:"share_url"`
-		SharePassword  string `json:"share_password"`
-		C115AccountID  string `json:"c115_account_id"`
+		QuarkAccountID         string                    `json:"quark_account_id"`
+		QuarkTargetID          string                    `json:"quark_target_id"`
+		ShareURL               string                    `json:"share_url"`
+		SharePassword          string                    `json:"share_password"`
+		C115AccountID          string                    `json:"c115_account_id"`
+		SelectedSourceManifest *[]service.ShareSelection `json:"selected_source_manifest"`
+		ImportAll              bool                      `json:"import_all"`
 	}
 	decoder := json.NewDecoder(c.Request().Body)
 	decoder.DisallowUnknownFields()
@@ -769,6 +782,15 @@ func (s *Server) handleCreateQuarkShareImport(c echo.Context) error {
 	}
 	if strings.TrimSpace(request.QuarkAccountID) == "" || strings.TrimSpace(request.QuarkTargetID) == "" || strings.TrimSpace(request.ShareURL) == "" {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": "quark_account_id, quark_target_id, and share_url are required"})
+	}
+	if request.SelectedSourceManifest == nil && !request.ImportAll {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "selected_source_manifest is required; set import_all=true only for explicit whole-pack imports"})
+	}
+	if request.SelectedSourceManifest != nil && len(*request.SelectedSourceManifest) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "selected_source_manifest must contain at least one file leaf"})
+	}
+	if request.SelectedSourceManifest != nil && request.ImportAll {
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": "selected_source_manifest and import_all cannot be used together"})
 	}
 	if _, err := s.drive.GetAccount("quark", request.QuarkAccountID); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -782,15 +804,21 @@ func (s *Server) handleCreateQuarkShareImport(c echo.Context) error {
 	} else if _, err := s.drive.GetAccount("115", request.C115AccountID); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
-	task, err := s.taskQueue.Enqueue("quark_to_115_import", map[string]any{
+	payload := map[string]any{
 		"quark_account_id": request.QuarkAccountID,
 		"quark_target_id":  request.QuarkTargetID,
 		"share_url":        strings.TrimSpace(request.ShareURL),
 		"share_password":   strings.TrimSpace(request.SharePassword),
 		"c115_account_id":  request.C115AccountID,
-	})
+	}
+	if request.SelectedSourceManifest != nil {
+		payload["selected_source_manifest"] = *request.SelectedSourceManifest
+	} else {
+		payload["import_all"] = true
+	}
+	task, err := s.taskQueue.Enqueue("quark_to_115_import", payload)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
 	return c.JSON(http.StatusAccepted, map[string]any{"task_id": task.ID, "status": task.Status})
 }

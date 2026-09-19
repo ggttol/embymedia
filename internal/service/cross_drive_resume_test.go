@@ -50,7 +50,7 @@ func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
 	if err := db.SetSetting("transfer_min_free_bytes", "0"); err != nil {
 		t.Fatal(err)
 	}
-	task := &domain.AsyncTask{ID: "resume-task", Type: "quark_to_115_import", Payload: map[string]any{"quark_account_id": "quark", "quark_target_id": "qt", "share_url": "https://pan.quark.cn/s/secret", "share_password": "secret", "c115_account_id": "c115"}, Status: "pending", MaxAttempts: 2, CreatedAt: time.Now()}
+	task := &domain.AsyncTask{ID: "resume-task", Type: "quark_to_115_import", Payload: map[string]any{"quark_account_id": "quark", "quark_target_id": "qt", "share_url": "https://pan.quark.cn/s/secret", "share_password": "secret", "c115_account_id": "c115", "import_all": true}, Status: "pending", MaxAttempts: 2, CreatedAt: time.Now()}
 	if err := db.CreateAsyncTask(task); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +134,7 @@ func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
 			status = http.StatusPartialContent
 			body = string(content[16<<20:])
 			header.Set("Content-Type", "application/octet-stream")
+			header.Set("Content-Range", "bytes 16777216-16777246/"+strconv.Itoa(len(content)))
 		case request.URL.Host == "webapi.115.com" && request.URL.Path == "/files":
 			cid := request.URL.Query().Get("cid")
 			switch cid {
@@ -172,7 +173,7 @@ func TestCrossDriveImportResumesDownloadAndMultipartAfterRestart(t *testing.T) {
 			status = http.StatusNotFound
 			body = fmt.Sprintf(`{"error":"unexpected %s %s"}`, request.Method, request.URL.String())
 		}
-		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}, nil
 	})
 	queue := NewTaskQueueService(db, drive, NewEmbyService(db))
 	recovered, err := db.GetAsyncTask(task.ID)

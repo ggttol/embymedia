@@ -2,101 +2,129 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"regexp"
-	"time"
+	"path/filepath"
+	"strings"
 
 	"github.com/embymedia/embymedia/internal/domain"
 )
 
+// Subscription polling delegates to the same identity-bound missing-episode workflow.
+// A timestamp cursor cannot establish which episodes are already in Emby.
 func (s *TaskQueueService) runShareAutoSync(ctx context.Context, task domain.AsyncTask) (map[string]any, error) {
-	subID, _ := stringPayload(task.Payload, "subscription_id", true)
-	if subID == "" {
-		return nil, fmt.Errorf("subscription_id required")
-	}
-
-	subs, err := s.db.ListShareSubscriptions(ctx, true)
+	subID, err := stringPayload(task.Payload, "subscription_id", true)
 	if err != nil {
 		return nil, err
 	}
-
-	var targetSub *domain.ShareSubscription
-	for _, sub := range subs {
-		if sub.ID == subID {
-			targetSub = &sub
-			break
-		}
-	}
-	if targetSub == nil {
-		return nil, fmt.Errorf("active subscription %s not found", subID)
-	}
-
-	if err := s.db.AppendTaskLog(task.ID, fmt.Errorf("starting auto sync for %s (provider: %s, target: %s)", targetSub.Name, targetSub.Provider, targetSub.TargetCID).Error()); err != nil {
+	sub, err := s.db.GetShareSubscription(ctx, subID)
+	if err != nil {
 		return nil, err
 	}
-
-	// 1. Resolve share using DriveService
-	shareNodes, err := s.driveSvc.SnapshotProviderShareTree(ctx, targetSub.Provider, "default", targetSub.URL, targetSub.Password)
-	if err != nil {
-		return nil, fmt.Errorf("resolve share failed: %w", err)
+	if sub == nil || !sub.Active {
+		return nil, fmt.Errorf("active subscription not found")
 	}
-
-	var matchRegex *regexp.Regexp
-	// if we had a match_regex field we could compile here; omitted for simplicity in initial version or you can add to domain
-
-	var selections []ShareSelection
-
-	var maxSeenTime time.Time
-	if !targetSub.LastCursorTime.IsZero() {
-		maxSeenTime = targetSub.LastCursorTime
+	if strings.TrimSpace(sub.TargetCID) == "" {
+		return nil, fmt.Errorf("subscription target_cid must identify an existing following Series directory")
 	}
-
-	for _, entry := range shareNodes.Entries {
-		if entry.IsDir {
-			continue
-		}
-
-		if matchRegex == nil || matchRegex.MatchString(entry.Name) {
-			selections = append(selections, ShareSelection{
-				ID:       entry.ID,
-				Revision: entry.Revision,
-				Name:     entry.Name,
-				Size:     entry.Size,
-			})
-		}
-	}
-
-	if len(selections) == 0 {
-		if err := s.db.AppendTaskLog(task.ID, "no matching entries found in share snapshot"); err != nil {
+	// The single queue worker serializes polling; keep an in-flight child instead of
+	// queuing a second transfer while the first is still absent from Emby.
+	for _, status := range []string{"pending", "running"} {
+		active, err := s.db.ListAsyncTasks(status, 0)
+		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"matched": 0, "transferred": 0}, nil
-	}
-
-	// Missing strict cursor filter since most share APIs in CloudDrive don't export CreatedAt/UpdatedAt
-	// In a real rigorous version, we would persist `entry.ID` into a separate 'share_sync_cursors' table.
-	// For now, if we match files, we dispatch to standard cross drive or internal transfer.
-
-	// Trigger import using selections
-	var saved SavedShare
-	if targetSub.Provider == "115" {
-		saved, err = s.driveSvc.SaveProviderShareSelections(ctx, targetSub.Provider, "default", targetSub.URL, targetSub.Password, targetSub.TargetCID, selections)
-		if err != nil {
-			return nil, fmt.Errorf("115 save failed: %w", err)
+		for _, candidate := range active {
+			if candidate.ID == task.ID {
+				continue
+			}
+			parent := &candidate
+			if candidate.Type == "quark_to_115_import" {
+				parentID, _ := candidate.Payload["parent_task_id"].(string)
+				if parentID == "" {
+					continue
+				}
+				parent, err = s.db.GetAsyncTask(parentID)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if parent.Type == "series_auto_fill" && parent.Payload["subscription_id"] == subID {
+				return map[string]any{"stage": "queued", "next_task_id": parent.ID, "active_task_id": candidate.ID, "verification_complete": false}, nil
+			}
 		}
-	} else {
-		// if it's quark, we might want to initiate a cross_drive task to 115
-		saved, err = s.driveSvc.SaveProviderShareSelections(ctx, targetSub.Provider, "default", targetSub.URL, targetSub.Password, "0", selections)
-		if err != nil {
-			return nil, fmt.Errorf("quark save failed: %w", err)
+	}
+	library, seriesID, err := s.subscriptionSeries(ctx, sub.TargetCID)
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{
+		"libraries": []string{library}, "series_ids": []string{seriesID}, "transfer": true,
+		"subscription_id": sub.ID,
+		"source_shares":   map[string]any{seriesID: map[string]any{"provider": sub.Provider, "url": sub.URL, "password": sub.Password}},
+	}
+	queued, err := s.Enqueue("series_auto_fill", payload)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"stage": "queued", "next_task_id": queued.ID, "verification_complete": false}, nil
+}
+
+func (s *TaskQueueService) subscriptionSeries(ctx context.Context, targetCID string) (string, string, error) {
+	raw, err := s.db.GetSetting("c115_cid_map")
+	if err != nil {
+		return "", "", err
+	}
+	var cidMap map[string]string
+	if err := json.Unmarshal([]byte(raw), &cidMap); err != nil {
+		return "", "", fmt.Errorf("decode c115_cid_map: %w", err)
+	}
+	libraries, err := s.embySvc.ListLibrariesCtx(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	account, err := s.driveSvc.GetDefaultAccount("115")
+	if err != nil {
+		return "", "", err
+	}
+	matchedLibrary, matchedSeries := "", ""
+	matches := 0
+	for _, library := range libraries {
+		if _, eligible := autoFillLibrarySet[library.Name]; !eligible {
+			continue
 		}
-		return nil, fmt.Errorf("cross drive import payload generation omitted for brevity")
+		libraryCID := strings.TrimSpace(cidMap[library.Name])
+		if libraryCID == "" {
+			continue
+		}
+		files, err := s.listAllProviderFiles(ctx, "115", account.ID, libraryCID)
+		if err != nil {
+			return "", "", err
+		}
+		folder := ""
+		for _, file := range files {
+			if file.IsFolder && file.FileID == targetCID && file.ParentID == libraryCID {
+				folder = file.Name
+				break
+			}
+		}
+		if folder == "" {
+			continue
+		}
+		inventory, err := s.embySvc.ListSeriesCtx(ctx, library.ID)
+		if err != nil {
+			return "", "", err
+		}
+		for _, item := range inventory {
+			path := filepath.Clean(item.Path)
+			if filepath.Base(path) == folder && filepath.Base(filepath.Dir(path)) == library.Name && strings.TrimSpace(item.ProviderIDs["Tmdb"]) != "" {
+				matchedLibrary, matchedSeries = library.Name, item.ID
+				matches++
+			}
+		}
 	}
-
-	targetSub.LastSyncAt = time.Now()
-	if !maxSeenTime.IsZero() {
-		targetSub.LastCursorTime = maxSeenTime
+	if matches != 1 {
+		return "", "", fmt.Errorf("subscription target_cid must match exactly one TMDB-bound Series in a following library; found %d", matches)
 	}
-
-	return map[string]any{"matched": len(selections), "transferred": saved.Count}, nil
+	return matchedLibrary, matchedSeries, nil
 }

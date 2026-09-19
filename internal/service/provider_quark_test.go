@@ -76,13 +76,14 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 			}
 			signedRequests++
 			rangeHeader := request.Header.Get("Range")
-			if rangeHeader == "bytes=2-6" && signedRequests == 1 {
+			if rangeHeader == "bytes=2-3" && signedRequests == 1 {
 				response.WriteHeader(http.StatusForbidden)
 				return
 			}
+			response.Header().Set("Content-Range", strings.Replace(rangeHeader, "=", " ", 1)+"/4")
 			response.WriteHeader(http.StatusPartialContent)
 			switch rangeHeader {
-			case "bytes=2-6":
+			case "bytes=2-3":
 				_, _ = io.WriteString(response, "ta")
 			case "bytes=0-3":
 				_, _ = io.WriteString(response, "data")
@@ -120,7 +121,7 @@ func TestQuarkProviderOperationsAndSignedURLRefresh(t *testing.T) {
 	if err != nil || saved.Count != 1 || len(saved.RootIDs) != 1 || saved.RootIDs[0] != "saved-root" {
 		t.Fatalf("save: %+v %v", saved, err)
 	}
-	body, err := provider.OpenDownload(context.Background(), account, "file", 2, 5)
+	body, err := provider.OpenDownload(context.Background(), account, "file", 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +176,7 @@ func TestDriveServiceRefreshesExpiredQuarkDownloadCookie(t *testing.T) {
 				response.WriteHeader(http.StatusPreconditionFailed)
 				return
 			}
+			response.Header().Set("Content-Range", "bytes 0-3/4")
 			response.WriteHeader(http.StatusPartialContent)
 			_, _ = io.WriteString(response, "data")
 		default:
@@ -404,5 +406,46 @@ func TestQuarkSnapshotTreeAllowsNonZeroRootParentFID(t *testing.T) {
 	selection := ShareSelection{ID: entry.ID, Revision: entry.Revision, Name: entry.Name, Size: entry.Size}
 	if selected, err := selectShareSelections(snapshot.Entries, []ShareSelection{selection}); err != nil || len(selected) != 1 {
 		t.Fatalf("stable fallback identity was rejected: selected=%+v err=%v", selected, err)
+	}
+}
+
+func TestQuarkDownloadRejectsMismatchedRanges(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       int
+		contentRange string
+		offset       int64
+		length       int64
+		body         string
+	}{
+		{"wrong offset", 206, "bytes 0-3/8", 4, 4, "data"},
+		{"missing range", 206, "", 0, 4, "data"},
+		{"short range", 206, "bytes 0-1/8", 0, 4, "da"},
+		{"truncated body", 206, "bytes 0-3/8", 0, 4, "da"},
+		{"ignored resume", 200, "", 4, 4, "data"},
+		{"whole file instead of segment", 200, "", 0, 4, "dataextra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/file/download" {
+					_, _ = io.WriteString(w, `{"status":200,"data":[{"download_url":"`+server.URL+`/signed"}]}`)
+					return
+				}
+				w.Header().Set("Content-Range", tc.contentRange)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			provider := NewProviderQuark(server.Client())
+			provider.downloadBaseURL = server.URL
+			body, err := provider.OpenDownload(context.Background(), &domain.DriveAccount{Cookie: "cookie"}, "episode-18", tc.offset, tc.length)
+			if body != nil {
+				body.Close()
+			}
+			if err == nil {
+				t.Fatal("accepted bytes outside the selected download range")
+			}
+		})
 	}
 }

@@ -6,6 +6,7 @@ import UiDialog from '../components/UiDialog.vue'
 
 type Provider = '115' | 'quark'
 type DriveFile = { file_id?: string; cid?: string; parent_id?: string; name: string; is_folder: boolean; size?: number; updated_time?: string }
+type ShareEntry = { id: string; revision?: string; parent_id?: string; name: string; size: number; is_dir: boolean }
 type DriveAccount = { id: string; type: Provider; name: string; is_default: boolean; status: string }
 type DriveCapabilities = { browse: boolean; mkdir: boolean; rename: boolean; move: boolean; delete: boolean; share_save: boolean; offline: boolean }
 type FileOperation = { kind: 'move' | 'delete' | 'rename'; ids: string[]; name: string }
@@ -41,12 +42,17 @@ const folderBusy = ref(false)
 const showAccountModal = ref(false)
 const newAccount = ref({ name: '', cookie: '', token: '', is_default: false })
 const editingAccountId = ref('')
-const accountError = ref('')
 const accountBusy = ref(false)
+const accountError = ref('')
 const showShareModal = ref(false)
 const shareForm = ref({ url: '', password: '' })
 const shareError = ref('')
 const shareBusy = ref(false)
+const sharePreviewLoaded = ref(false)
+const sharePreviewEntries = ref<ShareEntry[]>([])
+const selectedShareEntries = ref<Set<string>>(new Set())
+const importAll = ref(false)
+const sharePreviewBusy = ref(false)
 const resourcePreloadError = ref('')
 const operation = ref<FileOperation | null>(null)
 const operationError = ref('')
@@ -62,7 +68,7 @@ let pendingResourceId = typeof route.query.resource_id === 'string' ? route.quer
 let resourcePreloadBusy = false
 
 const providerLabel = computed(() => provider.value === '115' ? '115' : '夸克')
-const busy = computed(() => loading.value || accountsLoading.value || accountBusy.value || folderBusy.value || shareBusy.value || operationBusy.value || importActionBusy.value)
+const busy = computed(() => loading.value || accountsLoading.value || accountBusy.value || folderBusy.value || shareBusy.value || sharePreviewBusy.value || operationBusy.value || importActionBusy.value)
 const accountName = computed(() => accounts.value.find(account => account.id === currentAccountId.value)?.name || '未选择账号')
 const directoryName = computed(() => breadcrumbs.value.map(item => item.name).join(' / '))
 const moveTargets = computed(() => {
@@ -80,6 +86,16 @@ const importTerminal = computed(() => !!importStatus.value && !importActive.valu
 const importResult = computed(() => {
   try { return importStatus.value?.task.result ? JSON.parse(importStatus.value.task.result) as Record<string, unknown> : null } catch { return null }
 })
+const shareLeaves = computed(() => sharePreviewEntries.value.filter(entry => !entry.is_dir))
+const selectedShareManifest = computed(() => shareLeaves.value.filter(entry => selectedShareEntries.value.has(entry.id)).map(entry => ({ id: entry.id, revision: entry.revision || '', name: entry.name, size: entry.size })))
+
+watch(() => [shareForm.value.url, shareForm.value.password, currentAccountId.value], () => {
+  sharePreviewLoaded.value = false
+  sharePreviewEntries.value = []
+  selectedShareEntries.value = new Set()
+  importAll.value = false
+})
+const selectedShareBytes = computed(() => selectedShareManifest.value.reduce((total, entry) => total + (Number.isFinite(entry.size) ? entry.size : 0), 0))
 
 function fileId(file: DriveFile) { return String(file.file_id || file.cid || '') }
 function fileSize(file: DriveFile) { return file.is_folder ? '文件夹' : file.size == null ? '大小未知' : formatBytes(file.size) }
@@ -120,6 +136,10 @@ function resetProviderState() {
   success.value = ''
   filesError.value = ''
   accountsError.value = ''
+  sharePreviewLoaded.value = false
+  sharePreviewEntries.value = []
+  selectedShareEntries.value = new Set()
+  importAll.value = false
   accountSuccess.value = ''
   accountActionError.value = ''
   resourcePreloadError.value = ''
@@ -191,26 +211,29 @@ async function maybePreloadResourceImport() {
   if (!resourceId || provider.value !== 'quark' || resourcePreloadBusy || !currentAccountId.value || !!accountsError.value || !!filesError.value || loading.value || accountsLoading.value) return
   resourcePreloadBusy = true
   const requestedGeneration = generation
-	resourcePreloadError.value = ''
-	try {
-		const response = await fetch(`/api/v1/links/${encodeURIComponent(resourceId)}`, { signal: requestController.signal })
-		await requireOk(response, '读取资源分享失败')
-		const payload = await response.json()
-		if (requestedGeneration !== generation) return
-		const resource = payload.data
-		if (!resource || (resource.disk_type && resource.disk_type !== 'quark') || typeof resource.url !== 'string' || !resource.url.trim()) throw new Error('该资源不是可用的夸克分享。')
-		shareForm.value = { url: resource.url.trim(), password: typeof resource.password === 'string' ? resource.password : '' }
-		shareError.value = ''
-		showShareModal.value = true
-		pendingResourceId = ''
-		await router.replace({ query: { ...route.query, provider: 'quark', resource_id: undefined } })
-	} catch (error) {
-		if ((error as Error).name !== 'AbortError' && requestedGeneration === generation) resourcePreloadError.value = errorMessage(error)
+  resourcePreloadError.value = ''
+  try {
+    const response = await fetch(`/api/v1/links/${encodeURIComponent(resourceId)}`, { signal: requestController.signal })
+    await requireOk(response, '读取资源分享失败')
+    const payload = await response.json()
+    if (requestedGeneration !== generation) return
+    const resource = payload.data
+    if (!resource || (resource.disk_type && resource.disk_type !== 'quark') || typeof resource.url !== 'string' || !resource.url.trim()) throw new Error('该资源不是可用的夸克分享。')
+    shareForm.value = { url: resource.url.trim(), password: typeof resource.password === 'string' ? resource.password : '' }
+    sharePreviewLoaded.value = false
+    sharePreviewEntries.value = []
+    selectedShareEntries.value = new Set()
+    importAll.value = false
+    shareError.value = ''
+    showShareModal.value = true
+    pendingResourceId = ''
+    await router.replace({ query: { ...route.query, provider: 'quark', resource_id: undefined } })
+  } catch (error) {
+    if ((error as Error).name !== 'AbortError' && requestedGeneration === generation) resourcePreloadError.value = errorMessage(error)
   } finally {
     resourcePreloadBusy = false
   }
 }
-
 async function switchProvider(next: Provider, syncRoute = true) {
   if (next === provider.value) {
     await maybePreloadResourceImport()
@@ -353,7 +376,14 @@ async function createFolder() {
     await fetchFiles()
   } catch (error) { folderError.value = errorMessage(error) } finally { folderBusy.value = false }
 }
-function openShareTransfer() { shareError.value = ''; showShareModal.value = true }
+function openShareTransfer() {
+  shareError.value = ''
+  sharePreviewLoaded.value = false
+  sharePreviewEntries.value = []
+  selectedShareEntries.value = new Set()
+  importAll.value = false
+  showShareModal.value = true
+}
 
 function scheduleImportPoll(delay: number) {
   if (importPollTimer) window.clearTimeout(importPollTimer)
@@ -373,16 +403,62 @@ async function pollImport() {
     scheduleImportPoll(importActive.value ? 1000 : 5000)
   }
 }
+async function previewQuarkShare() {
+  if (sharePreviewBusy.value) return
+  const url = shareForm.value.url.trim()
+  const password = shareForm.value.password.trim()
+  const accountID = currentAccountId.value
+  if (!url) { shareError.value = '请先填写夸克分享链接。'; return }
+  sharePreviewBusy.value = true
+  shareError.value = ''
+  try {
+    const response = await fetch('/api/v1/drive/share-snapshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'quark', account_id: currentAccountId.value, url, recursive: true, ...(shareForm.value.password.trim() ? { password: shareForm.value.password.trim() } : {}) }),
+    })
+    await requireOk(response, '读取夸克分享清单失败')
+    const snapshot = await response.json()
+    if (url !== shareForm.value.url.trim() || password !== shareForm.value.password.trim() || accountID !== currentAccountId.value) return
+    if (!Array.isArray(snapshot.entries)) throw new Error('分享清单格式不正确，未安全提交任何文件。')
+    sharePreviewEntries.value = snapshot.entries.filter((entry: ShareEntry) => typeof entry?.id === 'string' && typeof entry?.name === 'string' && typeof entry?.size === 'number')
+    selectedShareEntries.value = new Set()
+    sharePreviewLoaded.value = true
+    if (!shareLeaves.value.length) shareError.value = '递归清单中没有可选择的文件叶子；如确认要导入全部内容，请明确勾选“导入整个分享”。'
+  } catch (error) {
+    sharePreviewLoaded.value = false
+    sharePreviewEntries.value = []
+    selectedShareEntries.value = new Set()
+    shareError.value = errorMessage(error)
+  } finally { sharePreviewBusy.value = false }
+}
+function toggleShareEntry(id: string) {
+  const next = new Set(selectedShareEntries.value)
+  if (next.has(id)) next.delete(id); else next.add(id)
+  selectedShareEntries.value = next
+}
 async function saveSharedContent() {
   if (shareBusy.value) return
   const url = shareForm.value.url.trim()
   if (!url) { shareError.value = `请填写${providerLabel.value}分享链接。`; return }
+  if (provider.value === 'quark' && !importAll.value && !sharePreviewLoaded.value) {
+    await previewQuarkShare()
+    return
+  }
+  if (provider.value === 'quark' && !importAll.value && selectedShareManifest.value.length === 0) {
+    shareError.value = '请选择至少一个文件叶子，或明确勾选“导入整个分享”；不会默认导入整个分享。'
+    return
+  }
   shareBusy.value = true
   shareError.value = ''
   success.value = ''
   try {
     if (provider.value === 'quark') {
-      const response = await fetch('/api/v1/quark/share-imports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ quark_account_id: currentAccountId.value, quark_target_id: currentCid.value, share_url: url, ...(shareForm.value.password.trim() ? { share_password: shareForm.value.password.trim() } : {}) }) })
+      const payload: Record<string, unknown> = { quark_account_id: currentAccountId.value, quark_target_id: currentCid.value, share_url: url }
+      if (shareForm.value.password.trim()) payload.share_password = shareForm.value.password.trim()
+      if (importAll.value) payload.import_all = true
+      else payload.selected_source_manifest = selectedShareManifest.value
+      const response = await fetch('/api/v1/quark/share-imports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       await requireOk(response, '提交夸克分享导入失败')
       const queued = await response.json()
       importStatus.value = { task: { id: queued.task_id, status: queued.status, progress: 0 }, detail: null }
@@ -619,17 +695,40 @@ onUnmounted(() => {
         </div>
         <div>
           <label for="share-transfer-url" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">{{ providerLabel }}分享链接</label>
-          <input id="share-transfer-url" v-model="shareForm.url" :disabled="shareBusy" type="text" inputmode="url" autocomplete="off" required autofocus :placeholder="provider === 'quark' ? 'https://pan.quark.cn/s/...' : 'https://115.com/s/...'" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" :aria-invalid="!!shareError" :aria-describedby="shareError ? 'share-transfer-error' : 'share-transfer-help'" />
-          <p id="share-transfer-help" class="mt-2 text-xs text-text-muted">{{ provider === 'quark' ? '分享会先保存到当前夸克目录，再由服务器逐文件下载、上传并核对 115 目标。' : '支持 115.com 与 115cdn.com 分享链接。链接已包含提取码时，下方可以留空。' }}</p>
+          <input id="share-transfer-url" v-model="shareForm.url" :disabled="shareBusy || sharePreviewBusy" type="text" inputmode="url" autocomplete="off" required autofocus :placeholder="provider === 'quark' ? 'https://pan.quark.cn/s/...' : 'https://115.com/s/...'" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm focus:border-accent focus:outline-none" :aria-invalid="!!shareError" :aria-describedby="shareError ? 'share-transfer-error' : 'share-transfer-help'" />
+          <p id="share-transfer-help" class="mt-2 text-xs text-text-muted">{{ provider === 'quark' ? '先读取递归清单，再勾选要发送的文件叶子；预览失败不会自动改为整包导入。' : '支持 115.com 与 115cdn.com 分享链接。链接已包含提取码时，下方可以留空。' }}</p>
         </div>
         <div>
           <label for="share-transfer-password" class="block mb-2 text-xs font-mono uppercase tracking-wider text-text-muted font-medium">提取码（可选）</label>
-          <input id="share-transfer-password" v-model="shareForm.password" :disabled="shareBusy" type="text" autocomplete="off" maxlength="128" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" />
+          <input id="share-transfer-password" v-model="shareForm.password" :disabled="shareBusy || sharePreviewBusy" type="text" autocomplete="off" maxlength="128" class="w-full rounded-xl border border-border/80 bg-bg px-3.5 text-sm font-mono focus:border-accent focus:outline-none" />
         </div>
+        <template v-if="provider === 'quark'">
+          <div class="rounded-xl border border-border/70 bg-bg-muted/30 p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="text-sm font-semibold text-text">递归文件预览</p>
+              <button type="button" :disabled="sharePreviewBusy || shareBusy || !shareForm.url.trim()" class="file-button" @click="previewQuarkShare"><Loader2 v-if="sharePreviewBusy" class="w-4 h-4 animate-spin" aria-hidden="true" />{{ sharePreviewBusy ? '正在读取…' : '读取递归清单' }}</button>
+            </div>
+            <p v-if="!sharePreviewLoaded" class="text-xs text-text-muted">尚未读取清单；提交按钮会先读取预览，不会直接导入整包。</p>
+            <template v-else>
+              <p class="text-xs font-mono text-text-muted">共 {{ shareLeaves.length }} 个文件 · 已选 {{ selectedShareManifest.length }} 个 · {{ formatBytes(selectedShareBytes) }}</p>
+              <ul v-if="shareLeaves.length" class="max-h-48 overflow-y-auto divide-y divide-border/50 rounded-lg border border-border/60">
+                <li v-for="entry in shareLeaves" :key="entry.id" :class="selectedShareEntries.has(entry.id) ? 'bg-accent-soft/40' : ''">
+                  <label class="flex min-h-11 cursor-pointer items-center gap-3 p-2.5 text-sm">
+                  <input type="checkbox" :checked="selectedShareEntries.has(entry.id)" :disabled="shareBusy || !entry.revision" :aria-label="`选择 ${entry.name}`" @change="toggleShareEntry(entry.id)" />
+                  <span class="min-w-0 flex-1 break-all">{{ entry.name }}</span>
+                  <span class="shrink-0 text-xs font-mono text-text-muted">{{ formatBytes(entry.size) }}</span>
+                  </label>
+                </li>
+              </ul>
+              <p v-if="shareLeaves.some(entry => !entry.revision)" class="text-xs text-danger">部分文件缺少可验证修订标识，已禁止选择；请刷新预览。</p>
+            </template>
+            <label class="flex items-start gap-3 border-t border-border/60 pt-3 text-sm text-text cursor-pointer"><input v-model="importAll" type="checkbox" :disabled="shareBusy" /><span><strong class="block">明确导入整个分享</strong><small class="text-xs text-text-muted">仅在你确认整包内容时勾选；这是唯一不提交文件清单的方式。</small></span></label>
+          </div>
+        </template>
         <p v-if="shareError" id="share-transfer-error" role="alert" class="text-sm text-danger break-words">转存失败：{{ shareError }}</p>
         <div class="flex flex-wrap justify-end gap-2 pt-2">
-          <button type="button" :disabled="shareBusy" class="file-button" @click="showShareModal = false">取消</button>
-          <button type="submit" :disabled="shareBusy || !shareForm.url.trim()" class="file-button bg-accent text-accent-contrast hover:bg-accent-strong"><Loader2 v-if="shareBusy" class="w-4 h-4 animate-spin" aria-hidden="true" />{{ shareBusy ? '正在提交…' : provider === 'quark' ? '转存并发送到 115' : '转存到当前目录' }}</button>
+          <button type="button" :disabled="shareBusy || sharePreviewBusy" class="file-button" @click="showShareModal = false">取消</button>
+          <button type="submit" :disabled="shareBusy || sharePreviewBusy || !shareForm.url.trim() || (provider === 'quark' && sharePreviewLoaded && !importAll && selectedShareManifest.length === 0)" class="file-button bg-accent text-accent-contrast hover:bg-accent-strong"><Loader2 v-if="shareBusy || sharePreviewBusy" class="w-4 h-4 animate-spin" aria-hidden="true" />{{ shareBusy ? '正在提交…' : provider === 'quark' && importAll ? '确认整包导入' : provider === 'quark' && !sharePreviewLoaded ? '读取清单' : provider === 'quark' ? '提交所选文件' : '转存到当前目录' }}</button>
         </div>
       </form>
     </UiDialog>

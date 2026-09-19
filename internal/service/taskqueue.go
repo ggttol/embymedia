@@ -219,13 +219,25 @@ func validateQuarkImportPayload(payload map[string]any, allowAutofillBinding boo
 	if err != nil {
 		return err
 	}
+	importAll, err := booleanPayload(payload, "import_all", false)
+	if err != nil {
+		return err
+	}
+	_, selectedIDsSubmitted := payload["selected_source_ids"]
 	selected, err := optionalStringSlicePayload(payload, "selected_source_ids")
 	if err != nil {
 		return err
 	}
+	_, manifestSubmitted := payload["selected_source_manifest"]
 	selections, err := shareSelectionsPayload(payload, "selected_source_manifest")
 	if err != nil {
 		return err
+	}
+	if manifestSubmitted && len(selections) == 0 {
+		return fmt.Errorf("selected_source_manifest must contain at least one source")
+	}
+	if importAll && manifestSubmitted {
+		return fmt.Errorf("import_all cannot be combined with selected_source_manifest")
 	}
 	bindingKeys := []string{"autofill_library_name", "autofill_library_id", "autofill_library_cid", "autofill_series_id", "autofill_tmdb_id", "autofill_series_folder"}
 	bound := false
@@ -241,16 +253,32 @@ func validateQuarkImportPayload(payload map[string]any, allowAutofillBinding boo
 		return err
 	}
 	if !bound {
-		if len(selected) > 0 || len(selections) > 0 || len(expected) > 0 || parentTaskID != "" {
-			return fmt.Errorf("source selections, parent_task_id, and expected_episodes are reserved for internal autofill imports")
+		if (selectedIDsSubmitted && !(allowAutofillBinding && priorTaskID != "")) || len(expected) > 0 || parentTaskID != "" {
+			return fmt.Errorf("selected_source_ids, parent_task_id, and expected_episodes are reserved for internal autofill imports")
 		}
 		if priorTaskID != "" && !allowAutofillBinding {
 			return fmt.Errorf("prior_import_task_id is reserved for internal retry")
+		}
+		if allowAutofillBinding && priorTaskID != "" && selectedIDsSubmitted {
+			if len(selected) == 0 || len(selections) != len(selected) {
+				return fmt.Errorf("selected_source_manifest must describe every selected source")
+			}
+			for index := range selected {
+				if selections[index].ID != selected[index] {
+					return fmt.Errorf("selected_source_manifest order must match selected_source_ids")
+				}
+			}
+		}
+		if !importAll && !manifestSubmitted {
+			return fmt.Errorf("either selected_source_manifest or import_all:true is required")
 		}
 		return nil
 	}
 	if !allowAutofillBinding {
 		return fmt.Errorf("autofill destination bindings are internal and cannot be submitted directly")
+	}
+	if importAll {
+		return fmt.Errorf("autofill transfer requires selected source identities")
 	}
 	if len(selected) == 0 {
 		return fmt.Errorf("selected_source_ids is required for autofill transfer")
@@ -355,16 +383,6 @@ func ValidateTask(taskType string, payload map[string]any) error {
 	return validateTask(strings.TrimSpace(taskType), payload)
 }
 
-// Enqueue validates and persists one standalone task for asynchronous execution.
-func (s *TaskQueueService) Enqueue(taskType string, payload map[string]any) (*domain.AsyncTask, error) {
-	return s.enqueue(taskType, payload, "")
-}
-
-// EnqueueScheduled atomically links an execution to the schedule that launched it.
-func (s *TaskQueueService) EnqueueScheduled(scheduleID, taskType string, payload map[string]any) (*domain.AsyncTask, error) {
-	return s.enqueue(taskType, payload, scheduleID)
-}
-
 func (s *TaskQueueService) enqueue(taskType string, payload map[string]any, scheduleID string) (*domain.AsyncTask, error) {
 	taskType = strings.TrimSpace(taskType)
 	if payload == nil {
@@ -373,7 +391,38 @@ func (s *TaskQueueService) enqueue(taskType string, payload map[string]any, sche
 	if err := validateTask(taskType, payload); err != nil {
 		return nil, err
 	}
+	if taskType == "quark_to_115_import" {
+		// Public callers submit only the immutable leaf manifest. Persist the
+		// derived IDs for the worker and retry binding checks, never accept IDs
+		// supplied by the caller.
+		selections, err := shareSelectionsPayload(payload, "selected_source_manifest")
+		if err != nil {
+			return nil, err
+		}
+		if len(selections) > 0 {
+			derived := make([]string, len(selections))
+			for index := range selections {
+				derived[index] = selections[index].ID
+			}
+			persisted := make(map[string]any, len(payload)+1)
+			for key, value := range payload {
+				persisted[key] = value
+			}
+			persisted["selected_source_ids"] = derived
+			payload = persisted
+		}
+	}
 	return s.persistTask(taskType, payload, scheduleID)
+}
+
+// Enqueue validates and persists one standalone task for asynchronous execution.
+func (s *TaskQueueService) Enqueue(taskType string, payload map[string]any) (*domain.AsyncTask, error) {
+	return s.enqueue(taskType, payload, "")
+}
+
+// EnqueueScheduled atomically links an execution to the schedule that launched it.
+func (s *TaskQueueService) EnqueueScheduled(scheduleID, taskType string, payload map[string]any) (*domain.AsyncTask, error) {
+	return s.enqueue(taskType, payload, scheduleID)
 }
 
 func (s *TaskQueueService) enqueueAutofillQuarkImport(payload map[string]any) (*domain.AsyncTask, error) {
@@ -725,6 +774,13 @@ func (s *TaskQueueService) Retry(taskID string) (*domain.AsyncTask, error) {
 		payload[key] = value
 	}
 	if task.Type == "quark_to_115_import" {
+		prior, checkpointErr := s.db.GetCrossDriveImport(task.ID)
+		if checkpointErr != nil && !errors.Is(checkpointErr, sql.ErrNoRows) {
+			return nil, checkpointErr
+		}
+		if checkpointErr == nil && len(prior.SavedRootIDs) == 0 {
+			return nil, fmt.Errorf("prior import has no reconciled saved-root checkpoint; share save outcome requires review")
+		}
 		payload["prior_import_task_id"] = task.ID
 		return s.enqueueAutofillQuarkImport(payload)
 	}

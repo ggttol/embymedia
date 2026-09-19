@@ -3,15 +3,15 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-
+	"github.com/embymedia/embymedia/internal/domain"
 	"github.com/embymedia/embymedia/internal/security"
 	"github.com/embymedia/embymedia/internal/service"
 	"github.com/embymedia/embymedia/internal/storage"
 	"github.com/mark3labs/mcp-go/mcp"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
 )
 
 func newTestMCPServer(t *testing.T) *MCPServer {
@@ -40,7 +40,7 @@ func TestAllMCPToolsRegistered(t *testing.T) {
 		"cd2_mount_status", "cd2_remount", "emby_refresh_library", "emby_get_libraries", "emby_inspect_item",
 		"task_submit", "task_query", "task_cancel", "task_get_logs", "system_get_config", "system_health",
 		"c115_list_accounts", "c115_search_files", "c115_snapshot_share", "c115_list_offline", "emby_search_items", "emby_list_sessions", "emby_missing_posters",
-		"task_list", "task_retry", "schedule_list", "schedule_upsert", "schedule_run", "schedule_delete", "c115_request_delete", "c115_execute_delete", "quark_import_share_to_115", "system_update_config",
+		"task_list", "task_retry", "schedule_list", "schedule_upsert", "schedule_run", "schedule_delete", "c115_request_delete", "c115_execute_delete", "quark_import_share_to_115", "quark_snapshot_share", "system_update_config",
 	}
 	if len(registered) != len(expected) {
 		t.Fatalf("expected %d tools, got %d", len(expected), len(registered))
@@ -275,5 +275,31 @@ func TestQuarkImportRejectsArbitraryDestination(t *testing.T) {
 	result, err := server.handleQuarkImportShare(context.Background(), req)
 	if err != nil || !result.IsError {
 		t.Fatalf("arbitrary destination was accepted: result=%+v err=%v", result, err)
+	}
+}
+func TestQuarkImportRequiresExplicitSelectionOrWholePack(t *testing.T) {
+	server := newTestMCPServer(t)
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"quark_account_id": "q", "quark_target_id": "folder", "share_url": "https://pan.quark.cn/s/share"}
+	result, err := server.handleQuarkImportShare(context.Background(), req)
+	if err != nil || !result.IsError || !strings.Contains(result.Content[0].(mcp.TextContent).Text, "selected_source_manifest") {
+		t.Fatalf("missing selection was not rejected clearly: result=%+v err=%v", result, err)
+	}
+}
+func TestQuarkImportExplicitWholePack(t *testing.T) {
+	server := newTestMCPServer(t)
+	for _, account := range []*domain.DriveAccount{
+		{ID: "q", Type: "quark", Name: "Quark", Cookie: "q", IsDefault: true, Status: "active"},
+		{ID: "c", Type: "115", Name: "115", Cookie: "c", IsDefault: true, Status: "active"},
+	} {
+		if err := server.db.SaveAccount(account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"quark_account_id": "q", "quark_target_id": "folder", "share_url": "https://pan.quark.cn/s/share", "import_all": true}
+	result, err := server.handleQuarkImportShare(context.Background(), req)
+	if err != nil || result.IsError {
+		t.Fatalf("explicit whole-pack import was rejected: result=%+v err=%v", result, err)
 	}
 }

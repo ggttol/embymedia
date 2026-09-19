@@ -250,9 +250,9 @@ func (m *MCPServer) registerTools() {
 
 	// 13. task_submit: 提交异步后台任务
 	m.server.AddTool(mcp.NewTool("task_submit",
-		mcp.WithDescription("Submit a real provider operation to the persistent background queue"),
+		mcp.WithDescription("Submit a real provider operation to the persistent background queue; series_auto_fill accepts source_shares keyed by exact Emby Series ID"),
 		mcp.WithString("task_type", mcp.Required(), mcp.Enum(service.SupportedTaskTypes()...), mcp.Description("Supported background task type")),
-		mcp.WithObject("payload", mcp.Description("Task parameters; fields depend on task_type")),
+		mcp.WithObject("payload", mcp.Description("Task parameters; series_auto_fill may include source_shares map")),
 	), m.handleTaskSubmit)
 
 	// 14. task_query: 查询任务执行状态与完成百分比
@@ -285,7 +285,8 @@ func (m *MCPServer) registerTools() {
 
 	m.server.AddTool(mcp.NewTool("c115_list_accounts", mcp.WithDescription("List managed 115 accounts, status and capacity without credentials")), m.handleC115ListAccounts)
 	m.server.AddTool(mcp.NewTool("c115_search_files", mcp.WithDescription("Search files and directories already stored in a managed 115 account"), mcp.WithString("query", mcp.Required()), mcp.WithString("account_id"), mcp.WithInteger("offset", mcp.Min(0)), mcp.WithInteger("limit", mcp.Min(1), mcp.Max(200))), m.handleC115SearchFiles)
-	m.server.AddTool(mcp.NewTool("c115_snapshot_share", mcp.WithDescription("Inspect a 115 share before saving it"), mcp.WithString("url", mcp.Required()), mcp.WithString("password"), mcp.WithString("account_id")), m.handleC115SnapshotShare)
+	m.server.AddTool(mcp.NewTool("c115_snapshot_share", mcp.WithDescription("Inspect a 115 share before saving; recursive returns every leaf file"), mcp.WithString("url", mcp.Required()), mcp.WithString("password"), mcp.WithString("account_id"), mcp.WithBoolean("recursive", mcp.Description("Return recursive file leaves for safe selection"))), m.handleC115SnapshotShare)
+	m.server.AddTool(mcp.NewTool("quark_snapshot_share", mcp.WithDescription("Preview a Quark share recursively without saving; returns exact file identities for selective import"), mcp.WithString("url", mcp.Required()), mcp.WithString("password"), mcp.WithString("account_id")), m.handleQuarkSnapshotShare)
 	m.server.AddTool(mcp.NewTool("c115_list_offline", mcp.WithDescription("List current 115 offline download tasks"), mcp.WithString("account_id")), m.handleC115ListOffline)
 	m.server.AddTool(mcp.NewTool("emby_search_items", mcp.WithDescription("Search Emby items and return exact IDs for later operations"), mcp.WithString("query", mcp.Required()), mcp.WithInteger("limit", mcp.Min(1), mcp.Max(100))), m.handleEmbySearchItems)
 	m.server.AddTool(mcp.NewTool("emby_list_sessions", mcp.WithDescription("List active Emby playback sessions before disruptive maintenance")), m.handleEmbyListSessions)
@@ -300,12 +301,14 @@ func (m *MCPServer) registerTools() {
 	m.server.AddTool(mcp.NewTool("c115_execute_delete", mcp.WithDescription("Execute one unexpired target-bound deletion after browser approval"), mcp.WithString("approval_id", mcp.Required())), m.handleC115ExecuteDelete)
 	m.server.AddTool(mcp.NewTool("system_update_config", mcp.WithDescription("Update validated system settings; cannot change the browser deletion switch"), mcp.WithObject("settings", mcp.Required())), m.handleSystemUpdateConfig)
 	m.server.AddTool(mcp.NewTool("quark_import_share_to_115",
-		mcp.WithDescription("Save a Quark share into a selected Quark directory, then transfer and verify it under /emby/_待整理 in the default 115 account"),
+		mcp.WithDescription("Save selected Quark files into a Quark directory, then transfer and verify them under /emby/_待整理 in 115; use import_all only for explicit whole-pack imports"),
 		mcp.WithString("quark_account_id", mcp.Required()),
 		mcp.WithString("quark_target_id", mcp.Required()),
 		mcp.WithString("share_url", mcp.Required()),
 		mcp.WithString("share_password"),
 		mcp.WithString("c115_account_id"),
+		mcp.WithArray("selected_source_manifest", mcp.Description("Complete leaf identities from a recursive snapshot"), mcp.MinItems(1), mcp.Items(map[string]any{"type": "object", "required": []string{"id", "revision", "name", "size"}})),
+		mcp.WithBoolean("import_all", mcp.Description("Explicitly import the whole share; mutually exclusive with selected_source_manifest")),
 	), m.handleQuarkImportShare)
 }
 
@@ -390,6 +393,17 @@ func (m *MCPServer) handleC115SaveShare(ctx context.Context, req mcp.CallToolReq
 	encoded, _ := json.Marshal(map[string]any{"count": count, "title": title, "target_cid": targetCID})
 	return mcp.NewToolResultText(string(encoded)), nil
 }
+func decodeShareManifest(value any) ([]service.ShareSelection, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("selected_source_manifest must be an array of leaf identities")
+	}
+	var manifest []service.ShareSelection
+	if err := json.Unmarshal(raw, &manifest); err != nil || manifest == nil {
+		return nil, fmt.Errorf("selected_source_manifest must be an array of leaf identities")
+	}
+	return manifest, nil
+}
 
 func (m *MCPServer) handleQuarkImportShare(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	for _, key := range []string{"destination_cid", "destination_path", "target_cid", "c115_target_cid"} {
@@ -409,6 +423,24 @@ func (m *MCPServer) handleQuarkImportShare(_ context.Context, req mcp.CallToolRe
 	if err != nil {
 		return mcp.NewToolResultError("share_url is required"), nil
 	}
+	manifestValue, manifestPresent := req.GetArguments()["selected_source_manifest"]
+	importAll := req.GetBool("import_all", false)
+	if !manifestPresent && !importAll {
+		return mcp.NewToolResultError("selected_source_manifest is required; set import_all=true only for explicit whole-pack imports"), nil
+	}
+	if manifestPresent && importAll {
+		return mcp.NewToolResultError("selected_source_manifest and import_all cannot be used together"), nil
+	}
+	var manifest []service.ShareSelection
+	if manifestPresent {
+		manifest, err = decodeShareManifest(manifestValue)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if len(manifest) == 0 {
+			return mcp.NewToolResultError("selected_source_manifest must contain at least one file leaf"), nil
+		}
+	}
 	if _, err := m.drive.GetAccount("quark", quarkAccountID); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -422,13 +454,19 @@ func (m *MCPServer) handleQuarkImportShare(_ context.Context, req mcp.CallToolRe
 	} else if _, err := m.drive.GetAccount("115", c115AccountID); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	task, err := m.taskQueue.Enqueue("quark_to_115_import", map[string]any{
+	payload := map[string]any{
 		"quark_account_id": quarkAccountID,
 		"quark_target_id":  quarkTargetID,
 		"share_url":        strings.TrimSpace(shareURL),
 		"share_password":   strings.TrimSpace(req.GetString("share_password", "")),
 		"c115_account_id":  c115AccountID,
-	})
+	}
+	if manifestPresent {
+		payload["selected_source_manifest"] = manifest
+	} else {
+		payload["import_all"] = true
+	}
+	task, err := m.taskQueue.Enqueue("quark_to_115_import", payload)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("submit Quark import: %v", err)), nil
 	}
@@ -581,7 +619,7 @@ func safeTask(task *domain.AsyncTask) *domain.AsyncTask {
 }
 
 func publicTaskPayloadKey(key string) bool {
-	if key == "share_url" || key == "share_password" || key == "expected_episodes" || key == "selected_source_ids" || key == "selected_source_manifest" || key == "parent_task_id" || key == "prior_import_task_id" {
+	if key == "source_shares" || key == "share_url" || key == "share_password" || key == "expected_episodes" || key == "selected_source_ids" || key == "selected_source_manifest" || key == "parent_task_id" || key == "prior_import_task_id" {
 		return true
 	}
 	return strings.HasPrefix(key, "autofill_")
@@ -643,16 +681,43 @@ func (m *MCPServer) handleC115ListAccounts(ctx context.Context, _ mcp.CallToolRe
 	return jsonToolResult(accounts), nil
 }
 
+func (m *MCPServer) handleQuarkSnapshotShare(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	rawURL, err := req.RequireString("url")
+	if err != nil {
+		return mcp.NewToolResultError("url is required"), nil
+	}
+	snapshot, err := m.drive.SnapshotProviderShareTree(ctx, "quark", req.GetString("account_id", ""), rawURL, req.GetString("password", ""))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("snapshot share failed: %v", err)), nil
+	}
+	return jsonToolResult(snapshot), nil
+}
+
 func (m *MCPServer) handleC115SnapshotShare(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	rawURL, err := req.RequireString("url")
 	if err != nil {
 		return mcp.NewToolResultError("url is required"), nil
 	}
-	title, entries, err := m.drive.SnapshotShareCtx(ctx, req.GetString("account_id", ""), rawURL, req.GetString("password", ""))
+	accountID := req.GetString("account_id", "")
+	password := req.GetString("password", "")
+	var snapshot service.ShareSnapshot
+	if req.GetBool("recursive", false) {
+		snapshot, err = m.drive.SnapshotProviderShareTree(ctx, "115", accountID, rawURL, password)
+	} else {
+		snapshot, err = m.drive.SnapshotProviderShare(ctx, "115", accountID, rawURL, password)
+	}
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("snapshot share failed: %v", err)), nil
 	}
-	return jsonToolResult(map[string]any{"title": title, "entries": entries, "count": len(entries)}), nil
+	return jsonToolResult(map[string]any{"title": snapshot.Title, "entries": snapshot.Entries, "count": len(snapshot.Entries)}), nil
+}
+
+func (m *MCPServer) handleEmbyMissingPosters(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	report, err := m.emby.GetMediaWithoutPostersCtx(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list missing posters failed: %v", err)), nil
+	}
+	return jsonToolResult(report), nil
 }
 
 func (m *MCPServer) handleC115ListOffline(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -681,14 +746,6 @@ func (m *MCPServer) handleEmbyListSessions(ctx context.Context, _ mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("list Emby sessions failed: %v", err)), nil
 	}
 	return jsonToolResult(sessions), nil
-}
-
-func (m *MCPServer) handleEmbyMissingPosters(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	report, err := m.emby.GetMediaWithoutPostersCtx(ctx)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("list missing posters failed: %v", err)), nil
-	}
-	return jsonToolResult(report), nil
 }
 
 func (m *MCPServer) handleTaskList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

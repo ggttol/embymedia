@@ -75,6 +75,10 @@ func openAPISchema() map[string]any {
 	accountID := stringSchema("Managed account ID for the selected provider")
 	targetID := stringSchema("Destination provider directory ID; root is 0")
 	fileID := stringSchema("Provider file or directory ID")
+	shareSelection := schemaObject([]string{"id", "revision", "name", "size"}, map[string]any{
+		"id": stringSchema("Opaque provider leaf file ID"), "revision": stringSchema("Provider revision or identity token"), "name": stringSchema("Leaf file name"), "size": map[string]any{"type": "integer", "minimum": 0},
+	})
+	shareManifest := map[string]any{"type": "array", "minItems": 1, "items": shareSelection, "description": "Complete leaf identity manifest selected from recursive share snapshot"}
 	shareBody := schemaObject([]string{"provider", "url"}, map[string]any{
 		"provider": provider, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code"),
 		"target_cid": targetID, "account_id": accountID,
@@ -87,6 +91,7 @@ func openAPISchema() map[string]any {
 		"candidate_limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": 30, "default": 10},
 		"max_series":             map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
 		"candidate_overrides":    map[string]any{"type": "object", "description": "Map exact Series ID to one resource ID when resources conflict", "additionalProperties": map[string]any{"type": "string"}},
+		"source_shares":          map[string]any{"type": "object", "description": "Map exact Emby Series ID to a supplied provider share", "additionalProperties": schemaObject([]string{"provider", "url"}, map[string]any{"provider": provider, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code")})},
 	})
 	paths := map[string]any{
 		"/hooks/clouddrive2": map[string]any{"post": map[string]any{
@@ -107,7 +112,7 @@ func openAPISchema() map[string]any {
 		"/api/v1/links/{id}/save":      map[string]any{"post": apiOperation("saveResourceLink", "Save one indexed link to 115", []any{pathParameter("id", "Resource link ID")}, schemaObject(nil, map[string]any{"target_cid": targetID}))},
 		"/api/v1/cid-map":              map[string]any{"get": apiOperation("getCIDMap", "Read configured 115 category CIDs", nil, nil)},
 		"/api/v1/drive/share-save":     map[string]any{"post": apiOperation("saveDriveShare", "Save a provider share", nil, shareBody)},
-		"/api/v1/drive/share-snapshot": map[string]any{"post": apiOperation("snapshotDriveShare", "Inspect a provider share without saving", nil, schemaObject([]string{"provider", "url"}, map[string]any{"provider": provider, "account_id": accountID, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code")}))},
+		"/api/v1/drive/share-snapshot": map[string]any{"post": apiOperation("snapshotDriveShare", "Inspect a provider share without saving; recursive returns every leaf file", nil, schemaObject([]string{"provider", "url"}, map[string]any{"provider": provider, "account_id": accountID, "url": stringSchema("Provider share URL or code"), "password": stringSchema("Optional extraction code"), "recursive": map[string]any{"type": "boolean", "default": false}}))},
 		"/api/v1/drive/accounts": map[string]any{
 			"get": apiOperation("listDriveAccounts", "List provider accounts without credentials", []any{queryParameter("provider", "Drive provider", true)}, nil),
 			"post": apiOperation("upsertDriveAccount", "Create or update a provider account", nil, schemaObject([]string{"type", "name"}, map[string]any{
@@ -143,8 +148,8 @@ func openAPISchema() map[string]any {
 		"/api/v1/async-tasks/{id}/cancel": map[string]any{"post": apiOperation("cancelAsyncTask", "Cancel pending or running work", []any{pathParameter("id", "Task ID")}, nil)},
 		"/api/v1/async-tasks/{id}/retry":  map[string]any{"post": apiOperation("retryAsyncTask", "Create a reviewed retry from failed or cancelled work", []any{pathParameter("id", "Task ID")}, nil)},
 		"/api/v1/async-tasks/{id}/runs":   map[string]any{"get": apiOperation("listTaskRuns", "List durable attempts with start time, end time, progress, errors and logs", []any{pathParameter("id", "Task ID")}, nil)},
-		"/api/v1/quark/share-imports": map[string]any{"post": apiOperation("importQuarkShareTo115", "Save a Quark share and transfer verified files to /emby/_待整理 in 115", nil, schemaObject([]string{"quark_account_id", "quark_target_id", "share_url"}, map[string]any{
-			"quark_account_id": accountID, "quark_target_id": stringSchema("Quark directory ID"), "share_url": stringSchema("Quark share URL"), "share_password": stringSchema("Optional share password"), "c115_account_id": stringSchema("Optional 115 account; default is used when omitted"),
+		"/api/v1/quark/share-imports": map[string]any{"post": apiOperation("importQuarkShareTo115", "Save selected Quark files and transfer verified files to /emby/_待整理 in 115", nil, schemaObject([]string{"quark_account_id", "quark_target_id", "share_url"}, map[string]any{
+			"quark_account_id": accountID, "quark_target_id": stringSchema("Quark directory ID"), "share_url": stringSchema("Quark share URL"), "share_password": stringSchema("Optional share password"), "c115_account_id": stringSchema("Optional 115 account; default is used when omitted"), "selected_source_manifest": shareManifest, "import_all": map[string]any{"type": "boolean", "description": "Explicitly import the whole share when true; mutually exclusive with selected_source_manifest"},
 		}))},
 		"/api/v1/quark/share-imports/{task_id}": map[string]any{"get": apiOperation("getQuarkShareImport", "Read structured Quark-to-115 import progress", []any{pathParameter("task_id", "Import task ID")}, nil)},
 		"/api/v1/share-subscriptions": map[string]any{

@@ -39,10 +39,17 @@ const (
 	autoFillFolderVisibilityInterval = time.Second
 )
 
+type autoFillSourceShare struct {
+	Provider string
+	URL      string
+	Password string
+}
+
 type seriesAutoFillSpec struct {
 	Libraries            []string
 	SeriesIDs            []string
 	CandidateOverrides   map[string]string
+	SourceShares         map[string]autoFillSourceShare
 	ParentTaskID         string
 	Transfer             bool
 	ReplaceCompletedPack bool
@@ -203,6 +210,93 @@ func candidateOverridesPayload(payload map[string]any) (map[string]string, error
 	return result, nil
 }
 
+func sourceSharesPayload(payload map[string]any) (map[string]autoFillSourceShare, error) {
+	value, present := payload["source_shares"]
+	if !present {
+		return nil, nil
+	}
+	values, ok := value.(map[string]any)
+	if !ok {
+		if typed, ok := value.(map[string]autoFillSourceShare); ok {
+			values = make(map[string]any, len(typed))
+			for key, share := range typed {
+				values[key] = share
+			}
+		} else {
+			return nil, fmt.Errorf("source_shares must be an object keyed by Emby Series ID")
+		}
+	}
+	result := make(map[string]autoFillSourceShare, len(values))
+	for rawSeriesID, rawShare := range values {
+		seriesID := strings.TrimSpace(rawSeriesID)
+		if seriesID == "" {
+			return nil, fmt.Errorf("source_shares keys must be non-empty Emby Series IDs")
+		}
+		var fields map[string]any
+		switch typed := rawShare.(type) {
+		case map[string]any:
+			fields = typed
+		case autoFillSourceShare:
+			fields = map[string]any{"provider": typed.Provider, "url": typed.URL, "password": typed.Password}
+		case map[string]string:
+			fields = make(map[string]any, len(typed))
+			for key, value := range typed {
+				fields[key] = value
+			}
+		default:
+			return nil, fmt.Errorf("source_shares[%q] must be an object", seriesID)
+		}
+		provider, ok := fields["provider"].(string)
+		if !ok {
+			return nil, fmt.Errorf("source_shares[%q].provider must be 115 or quark", seriesID)
+		}
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider != "115" && provider != "quark" {
+			return nil, fmt.Errorf("source_shares[%q].provider must be 115 or quark", seriesID)
+		}
+		rawURL, ok := fields["url"].(string)
+		if !ok || strings.TrimSpace(rawURL) == "" {
+			return nil, fmt.Errorf("source_shares[%q].url is required", seriesID)
+		}
+		rawURL = strings.TrimSpace(rawURL)
+		parsedURL, urlErr := url.ParseRequestURI(rawURL)
+		if urlErr != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil {
+			return nil, fmt.Errorf("source_shares[%q].url must be an HTTPS share URL", seriesID)
+		}
+		password := ""
+		if rawPassword, exists := fields["password"]; exists {
+			var passwordOK bool
+			password, passwordOK = rawPassword.(string)
+			if !passwordOK {
+				return nil, fmt.Errorf("source_shares[%q].password must be a string", seriesID)
+			}
+			password = strings.TrimSpace(password)
+		}
+		var parseErr error
+		if provider == "115" {
+			_, _, parseErr = ParseShareCode(rawURL, password)
+		} else {
+			_, _, parseErr = parseQuarkShare(rawURL, password)
+		}
+		if parseErr != nil {
+			return nil, fmt.Errorf("source_shares[%q].url is invalid: %w", seriesID, parseErr)
+		}
+		if _, duplicate := result[seriesID]; duplicate {
+			return nil, fmt.Errorf("source_shares contains duplicate Series ID %q", seriesID)
+		}
+		result[seriesID] = autoFillSourceShare{Provider: provider, URL: rawURL, Password: password}
+	}
+	return result, nil
+}
+
+func sourceShareForSeries(spec seriesAutoFillSpec, seriesID string) (autoFillCandidate, bool) {
+	share, ok := spec.SourceShares[seriesID]
+	if !ok {
+		return autoFillCandidate{}, false
+	}
+	return autoFillCandidate{Provider: share.Provider, URL: share.URL, Password: share.Password}, true
+}
+
 func resolveSeriesAutoFillSpec(payload map[string]any) (seriesAutoFillSpec, error) {
 	libraries, err := stringSlicePayload(payload, "libraries")
 	if err != nil {
@@ -226,6 +320,23 @@ func resolveSeriesAutoFillSpec(payload map[string]any) (seriesAutoFillSpec, erro
 	if err != nil {
 		return seriesAutoFillSpec{}, err
 	}
+	sourceShares, err := sourceSharesPayload(payload)
+	if err != nil {
+		return seriesAutoFillSpec{}, err
+	}
+	if len(sourceShares) > 0 {
+		for seriesID := range sourceShares {
+			if _, conflict := overrides[seriesID]; conflict {
+				return seriesAutoFillSpec{}, fmt.Errorf("source_shares and candidate_overrides cannot target the same Series")
+			}
+		}
+		if len(seriesIDs) == 0 {
+			for seriesID := range sourceShares {
+				seriesIDs = append(seriesIDs, seriesID)
+			}
+			sort.Strings(seriesIDs)
+		}
+	}
 	transfer, err := booleanPayload(payload, "transfer", true)
 	if err != nil {
 		return seriesAutoFillSpec{}, err
@@ -242,7 +353,7 @@ func resolveSeriesAutoFillSpec(payload map[string]any) (seriesAutoFillSpec, erro
 	if err != nil {
 		return seriesAutoFillSpec{}, err
 	}
-	return seriesAutoFillSpec{Libraries: libraries, SeriesIDs: seriesIDs, CandidateOverrides: overrides, Transfer: transfer, ReplaceCompletedPack: replaceCompletedPack, CandidateLimit: candidateLimit, MaxSeries: maxSeries}, nil
+	return seriesAutoFillSpec{Libraries: libraries, SeriesIDs: seriesIDs, CandidateOverrides: overrides, SourceShares: sourceShares, Transfer: transfer, ReplaceCompletedPack: replaceCompletedPack, CandidateLimit: candidateLimit, MaxSeries: maxSeries}, nil
 }
 
 func parseAutoFillCandidates(result map[string]any, providerName string) []autoFillCandidate {
@@ -365,6 +476,10 @@ func stopAutoFillShareProbes(err error) bool {
 		statusErr.StatusCode == http.StatusMethodNotAllowed ||
 		statusErr.StatusCode == http.StatusTooManyRequests ||
 		statusErr.StatusCode >= http.StatusInternalServerError
+}
+
+func autoFillSystemicProbeFailure(err error) bool {
+	return stopAutoFillShareProbes(err)
 }
 
 func (s *TaskQueueService) scanAutoFillShare(ctx context.Context, candidate autoFillCandidate) (string, []autoFillLeaf, error) {
@@ -595,12 +710,21 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		result.RemainingEpisodes = result.MissingEpisodes
 		return result, nil
 	}
-	candidates, discoveryErrors, err := s.searchAutoFillCandidates(ctx, seriesName, spec.CandidateLimit)
-	if err != nil {
-		result.Issue = err.Error()
-		result.fatalErr = err
-		result.RemainingEpisodes = result.MissingEpisodes
-		return result, nil
+	var candidates []autoFillCandidate
+	var discoveryErrors []error
+	explicitSource := false
+	if sourceCandidate, explicit := sourceShareForSeries(spec, seriesID); explicit {
+		candidates = []autoFillCandidate{sourceCandidate}
+		explicitSource = true
+	} else {
+		var searchErr error
+		candidates, discoveryErrors, searchErr = s.searchAutoFillCandidates(ctx, seriesName, spec.CandidateLimit)
+		if searchErr != nil {
+			result.Issue = searchErr.Error()
+			result.fatalErr = searchErr
+			result.RemainingEpisodes = result.MissingEpisodes
+			return result, nil
+		}
 	}
 	if spec.Transfer && spec.ReplaceCompletedPack {
 		replacement, paths, err := s.stageCompletedPack(ctx, library, libraryCID, gaps, series, candidates)
@@ -668,9 +792,9 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 			publicError := publicAutoFillError(candidate, scanErr)
 			evidence.Decision, evidence.RejectionReason = "rejected", publicError
 			result.CandidateEvidence = append(result.CandidateEvidence, evidence)
-			result.probeErr = scanErr
 			inspectionErrors = append(inspectionErrors, fmt.Errorf("resource %s: %s", candidate.ID, publicError))
-			if stopAutoFillShareProbes(scanErr) {
+			if autoFillSystemicProbeFailure(scanErr) {
+				result.probeErr = scanErr
 				break
 			}
 			continue
@@ -703,6 +827,9 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		evidence.TotalBytes = match.totalBytes
 		if len(match.selectedIDs) == 0 {
 			evidence.Decision = "no_match"
+			if explicitSource {
+				result.Issue = fmt.Sprintf("explicit source share did not match an aired missing episode for Series %s", seriesID)
+			}
 		} else {
 			evidence.Decision = "matched"
 			inspected = append(inspected, match)
@@ -726,15 +853,18 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		return episodeOrder[i].Episode < episodeOrder[j].Episode
 	})
 	chosen := make(map[int][]episodeKey)
+	override := strings.TrimSpace(spec.CandidateOverrides[seriesID])
+	overrideMatched := false
 	for _, key := range episodeOrder {
 		refs := byEpisode[key]
 		selected := -1
-		if override := strings.TrimSpace(spec.CandidateOverrides[seriesID]); override != "" {
+		if override != "" {
 			for _, index := range refs {
 				candidate := inspected[index].candidate
 				providerQualifiedID := candidate.Provider + ":" + candidate.ID
 				if candidate.ID == override || providerQualifiedID == override {
 					selected = index
+					overrideMatched = true
 					break
 				}
 			}
@@ -755,6 +885,9 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 		}
 		chosen[selected] = append(chosen[selected], key)
 		matched[key] = struct{}{}
+	}
+	if override != "" && !overrideMatched {
+		result.Issue = fmt.Sprintf("candidate override %q did not match any inspected resource", override)
 	}
 	chosenIndices := make([]int, 0, len(chosen))
 	for index := range chosen {
@@ -850,12 +983,16 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 			}
 		}
 		if _, _, transferErr := s.driveSvc.receiveShareEntriesCtx(ctx, account, shareCode, receiveCode, selectedIDs, targetCID, match.shareTitle); transferErr != nil {
-			lastTransferError = transferErr.Error()
-			result.fatalErr = errors.Join(result.fatalErr, transferErr)
-			if stopAutoFillShareProbes(transferErr) {
+			if autoFillSystemicProbeFailure(transferErr) {
+				result.fatalErr = errors.Join(result.fatalErr, transferErr)
 				result.probeErr = transferErr
 				break
 			}
+			if ctx.Err() != nil {
+				result.probeErr = ctx.Err()
+				break
+			}
+			lastTransferError = publicAutoFillError(match.candidate, transferErr)
 			continue
 		}
 		for i, key := range keys {
@@ -866,7 +1003,7 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 			}
 		}
 	}
-	if len(unmatched) > 0 && result.Issue == "" {
+	if result.Issue == "" && len(unmatched) > 0 {
 		switch {
 		case spec.Transfer && lastTransferError != "":
 			result.Issue = "matched episode resources could not be transferred: " + lastTransferError
@@ -880,6 +1017,12 @@ func (s *TaskQueueService) processAutoFillSeries(ctx context.Context, library do
 	if spec.Transfer && len(transferredPaths) > 0 {
 		if err := waitForAutoFillFiles(ctx, transferredPaths); err != nil {
 			result.Issue = err.Error()
+			for key := range transferred {
+				unmatched[key] = struct{}{}
+			}
+			transferred = make(map[episodeKey]struct{})
+			result.Transferred = sortedEpisodeLabels(transferred)
+			result.RemainingEpisodes = sortedEpisodeLabels(unmatched)
 			result.fatalErr = errors.Join(result.fatalErr, err)
 			result.probeErr = errors.Join(result.probeErr, err)
 		}
@@ -927,6 +1070,61 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 	byName := make(map[string]domain.EmbyLibrary, len(libraries))
 	for _, library := range libraries {
 		byName[library.Name] = library
+	}
+	seriesInventoryByLibrary := make(map[string][]domain.EmbyMediaItem, len(spec.Libraries))
+	knownSeries := make(map[string]struct{})
+	for _, libraryName := range spec.Libraries {
+		library, exists := byName[libraryName]
+		if !exists || library.Collection != "tvshows" {
+			return nil, fmt.Errorf("eligible Emby library %q is missing or is not a TV library", libraryName)
+		}
+		seriesInventory, err := s.embySvc.ListSeriesCtx(ctx, library.ID)
+		if err != nil {
+			return nil, err
+		}
+		seriesInventoryByLibrary[library.ID] = seriesInventory
+		for _, series := range seriesInventory {
+			knownSeries[series.ID] = struct{}{}
+		}
+	}
+	for _, seriesID := range spec.SeriesIDs {
+		if _, exists := knownSeries[seriesID]; !exists {
+			return nil, fmt.Errorf("series_ids contains unknown Emby Series ID %q in selected libraries", seriesID)
+		}
+	}
+	for seriesID := range spec.SourceShares {
+		if _, exists := knownSeries[seriesID]; !exists {
+			return nil, fmt.Errorf("source_shares Series ID %q is not present in the selected eligible libraries", seriesID)
+		}
+		if len(spec.SeriesIDs) > 0 {
+			allowed := false
+			for _, selectedID := range spec.SeriesIDs {
+				if seriesID == selectedID {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return nil, fmt.Errorf("source_shares Series ID %q is outside series_ids", seriesID)
+			}
+		}
+	}
+	for seriesID := range spec.CandidateOverrides {
+		if _, exists := knownSeries[seriesID]; !exists {
+			return nil, fmt.Errorf("candidate_overrides Series ID %q is not present in the selected eligible libraries", seriesID)
+		}
+		if len(spec.SeriesIDs) > 0 {
+			allowed := false
+			for _, selectedID := range spec.SeriesIDs {
+				if seriesID == selectedID {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return nil, fmt.Errorf("candidate_overrides Series ID %q is outside series_ids", seriesID)
+			}
+		}
 	}
 	results := make([]LibraryAutoFillResult, 0, len(spec.Libraries))
 	totalMissing, totalMatched, totalTransferred := 0, 0, 0
@@ -996,10 +1194,7 @@ func (s *TaskQueueService) runSeriesAutoFill(ctx context.Context, task domain.As
 		if err := s.db.AppendTaskLog(task.ID, "Auto-fill scanning library "+libraryName); err != nil {
 			return nil, err
 		}
-		seriesInventory, err := s.embySvc.ListSeriesCtx(ctx, library.ID)
-		if err != nil {
-			return nil, err
-		}
+		seriesInventory := seriesInventoryByLibrary[library.ID]
 		seriesByID := make(map[string]domain.EmbyMediaItem, len(seriesInventory))
 		tmdbCounts := make(map[string]int)
 		refreshOrder := make([]string, 0)

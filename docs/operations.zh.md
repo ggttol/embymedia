@@ -32,6 +32,12 @@ release 安装保留 webhook 启用选择、浏览器登录、生成的 STRM 根
 
 夸克到 115 导入先保存到所选夸克目录，再逐文件写入中转区，并在默认 115 账号的固定 `/emby/_待整理` 目录完成验证上传。`transfer_temp_dir` 默认为 `/srv/embymedia/data/transfers`；`transfer_min_free_bytes` 默认为 10 GiB，且可用空间还必须容纳当前文件。`quark_download_connections` 设置单文件的并行范围连接数（默认 4，允许 1-8）；实测 4 条约等于单条流的 3.4 倍，而 8 条低于 4 条。配置 115 开放平台 token 时使用原生秒传或分片上传；没有 token 时，将 `clouddrive_c115_account_id` 设为对应托管账号，且可写 CloudDrive2 挂载必须映射 `/115open/emby`。导入器先写任务拥有的暂存文件，`fsync` 后发布，再通过 115 核对最终父目录、名称、大小与 SHA-1，确认后才删除中转文件。CloudDrive2 FUSE 挂载把目录报告为 root 所有，且不会传播默认 ACL，因此 `ensure-transfer-access.sh` 为服务账号授予 `_待整理`、`电视剧追更` 与 `综艺追更` 的访问权限；`embymedia-v2` 单元在启动前执行它，CloudDrive 监控每分钟重跑一次，使之后创建的目录无需重启即可写入。普通导入直接平铺发布到 `_待整理`，不再镜像夸克分享自身的目录名，因为通过 provider API 创建的子目录对服务永不可写。中转区应位于持久且私有的存储上，使中断工作可在重启后协调恢复。
 
+只更新两集时，在夸克分享弹窗读取递归预览，仅勾选这两个文件，提交前核对已选数量和字节数。REST 先调用 `POST /api/v1/drive/share-snapshot` 并传 `recursive:true`，再调用 `POST /api/v1/quark/share-imports` 并传 `selected_source_manifest:[{id,revision,name,size},...]`；MCP 先用 `quark_snapshot_share`，再用 `quark_import_share_to_115`。空选择会报错，不会整包导入。整包下载必须明确设置 `import_all:true`；未明确同意整包的旧客户端及旧持久任务将被拒绝。不要通过移动文件到另一个夸克目录或修改生产数据库绕过此限制。
+
+用指定链接自动补缺集时，提交 `series_auto_fill`，参数为 `{"libraries":["电视剧追更"],"series_ids":["EMBY_SERIES_ID"],"source_shares":{"EMBY_SERIES_ID":{"provider":"quark","url":"https://pan.quark.cn/s/SHARE_CODE"}},"transfer":true}`；预检使用 `transfer:false`。`candidate_overrides` 接受资源索引 ID，不是分享码；`/api/v1/search` 使用 `q`，并拒绝不支持的 `keyword` 参数。匹配仍要求可信剧集身份和已播缺集；提供 URL 不等于授权替换已有剧集。选择失败或有歧义时停止，不会退回整包。
+
+传输必须走持久 Worker 流程。把 CDN 响应直接流式写入最终 FUSE 媒体文件名会暴露未完成视频，不能凭文件存在或大小近似就生成 STRM。入库前应通过 115 核实准确大小与 SHA-1。Debian 和 NAS Worker 均支持 HTTP 412 凭据恢复；NAS 修复生效需要同时部署对应 Worker 二进制和服务端。预检失败且不存在导入行时可以重试；已有导入行但没有协调好的保存根时，需要检查，不能自动重新转存。
+
 ## NAS 传输 Worker
 
 可选的 NAS Worker 保持 Debian 是唯一生产数据库与任务所有者，同时把夸克下载字节及由 CloudDrive2 支撑的 115 写入移到可直连的 NAS。每个实例使用独立的 CloudDrive2 `/Config`、挂载根、缓存与管理端口；NAS 挂载把同一托管 115 账号的 `/115open/emby` 目录映射到 `/CloudNAS/CloudDrive`。Worker 要求共享的 `.embymedia-health-canary`、可由 CloudDrive2 与 115 API 同时看到且身份准确的 `_待整理/.embymedia-nas-worker-health-canary`、可写目标目录、持久私有中转区，并保留配置的最低空闲空间及当前文件大小。它绝不会回退到 HTTP 或 SOCKS 代理。

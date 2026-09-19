@@ -49,6 +49,43 @@ func TestValidateSeriesAutoFillRejectsOtherLibraries(t *testing.T) {
 	}
 }
 
+func TestResolveSeriesAutoFillSpecValidatesSourceShares(t *testing.T) {
+	spec, err := resolveSeriesAutoFillSpec(map[string]any{
+		"libraries": []any{"电视剧追更"},
+		"source_shares": map[string]any{
+			"series-1": map[string]any{"provider": "quark", "url": "https://pan.quark.cn/s/share-id", "password": "pwd"},
+		},
+	})
+	if err != nil || spec.SourceShares["series-1"].Provider != "quark" {
+		t.Fatalf("valid source share rejected: spec=%+v err=%v", spec, err)
+	}
+	for name, payload := range map[string]any{
+		"bad provider": map[string]any{"provider": "cloud", "url": "https://pan.quark.cn/s/share-id"},
+		"bad URL":      map[string]any{"provider": "quark", "url": "not a share"},
+		"missing URL":  map[string]any{"provider": "115"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveSeriesAutoFillSpec(map[string]any{
+				"libraries":     []any{"电视剧追更"},
+				"source_shares": map[string]any{"series-1": payload},
+			})
+			if err == nil {
+				t.Fatalf("invalid source share was accepted: %v", payload)
+			}
+		})
+	}
+}
+
+func TestAutoFillShareFailuresStayPerSeriesButAccountFailuresRemainFatal(t *testing.T) {
+	if autoFillSystemicProbeFailure(fmt.Errorf("115 转存失败: 链接已过期")) {
+		t.Fatal("expired share was classified as systemic")
+	}
+	for _, operation := range []string{"115 share snapshot", "115 account files"} {
+		if !autoFillSystemicProbeFailure(&ProviderHTTPError{Operation: operation, StatusCode: http.StatusUnauthorized}) {
+			t.Fatal("authorization failure was not classified as systemic")
+		}
+	}
+}
 func TestCompletedPackRequiresEveryExpectedEpisode(t *testing.T) {
 	expected := map[episodeKey]struct{}{{Season: 1, Episode: 1}: {}, {Season: 1, Episode: 2}: {}}
 	if coversEpisodes([]autoFillLeaf{{Name: "Show.S01E01.mkv"}}, expected) {

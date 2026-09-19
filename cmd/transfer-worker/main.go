@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -132,16 +133,40 @@ func run(ctx context.Context, encoder *json.Encoder, spoolDir, mountRoot, access
 	result, err := transfer.Download(ctx, transfer.DownloadOptions{
 		Path: spoolPath, Name: request.Name, Size: request.Size, ExpectedSHA1: request.ExpectedSHA1,
 		SegmentSize: defaultSegmentSize, Connections: request.Connections, Attempts: 4, BufferSize: 1 << 20, ReportEvery: time.Second,
-	}, checkpoint, func(ctx context.Context, offset, length int64) (io.ReadCloser, error) {
-		copy := account
-		return provider.OpenDownload(ctx, &copy, request.SourceFileID, offset, length)
-	}, func(downloaded int64) error {
+	}, checkpoint, quarkRangeDownloader(provider, account, request.SourceFileID), func(downloaded int64) error {
 		return emit(transfer.Event{Type: "progress", Phase: "downloading", DownloadedBytes: downloaded, Size: request.Size})
 	})
 	if err != nil {
 		return err
 	}
 	return emit(transfer.Event{Type: "completed", Phase: "downloaded", DownloadedBytes: request.Size, Size: request.Size, SHA1: result.SHA1, PreSHA1: result.PreSHA1})
+}
+
+// Each worker invocation owns its cookie; parallel ranges share a single refresh.
+func quarkRangeDownloader(provider *service.ProviderQuark, account domain.DriveAccount, fileID string) transfer.OpenRange {
+	var mu sync.Mutex
+	return func(ctx context.Context, offset, length int64) (io.ReadCloser, error) {
+		mu.Lock()
+		snapshot := account
+		mu.Unlock()
+		body, err := provider.OpenDownload(ctx, &snapshot, fileID, offset, length)
+		var providerErr *service.ProviderHTTPError
+		if !errors.As(err, &providerErr) || providerErr.StatusCode != http.StatusPreconditionFailed {
+			return body, err
+		}
+		mu.Lock()
+		if account.Cookie == snapshot.Cookie {
+			err = provider.RefreshDownloadCookie(ctx, &account)
+		} else {
+			err = nil
+		}
+		snapshot = account
+		mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return provider.OpenDownload(ctx, &snapshot, fileID, offset, length)
+	}
 }
 
 func ensureAccess(ctx context.Context, helper, destination string) error {

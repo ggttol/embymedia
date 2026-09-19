@@ -1,45 +1,25 @@
-# 网盘分享订阅主动追更方案 (Share Subscription Sync)
+# 分享订阅与精准剧集导入
 
-## 背景
-当前 EmbyMedia 依赖 Emby 的 `/Shows/Missing`（结合定时刷新）以检测缺集，并触发基于网盘关键字搜索的转存任务 (`series_auto_fill`)。
-然而，由于 Emby 内置针对 TMDB 请求的节流（缓存过期前不发起有效请求），加之 TMDB 首播日期往往不精准（时区或时间点问题），自动补集常会有 12~24 小时的延迟。
-为了彻底解决时效性，通过直接订阅并监控网盘分享链接来感知最新集数，完成转存并触发 Emby Inotify，反向激活入库，以达到第一时间看剧的需求。
+## 决策
+夸克目标目录是分享保存位置，不是下载已有文件的过滤条件。反复建立空目录并提交原 URL，仍然会导入整个分享。必须在 provider 写入前明确并校验选择，再在下载字节前复核。
 
-## 目标
-新增一套分享订阅自动同步（`share_auto_sync`）机制，与现有 `series_auto_fill` （作为长效兜底补漏）并存。
+## 手动选择
+REST 与 MCP 接受非空 `selected_source_manifest`，包含实时分享文件叶子的 ID、修订标识、名称与大小。服务派生内部源 ID；客户端不能提交内部目标绑定。浏览器递归预览文件，默认零选择，并显示已选数量与字节数。
+整包导入必须明确设置 `import_all:true`。未选择、身份过期、出现非预期保存文件或保存根有歧义时安全失败。没有明确模式的旧持久任务不会恢复为整包下载。
 
-## 核心实体
-在 `internal/domain/models.go` 定义实体 `ShareSubscription`，并在 SQLite 数据库建立对应表：
-- `id`: UUID (Primary Key)
-- `name`: 订阅名称，例如 "交锋 - Quark追更"
-- `provider`: "quark", "115", 等
-- `url`: 监控的分享链接
-- `password`: 分享密码（如果有）
-- `target_cid`: 115 目的地 CID
-- `active`: 布尔值，是否启用
-- `last_cursor_time`: 最新已同步资源的创建时间（用于增量防重）
-- `last_sync_at`: 最新一次轮询时间
-- `error`: 最近的错误信息
+## 缺集补全
+`series_auto_fill` 接受以准确 Emby Series ID 为键的 `source_shares`，值包含 provider、HTTPS URL 与可选密码。指定分享绕过的是搜索索引可用性，不是规范身份与已播缺集检查。未提供 `series_ids` 时，仅处理指定的 Series 键。
+只有匹配的已播缺集才能成为选择清单；不下载已有集与未来集。未知 Series ID 和未匹配的资源覆盖会明确报错或报告发现项，不会空结果报成功或回退整包。
+普通 115 分享过期作为单剧集发现项，保留其他 Series 已排队的有效夸克任务。取消、鉴权、限流、系统性传输错误、身份变化及写后验证失败仍明确失败。
 
-## 后端实现细节
-1. **Repository层 (`internal/db`)**
-   为 `ShareSubscription` 编写一套基本的 CRUD SQL操作 (`CreateShareSubscription`, `ListShareSubscriptions`, `UpdateShareSubscriptionCursor` 等)。
-2. **API层 (`internal/api`)**
-   注册路由：
-   - `GET /api/v1/share-subscriptions`
-   - `POST /api/v1/share-subscriptions`
-   - `PUT /api/v1/share-subscriptions/:id`
-   - `DELETE /api/v1/share-subscriptions/:id`
-3. **任务机制 (`internal/service/taskqueue.go` & `share_subscription.go`)**
-   - 增加任务类型 `"share_auto_sync"`。
-   - `runShareAutoSync`:
-     1. 从 `db` 取出处于 active 状态的 subscriptions。
-     2. 根据 Provider 去调用对应 Share 解析，拉取文件列表（平铺资源记录，包含文件创建时间、大小等）。
-     3. 过滤条件：`file.CreatedAt > subscription.LastCursorTime`。
-     4. 将增量文件封装，下发明细到对应执行单元：
-        - 如果是 115 的同盘分享，则使用 `SaveShareCtx`。
-        - 如果是 夸克提取，构建一个受控的 `quark_to_115_import` (类似现已有的跨盘转存)，通过指定的 file id 过滤。
-     5. 只要至少成功处理了一项，更新订阅的 `LastCursorTime` 从而完成增量闭环。
+## 订阅执行
+`share_auto_sync` 读取启用的订阅，将其 115 `target_cid` 解析为追更库中唯一现有且绑定 TMDB 的 Series。它排入同一范围化 `series_auto_fill` 流程，返回 `next_task_id` 和 `verification_complete:false`。
+重复轮询复用仍在执行的订阅工作。订阅不会先保存全部分享文件，不会以夸克根目录写入代替实现，也不会宣称排队即完成。不支持或有歧义的目标绑定在 provider 写入前失败。
+`last_cursor_time` 保留在存储中，但不用于推断剧集归属或宣称增量完成。Emby 的已播缺集清单是缺集依据，上游元数据延迟仍可能延迟自动发现。计划必须明确携带订阅 ID 排入 `share_auto_sync`；仅创建订阅不会自动创建调度器。
 
-## 调度
-通过类似于现有的 `series_auto_fill` 定时（如每 30 分钟）扫面并排队 `share_auto_sync` 任务。老的 `series_auto_fill` 则继续按照原架构以小时级频次跑，两者互不干涉。
+## 传输与恢复
+使用持久传输流程，不使用临时脚本把 CDN 内容写入最终媒体路径。Debian 与 NAS 下载均恢复过期夸克 CDN 凭据，返回范围和长度必须匹配请求。完整源字节计算 hash，115 身份核实后才入库。
+只有不存在前次导入行、能证明失败发生在接管分享转存前时，重试才允许重新保存。已有导入行但缺少协调好的根时存在歧义，需要检查。STRM 文件或 Emby 媒体源数量本身不能证明视频完整可播。
+
+## 验证
+本地 provider fixture 覆盖混合分享中仅选择 E17/E18、拒绝多余旧文件、过期分享隔离、订阅工作复用、预检失败与歧义重试区别、CDN 分片校验及 NAS 并发凭据刷新。浏览器检查使用已标注的本地 fixture，不使用生产凭据或媒体。

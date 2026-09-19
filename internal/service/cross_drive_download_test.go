@@ -130,7 +130,8 @@ func newQuarkDownloadFixture(t *testing.T, content []byte, signed func(rangeHead
 				return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(`{"status":500,"message":"probe failure"}`)), Request: request}, nil
 			}
 			header.Set("Content-Type", "application/octet-stream")
-			return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(body), Request: request}, nil
+			header.Set("Content-Range", strings.Replace(rangeHeader, "=", " ", 1)+"/"+strconv.Itoa(len(content)))
+			return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(body), ContentLength: -1, Request: request}, nil
 		default:
 			return &http.Response{StatusCode: http.StatusNotFound, Header: header, Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"error":"unexpected %s"}`, request.URL))), Request: request}, nil
 		}
@@ -279,6 +280,7 @@ func TestQuarkProviderDownloadAbortsWhenTheCdnStalls(t *testing.T) {
 			// Headers and a partial body arrive, then the connection goes silent
 			// without closing: exactly the stall that would pin the single worker.
 			response.Header().Set("Content-Length", "1048576")
+			response.Header().Set("Content-Range", "bytes 0-1048575/1048576")
 			response.WriteHeader(http.StatusPartialContent)
 			_, _ = response.Write([]byte("partial"))
 			response.(http.Flusher).Flush()

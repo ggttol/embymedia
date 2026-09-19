@@ -343,3 +343,66 @@ func TestTaskQueueFailsInterruptedWorkBeforeRetry(t *testing.T) {
 		t.Fatalf("reviewed retry was not created: %+v, err=%v", retry, err)
 	}
 }
+
+func TestQuarkImportSelectionModesAndDerivedIDs(t *testing.T) {
+	base := map[string]any{
+		"quark_account_id": "quark", "quark_target_id": "target",
+		"share_url": "https://pan.quark.cn/s/share", "c115_account_id": "c115",
+	}
+	manifest := []map[string]any{{"id": "source-e17", "revision": "rev-e17", "name": "Show.S01E17.mkv", "size": int64(17)}}
+	for name, payload := range map[string]map[string]any{
+		"missing mode": base,
+		"empty manifest": func() map[string]any {
+			copy := clonePayload(base)
+			copy["selected_source_manifest"] = []any{}
+			return copy
+		}(),
+		"conflicting modes": func() map[string]any {
+			copy := clonePayload(base)
+			copy["selected_source_manifest"], copy["import_all"] = manifest, true
+			return copy
+		}(),
+		"caller supplied IDs": func() map[string]any {
+			copy := clonePayload(base)
+			copy["selected_source_ids"] = []string{"source-e17"}
+			copy["import_all"] = true
+			return copy
+		}(),
+	} {
+		if err := ValidateTask("quark_to_115_import", payload); err == nil {
+			t.Errorf("%s: expected validation failure", name)
+		}
+	}
+	selected := clonePayload(base)
+	selected["selected_source_manifest"] = manifest
+	if err := ValidateTask("quark_to_115_import", selected); err != nil {
+		t.Fatalf("selected manifest rejected: %v", err)
+	}
+	full := clonePayload(base)
+	full["import_all"] = true
+	if err := ValidateTask("quark_to_115_import", full); err != nil {
+		t.Fatalf("explicit full import rejected: %v", err)
+	}
+	db, err := storage.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	queue := NewTaskQueueService(db, NewDriveService(db, "", ""), NewEmbyService(db))
+	task, err := queue.Enqueue("quark_to_115_import", selected)
+	if err != nil {
+		t.Fatalf("enqueue selected import: %v", err)
+	}
+	ids, ok := task.Payload["selected_source_ids"].([]string)
+	if !ok || len(ids) != 1 || ids[0] != "source-e17" {
+		t.Fatalf("server did not derive selected IDs: %#v", task.Payload["selected_source_ids"])
+	}
+}
+
+func clonePayload(payload map[string]any) map[string]any {
+	copy := make(map[string]any, len(payload))
+	for key, value := range payload {
+		copy[key] = value
+	}
+	return copy
+}

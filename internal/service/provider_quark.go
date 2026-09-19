@@ -849,10 +849,9 @@ func quarkCookieWith(raw, name, value string) string {
 	return without + "; " + name + "=" + value
 }
 
-// refreshDownloadCookie replaces Quark's short-lived CDN authorization cookie.
-// Ordinary drive APIs continue to work after __puus expires, while signed file
-// downloads fail with HTTP 412 until an API request omits the stale field.
-func (p *ProviderQuark) refreshDownloadCookie(ctx context.Context, account *domain.DriveAccount) error {
+// RefreshDownloadCookie replaces Quark's short-lived CDN authorization cookie.
+// The caller must serialize access to account while refreshing or copying it.
+func (p *ProviderQuark) RefreshDownloadCookie(ctx context.Context, account *domain.DriveAccount) error {
 	requestClient := p.client
 	if p.proxyURL != nil && strings.TrimSpace(p.proxyURL()) != "" {
 		proxyClient, err := p.downloadHTTPClient()
@@ -995,7 +994,7 @@ func proxyFromURL(parsed *url.URL) (func(ctx context.Context, network, addr stri
 }
 
 func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveAccount, id string, offset, length int64) (io.ReadCloser, error) {
-	if strings.TrimSpace(id) == "" || offset < 0 || length <= 0 {
+	if strings.TrimSpace(id) == "" || offset < 0 || length <= 0 || offset > (1<<63-1)-(length-1) {
 		return nil, fmt.Errorf("file ID, nonnegative offset, and positive length are required")
 	}
 	downloadClient, err := p.downloadHTTPClient()
@@ -1029,6 +1028,28 @@ func (p *ProviderQuark) OpenDownload(ctx context.Context, account *domain.DriveA
 		if response.StatusCode != http.StatusPartialContent && !(offset == 0 && response.StatusCode == http.StatusOK) {
 			response.Body.Close()
 			return nil, &ProviderHTTPError{Operation: "Quark download", StatusCode: response.StatusCode}
+		}
+		// A 206 with the wrong offset can silently corrupt a resumed segment.
+		if response.StatusCode == http.StatusPartialContent {
+			value, ok := strings.CutPrefix(response.Header.Get("Content-Range"), "bytes ")
+			interval, total, hasTotal := strings.Cut(value, "/")
+			startText, endText, hasEnd := strings.Cut(interval, "-")
+			start, startErr := strconv.ParseInt(startText, 10, 64)
+			end, endErr := strconv.ParseInt(endText, 10, 64)
+			size, sizeErr := strconv.ParseInt(total, 10, 64)
+			if !ok || !hasTotal || !hasEnd || startErr != nil || endErr != nil || sizeErr != nil ||
+				start != offset || end != offset+length-1 || size <= end {
+				response.Body.Close()
+				return nil, fmt.Errorf("Quark download returned an inconsistent Content-Range")
+			}
+		}
+		if response.ContentLength >= 0 && response.ContentLength != length {
+			response.Body.Close()
+			return nil, fmt.Errorf("Quark download returned an unexpected Content-Length")
+		}
+		if response.StatusCode == http.StatusOK && response.ContentLength != length {
+			response.Body.Close()
+			return nil, fmt.Errorf("Quark download did not confirm the requested range length")
 		}
 		return response.Body, nil
 	}
